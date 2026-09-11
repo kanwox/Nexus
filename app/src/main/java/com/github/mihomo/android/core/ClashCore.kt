@@ -20,8 +20,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.net.InetSocketAddress
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 object ClashCore {
     private const val TAG = "ClashCore"
@@ -214,12 +218,71 @@ object ClashCore {
         result
     }
 
-    suspend fun testProxyDelayNative(groupName: String, nodeName: String): Int = withContext(Dispatchers.IO) {
-        if (nodeName.equals("DIRECT", ignoreCase = true)) return@withContext 0
-        if (nodeName.equals("REJECT", ignoreCase = true)) return@withContext -2
-        // Trigger health check for the group containing the node
-        val delays = healthCheck(groupName)
-        delays[nodeName] ?: -2
+    private const val REST_TIMEOUT_SECONDS = 6L
+    const val DEFAULT_TEST_URL = "http://www.gstatic.com/generate_204"
+    const val DEFAULT_TEST_TIMEOUT = 5000
+
+    private val restClient = OkHttpClient.Builder()
+        .connectTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build()
+
+    suspend fun testProxyDelay(
+        name: String,
+        testUrl: String = DEFAULT_TEST_URL,
+        timeout: Int = DEFAULT_TEST_TIMEOUT
+    ): Int = withContext(Dispatchers.IO) {
+        if (name.equals("DIRECT", ignoreCase = true)) return@withContext 0
+        if (name.equals("REJECT", ignoreCase = true)) return@withContext -2
+
+        val encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+        val encodedUrl = URLEncoder.encode(testUrl, "UTF-8")
+        val url = "http://127.0.0.1:9090/proxies/$encodedName/delay?url=$encodedUrl&timeout=$timeout"
+        runCatching {
+            val request = Request.Builder().url(url).build()
+            restClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: ""
+                    val jsonObj = json.decodeFromString<JsonObject>(body)
+                    val d = jsonObj["delay"]?.jsonPrimitive?.intOrNull ?: -2
+                    if (d in 1..65534) d else -2
+                } else {
+                    -2
+                }
+            }
+        }.getOrDefault(-2)
+    }
+
+    suspend fun testGroupDelay(
+        groupName: String,
+        testUrl: String = DEFAULT_TEST_URL,
+        timeout: Int = DEFAULT_TEST_TIMEOUT
+    ): Map<String, Int> = withContext(Dispatchers.IO) {
+        val encodedGroup = URLEncoder.encode(groupName, "UTF-8").replace("+", "%20")
+        val encodedUrl = URLEncoder.encode(testUrl, "UTF-8")
+        val url = "http://127.0.0.1:9090/group/$encodedGroup/delay?url=$encodedUrl&timeout=$timeout"
+        runCatching {
+            val request = Request.Builder().url(url).build()
+            restClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: ""
+                    val element = json.decodeFromString<JsonObject>(body)
+                    val resultMap = mutableMapOf<String, Int>()
+                    element.forEach { (proxyName, delayElem) ->
+                        val delay = delayElem.jsonPrimitive.intOrNull ?: -2
+                        resultMap[proxyName] = if (delay in 1..65534) delay else -2
+                    }
+                    resultMap
+                } else {
+                    emptyMap()
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun testProxyDelayNative(nodeName: String): Int = withContext(Dispatchers.IO) {
+        testProxyDelay(nodeName)
     }
 
     fun healthCheckAll() {

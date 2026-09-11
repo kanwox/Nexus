@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -93,6 +94,11 @@ fun ProfilesScreen(
     var subName by remember { mutableStateOf("") }
     var subUrl by remember { mutableStateOf("") }
 
+    val lazyListState = rememberLazyListState()
+    var localProfiles by remember(profiles) { mutableStateOf(profiles) }
+    LaunchedEffect(profiles) {
+        localProfiles = profiles
+    }
     var draggedProfileId by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
 
@@ -198,10 +204,11 @@ fun ProfilesScreen(
             }
         } else {
             LazyColumn(
+                state = lazyListState,
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                itemsIndexed(profiles, key = { _, item -> item.id }) { _, item ->
+                itemsIndexed(localProfiles, key = { _, item -> item.id }) { index, item ->
                     val isSelected = item.id == selectedProfileId
                     val isBeingDragged = draggedProfileId == item.id
 
@@ -217,35 +224,47 @@ fun ProfilesScreen(
                             scaleY = if (isBeingDragged) 1.03f else 1f
                             shadowElevation = if (isBeingDragged) 12f else 0f
                         }
-                        .pointerInput(item.id, profiles.size) {
+                        .pointerInput(item.id, localProfiles.size) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = {
                                     draggedProfileId = item.id
                                     dragOffsetY = 0f
                                 },
                                 onDragEnd = {
-                                    val curIndex = profiles.indexOfFirst { it.id == item.id }
-                                    if (curIndex != -1) {
-                                        val itemHeightPx = 100.dp.toPx()
-                                        val rowDelta = (dragOffsetY / itemHeightPx).roundToInt()
-                                        val targetIndex = (curIndex + rowDelta).coerceIn(0, profiles.size - 1)
-                                        if (targetIndex != curIndex) {
-                                            val mutable = profiles.toMutableList()
-                                            val removed = mutable.removeAt(curIndex)
-                                            mutable.add(targetIndex, removed)
-                                            onReorderProfiles?.invoke(mutable)
-                                        }
-                                    }
+                                    onReorderProfiles?.invoke(localProfiles)
                                     draggedProfileId = null
                                     dragOffsetY = 0f
                                 },
                                 onDragCancel = {
+                                    localProfiles = profiles
                                     draggedProfileId = null
                                     dragOffsetY = 0f
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
                                     dragOffsetY += dragAmount.y
+
+                                    val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
+                                    val draggedItem = visibleItems.firstOrNull { it.key == item.id }
+                                    if (draggedItem != null) {
+                                        val currentCenter = draggedItem.offset + dragOffsetY + draggedItem.size / 2f
+                                        val targetItem = visibleItems.firstOrNull { info ->
+                                            info.key != item.id &&
+                                            currentCenter >= info.offset &&
+                                            currentCenter <= (info.offset + info.size)
+                                        }
+                                        if (targetItem != null) {
+                                            val fromIdx = localProfiles.indexOfFirst { it.id == item.id }
+                                            val toIdx = localProfiles.indexOfFirst { it.id == targetItem.key }
+                                            if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                val mutable = localProfiles.toMutableList()
+                                                val moved = mutable.removeAt(fromIdx)
+                                                mutable.add(toIdx, moved)
+                                                localProfiles = mutable
+                                                dragOffsetY += (draggedItem.offset - targetItem.offset)
+                                            }
+                                        }
+                                    }
                                 }
                             )
                         }
@@ -264,7 +283,25 @@ fun ProfilesScreen(
                         },
                         onEdit = { fullEditDialogProfile = item },
                         onUpdate = { onRefreshSubscription(item) },
-                        onDelete = { deleteConfirmProfile = item }
+                        onDelete = { deleteConfirmProfile = item },
+                        onMoveUp = if (index > 0) {
+                            {
+                                val mutable = localProfiles.toMutableList()
+                                val moved = mutable.removeAt(index)
+                                mutable.add(index - 1, moved)
+                                localProfiles = mutable
+                                onReorderProfiles?.invoke(mutable)
+                            }
+                        } else null,
+                        onMoveDown = if (index < localProfiles.size - 1) {
+                            {
+                                val mutable = localProfiles.toMutableList()
+                                val moved = mutable.removeAt(index)
+                                mutable.add(index + 1, moved)
+                                localProfiles = mutable
+                                onReorderProfiles?.invoke(mutable)
+                            }
+                        } else null
                     )
                 }
             }
@@ -877,7 +914,9 @@ private fun LoonProfileCard(
     onOverride: () -> Unit,
     onEdit: () -> Unit,
     onUpdate: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val lang = LocalAppLanguage.current
@@ -962,6 +1001,30 @@ private fun LoonProfileCard(
                                 onClick = {
                                     menuExpanded = false
                                     onUpdate()
+                                }
+                            )
+                        }
+                        if (onMoveUp != null) {
+                            DropdownMenuItem(
+                                text = { Text("上移配置", color = LoonTextPrimary, fontSize = 14.sp) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onMoveUp()
+                                }
+                            )
+                        }
+                        if (onMoveDown != null) {
+                            DropdownMenuItem(
+                                text = { Text("下移配置", color = LoonTextPrimary, fontSize = 14.sp) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    onMoveDown()
                                 }
                             )
                         }

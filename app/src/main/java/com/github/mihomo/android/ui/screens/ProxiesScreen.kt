@@ -36,26 +36,11 @@ fun AnimatedSpeedTestIcon(
     tint: Color = LoonTextPrimary,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "SpeedTestRotation")
-    val rotation by if (isTesting) {
-        infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(800, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "SpeedTestAngle"
-        )
-    } else {
-        remember { mutableFloatStateOf(0f) }
-    }
-
     Icon(
         imageVector = Icons.Default.Bolt,
         contentDescription = "测速",
         tint = if (isTesting) LoonBlue else tint,
-        modifier = modifier.graphicsLayer { rotationZ = rotation }
+        modifier = modifier
     )
 }
 
@@ -472,7 +457,7 @@ fun ProxiesScreen(
                         ) {
                             for (proxy in rowProxies) {
                                 Box(modifier = Modifier.weight(1f)) {
-                                    val isItemTesting = testingNodes.contains("$selectedGroupName:${proxy.name}") || (proxy.isGroup && testingNodes.contains(proxy.name))
+                                    val isItemTesting = testingNodes.contains(proxy.name) || testingNodes.contains("$selectedGroupName:${proxy.name}")
                                     LoonProxyItemCard(
                                         proxy = proxy,
                                         isSelected = proxy.name == currentNow,
@@ -560,7 +545,7 @@ fun ProxiesScreen(
                                 ) {
                                     for (proxy in rowProxies) {
                                         Box(modifier = Modifier.weight(1f)) {
-                                            val isItemTesting = testingNodes.contains("$groupName:${proxy.name}") || (proxy.isGroup && testingNodes.contains(proxy.name))
+                                            val isItemTesting = testingNodes.contains(proxy.name) || testingNodes.contains("$groupName:${proxy.name}")
                                             LoonProxyItemCard(
                                                 proxy = proxy,
                                                 isSelected = proxy.name == groupNow,
