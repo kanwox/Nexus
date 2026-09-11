@@ -459,8 +459,8 @@ fun DashboardScreen(
                                                 val list = currentDisplayedRef.value
                                                 val fromIdx = initialSlotIndex
                                                 val toIdx = hoverSlotIndex
-                                                if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx &&
-                                                    fromIdx in list.indices && toIdx in list.indices) {
+                                                val canSwap = fromIdx != toIdx && fromIdx in list.indices && toIdx in list.indices
+                                                if (canSwap) {
                                                     val mutable = currentLocalOrderRef.value.toMutableList()
                                                     val fromPos = mutable.indexOf(item.id)
                                                     val targetItem = list[toIdx]

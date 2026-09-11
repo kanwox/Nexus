@@ -34,7 +34,9 @@ object Bridge {
                 Log.w(TAG, "open packageCodePath: ${e.message}")
             }
 
-            val home = context.filesDir.resolve("clash").apply { mkdirs() }.absolutePath
+            val homeDir = context.filesDir.resolve("clash").apply { mkdirs() }
+            extractAssets(context, homeDir)
+            val home = homeDir.absolutePath
             val versionName = try {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
             } catch (e: Exception) {
@@ -49,6 +51,25 @@ object Bridge {
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to initialize native bridge", e)
             throw e
+        }
+    }
+
+    private fun extractAssets(context: Context, targetDir: File) {
+        val assetFiles = listOf("geoip.metadb", "Country.mmdb", "geosite.dat")
+        for (fileName in assetFiles) {
+            val destFile = targetDir.resolve(fileName)
+            if (!destFile.exists() || destFile.length() == 0L) {
+                runCatching {
+                    context.assets.open(fileName).use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
+                }.onFailure { e ->
+                    Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
+                }
+            }
         }
     }
 

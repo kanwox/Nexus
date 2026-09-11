@@ -33,7 +33,10 @@ object ProfileParser {
         val length: Long,
         val savedNodesHash: Int,
         val parsed: ParsedProfile
-    )
+    ) {
+        fun isValid(lm: Long, len: Long, hash: Int): Boolean =
+            lastModified == lm && length == len && savedNodesHash == hash
+    }
     private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry>()
 
     fun clearCache() {
@@ -50,7 +53,7 @@ object ProfileParser {
         val len = file.length()
         val savedHash = savedNodes.hashCode()
         val cached = parsedCache[path]
-        if (cached != null && cached.lastModified == lm && cached.length == len && cached.savedNodesHash == savedHash) {
+        if (cached?.isValid(lm, len, savedHash) == true) {
             return cached.parsed
         }
 

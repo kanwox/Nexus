@@ -116,7 +116,7 @@ class MihomoVpnService : VpnService() {
                 // 3. Load config into core
                 val loadRes = ClashCore.load(configFile)
                 if (loadRes.isFailure) {
-                    throw IllegalStateException("加载配置文件失败: ${loadRes.exceptionOrNull()?.message}")
+                    error("加载配置文件失败: ${loadRes.exceptionOrNull()?.message}")
                 }
 
                 // Restore user's saved proxy selections into core
@@ -191,7 +191,7 @@ class MihomoVpnService : VpnService() {
                     }
                 }
 
-                val pfd = builder.establish() ?: throw IllegalStateException("无法建立 VPN TUN 接口 (Builder.establish() 返回 null)")
+                val pfd = builder.establish() ?: error("无法建立 VPN TUN 接口 (Builder.establish() 返回 null)")
                 vpnInterface = pfd
 
                 // 5. Hand over fd to Mihomo core

@@ -119,10 +119,8 @@ object ConfigManager {
             val trimmed = line.trim()
             if (trimmed.startsWith("#")) {
                 val afterHash = trimmed.removePrefix("#").trim()
-                if (afterHash.startsWith("name:", ignoreCase = true) ||
-                    afterHash.startsWith("title:", ignoreCase = true) ||
-                    afterHash.startsWith("名称:", ignoreCase = true) ||
-                    afterHash.startsWith("订阅名称:", ignoreCase = true)) {
+                val prefixes = listOf("name:", "title:", "名称:", "订阅名称:")
+                if (prefixes.any { afterHash.startsWith(it, ignoreCase = true) }) {
                     val n = afterHash.substringAfter(":").trim()
                     if (n.isNotBlank()) return n
                 }
@@ -411,6 +409,12 @@ object ConfigManager {
             allow-lan: false
             external-controller: 127.0.0.1:9090
             secret: ""
+            geodata-mode: false
+            geo-auto-update: false
+            geox-url:
+              geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"
+              geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+              mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
             dns:
               enable: true
               listen: 127.0.0.1:1053
@@ -480,6 +484,7 @@ object ConfigManager {
         }
 
         runCatching {
+            com.github.kr328.clash.core.bridge.Bridge.init(context)
             val clashHomeConfig = context.filesDir.resolve("clash").apply { mkdirs() }.resolve("config.yaml")
             clashHomeConfig.writeText(targetFile.readText())
         }

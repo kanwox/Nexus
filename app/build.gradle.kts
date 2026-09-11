@@ -99,5 +99,6 @@ dependencies {
 
 detekt {
     buildUponDefaultConfig = true
-    ignoreFailures = true
+    config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
+    ignoreFailures = false
 }

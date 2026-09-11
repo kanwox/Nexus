@@ -102,7 +102,6 @@ fun ProxiesScreen(
     testingNodes: Set<String> = emptySet(),
     onTestSingleNode: (group: String, node: String) -> Unit = { _, _ -> }
 ) {
-    val coroutineScope = rememberCoroutineScope()
     val expandedGroups = remember { mutableStateMapOf<String, Boolean>() }
     var showOptionsMenu by remember { mutableStateOf(false) }
 
@@ -531,7 +530,6 @@ fun ProxiesScreen(
                                 groupName = groupName,
                                 groupType = group?.type ?: "select",
                                 activeNode = group?.now ?: "",
-                                nodeCount = proxies.size,
                                 iconUrl = iconUrl,
                                 showGroupIcons = showGroupIcons,
                                 isExpanded = isExpanded,
@@ -597,7 +595,6 @@ private fun LoonGroupHeaderCard(
     groupName: String,
     groupType: String,
     activeNode: String,
-    nodeCount: Int,
     iconUrl: String?,
     showGroupIcons: Boolean,
     isExpanded: Boolean,
