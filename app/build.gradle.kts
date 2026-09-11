@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("io.gitlab.arturbosch.detekt")
 }
 
 android {
@@ -83,4 +84,9 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.5")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.5")
+}
+
+detekt {
+    buildUponDefaultConfig = true
+    ignoreFailures = true
 }

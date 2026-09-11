@@ -35,7 +35,7 @@ fun ProfileOverrideScreen(
     val context = LocalContext.current
     val allScripts = remember { ScriptManager.getScripts(context) }
     var scriptEnabled by remember(profile) { mutableStateOf(profile.scriptEnabled) }
-    val selectedScriptIds = remember(profile) { mutableStateListOf(*profile.scriptIds.toTypedArray()) }
+    val selectedScriptIds = remember(profile) { profile.scriptIds.toMutableStateList() }
 
     Column(
         modifier = Modifier

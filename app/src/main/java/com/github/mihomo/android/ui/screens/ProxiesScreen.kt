@@ -36,11 +36,26 @@ fun AnimatedSpeedTestIcon(
     tint: Color = LoonTextPrimary,
     modifier: Modifier = Modifier
 ) {
+    val infiniteTransition = rememberInfiniteTransition(label = "SpeedTestRotation")
+    val rotation by if (isTesting) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(800, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "SpeedTestAngle"
+        )
+    } else {
+        remember { mutableFloatStateOf(0f) }
+    }
+
     Icon(
         imageVector = Icons.Default.Bolt,
         contentDescription = "测速",
-        tint = tint,
-        modifier = modifier
+        tint = if (isTesting) LoonBlue else tint,
+        modifier = modifier.graphicsLayer { rotationZ = rotation }
     )
 }
 

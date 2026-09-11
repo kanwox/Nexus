@@ -398,18 +398,19 @@ object ConfigManager {
         return builder.toString()
     }
 
-    private fun injectHealthCheckUrlsToProxyGroups(raw: String): String {
+    internal fun injectHealthCheckUrlsToProxyGroups(raw: String): String {
         val lines = raw.lines()
         val result = StringBuilder()
         var insideProxyGroups = false
         var currentGroupHasUrl = false
-        var currentGroupIndent = "    "
+        var groupBaseIndent = -1
         var inGroup = false
+        var propIndent = "    "
 
         fun closeCurrentGroupIfNeeded() {
-            if (inGroup && !currentGroupHasUrl) {
-                result.appendLine("${currentGroupIndent}url: http://cp.cloudflare.com/generate_204")
-                result.appendLine("${currentGroupIndent}interval: 300")
+            if (inGroup && !currentGroupHasUrl && groupBaseIndent >= 0) {
+                result.appendLine("${propIndent}url: http://cp.cloudflare.com/generate_204")
+                result.appendLine("${propIndent}interval: 300")
             }
             inGroup = false
             currentGroupHasUrl = false
@@ -422,24 +423,40 @@ object ConfigManager {
             if (isTopLevel) {
                 closeCurrentGroupIfNeeded()
                 insideProxyGroups = trimmed.startsWith("proxy-groups:", ignoreCase = true) || trimmed.startsWith("Proxy Group:", ignoreCase = true)
+                groupBaseIndent = -1
                 result.appendLine(line)
                 continue
             }
 
             if (insideProxyGroups) {
-                val isNewGroupItem = line.matches(Regex("^\\s*-\\s+.*"))
-                if (isNewGroupItem) {
-                    closeCurrentGroupIfNeeded()
-                    inGroup = true
-                    currentGroupHasUrl = false
-                    val leadingSpaces = line.takeWhile { it == ' ' }.length
-                    currentGroupIndent = " ".repeat(leadingSpaces + 2)
-                } else if (inGroup) {
+                val dashIndex = line.indexOf('-')
+                val isDashItem = dashIndex >= 0 && line.substring(0, dashIndex).isBlank()
+
+                if (isDashItem) {
+                    if (groupBaseIndent == -1) {
+                        groupBaseIndent = dashIndex
+                    }
+                    if (dashIndex == groupBaseIndent) {
+                        // A new group item starts!
+                        closeCurrentGroupIfNeeded()
+                        inGroup = true
+                        currentGroupHasUrl = false
+                        propIndent = " ".repeat(groupBaseIndent + 2)
+                    }
+                }
+
+                if (inGroup) {
                     if (trimmed.startsWith("url:", ignoreCase = true) || trimmed.startsWith("url :", ignoreCase = true)) {
+                        currentGroupHasUrl = true
+                    } else if ((trimmed.startsWith("proxies:", ignoreCase = true) || trimmed.startsWith("use:", ignoreCase = true)) && !currentGroupHasUrl) {
+                        // Inject right BEFORE the proxies/use list, at the group's property indentation
+                        result.appendLine("${propIndent}url: http://cp.cloudflare.com/generate_204")
+                        result.appendLine("${propIndent}interval: 300")
                         currentGroupHasUrl = true
                     }
                 }
             }
+
             result.appendLine(line)
         }
         closeCurrentGroupIfNeeded()
