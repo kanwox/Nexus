@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Nexus</string>
+    <string name="vpn_running">Nexus 代理已连接</string>
+    <string name="vpn_stopped">Nexus 代理已断开</string>
+    <string name="vpn_starting">正在启动代理服务…</string>
+    <string name="action_stop">断开连接</string>
+    <string name="action_start">开启连接</string>
+    <string name="notification_channel_name">Nexus 状态与流量通知</string>
+    <string name="notification_channel_desc">显示实时代理状态与网络上下行速率</string>
+</resources>

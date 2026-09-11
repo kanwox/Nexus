@@ -1,0 +1,104 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Soft Contact Shadow on Pure White Background -->
+    <path
+        android:pathData="M34,74 C34,70 74,70 74,74 C74,78 34,78 34,74 Z"
+        android:fillAlpha="0.14"
+        android:fillColor="#1E293B" />
+
+    <!-- Left Leaf (Companion Leaf) -->
+    <path
+        android:pathData="M52.2,43.5 C49.3,38.6 43.2,36.0 36.8,36.0 C39.0,41.3 46.2,45.1 52.2,43.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="52.2"
+                android:startY="43.5"
+                android:endX="36.8"
+                android:endY="36.0"
+                android:startColor="#047857"
+                android:endColor="#10B981" />
+        </aapt:attr>
+    </path>
+
+    <!-- Right Leaf (Main Sweeping Leaf) -->
+    <path
+        android:pathData="M54.2,43.2 C55.7,36.4 64.0,30.7 75.4,30.0 C72.4,37.2 62.6,43.6 54.2,43.2 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54.2"
+                android:startY="43.2"
+                android:endX="75.4"
+                android:endY="30.0"
+                android:startColor="#059669"
+                android:endColor="#34D399" />
+        </aapt:attr>
+    </path>
+
+    <!-- Right Leaf Vein Spine -->
+    <path
+        android:pathData="M54.4,43.0 C59.5,37.8 66.7,33.7 75.0,30.2"
+        android:strokeAlpha="0.8"
+        android:strokeColor="#ECFDF5"
+        android:strokeLineCap="round"
+        android:strokeWidth="0.7" />
+
+    <!-- Blueberry Body (Vibrant, Fresh Blueberry Indigo-Blue) -->
+    <path
+        android:pathData="M54.0,42.5 C64.0,42.0 74.5,47.0 74.5,58.0 C74.5,68.0 65.5,75.0 54.0,75.0 C42.5,75.0 33.5,68.0 33.5,58.0 C33.5,47.0 44.0,42.0 54.0,42.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="47.5"
+                android:centerY="50.5"
+                android:gradientRadius="30.0"
+                android:startColor="#3B82F6"
+                android:centerColor="#1D4ED8"
+                android:endColor="#172554" />
+        </aapt:attr>
+    </path>
+
+    <!-- Blueberry Powdery Bloom Sheen -->
+    <path
+        android:pathData="M46.0,49.5 C46.0,46.0 51.0,44.0 54.5,45.5 C58.0,47.0 59.0,52.0 56.0,55.5 C53.0,59.0 47.0,60.0 46.0,56.5 Z"
+        android:fillAlpha="0.32">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="47.0"
+                android:centerY="49.0"
+                android:gradientRadius="15.0"
+                android:startColor="#DBEAFE"
+                android:endColor="#3B82F6" />
+        </aapt:attr>
+    </path>
+
+    <!-- Calyx Cavity Depression -->
+    <path
+        android:pathData="M49.5,41.5 C52.0,40.5 56.0,40.5 58.5,41.5 C60.5,42.2 60.5,44.0 58.5,44.8 C56.0,45.5 52.0,45.5 49.5,44.8 C47.5,44.0 47.5,42.2 49.5,41.5 Z"
+        android:fillColor="#1E1B4B" />
+
+    <!-- 5-Lobed Calyx Crown Rim -->
+    <path
+        android:pathData="M50.4,43.4 L49.5,41.7 L52.2,42.3 L54.0,40.7 L55.8,42.3 L58.5,41.7 L57.6,43.4 L59.0,44.6 L56.5,44.7 L54.0,46.1 L51.5,44.7 L49.0,44.6 Z"
+        android:fillColor="#4F46E5" />
+
+    <!-- Deep Calyx Center Hole -->
+    <path
+        android:pathData="M52.0,42.5 C53.0,42.0 55.0,42.0 56.0,42.5 C56.8,43.0 56.8,44.0 56.0,44.5 C55.0,45.0 53.0,45.0 52.0,44.5 C51.2,44.0 51.2,43.0 52.0,42.5 Z"
+        android:fillColor="#0F172A" />
+
+    <!-- Calyx Tip Highlights -->
+    <path
+        android:pathData="M53.3,41.5 L54.0,40.7 L54.7,41.5"
+        android:strokeAlpha="0.85"
+        android:strokeColor="#A5B4FC"
+        android:strokeLineCap="round"
+        android:strokeWidth="0.6" />
+</vector>

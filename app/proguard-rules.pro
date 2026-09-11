@@ -1,0 +1,6 @@
+-keep class com.github.kr328.clash.core.** { *; }
+-keep interface com.github.kr328.clash.core.** { *; }
+-keep class * implements com.github.kr328.clash.core.bridge.TunInterface { *; }
+-keep class * implements com.github.kr328.clash.core.bridge.FetchCallback { *; }
+-keep class * implements com.github.kr328.clash.core.bridge.LogcatInterface { *; }
+-keepattributes *Annotation*
