@@ -167,7 +167,7 @@ fun DashboardScreen(
                 activeDialogTitle = "Nexus 内核信息"
                 activeDialogContent = "内核版本: ${vpnState.coreVersion.ifBlank { "Nexus Core (Clash.Meta) v1.18.x" }}\n" +
                         "ABI 架构: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"}\n" +
-                        "控制台 API: 127.0.0.1:9090\n" +
+                        "内核通信: JNI 原生嵌入式交互\n" +
                         "系统服务: Android VpnService + TUN"
             },
             "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:7890", { NetworkShareIllustration() }) {

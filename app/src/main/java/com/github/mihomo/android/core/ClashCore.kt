@@ -17,15 +17,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
 import java.net.InetSocketAddress
-import java.net.URLEncoder
-import java.util.concurrent.TimeUnit
 
 object ClashCore {
     private const val TAG = "ClashCore"
@@ -199,16 +193,15 @@ object ClashCore {
         }.getOrDefault(false)
     }
 
-    suspend fun healthCheck(name: String): Map<String, Int> = withContext(Dispatchers.IO) {
+    suspend fun healthCheckGroupNative(name: String): Map<String, Int> = withContext(Dispatchers.IO) {
         val deferred = CompletableDeferred<Unit>()
         try {
             Bridge.nativeHealthCheck(deferred, name)
-            withTimeout(5000L) {
+            withTimeout(5500L) {
                 deferred.await()
             }
         } catch (_: Throwable) {
         }
-        // Read updated delays directly from native core
         val group = queryGroup(name)
         val result = mutableMapOf<String, Int>()
         group?.proxies?.forEach { p ->
@@ -218,71 +211,39 @@ object ClashCore {
         result
     }
 
-    private const val REST_TIMEOUT_SECONDS = 6L
-    const val DEFAULT_TEST_URL = "http://www.gstatic.com/generate_204"
-    const val DEFAULT_TEST_TIMEOUT = 5000
+    suspend fun healthCheck(name: String): Map<String, Int> = healthCheckGroupNative(name)
 
-    private val restClient = OkHttpClient.Builder()
-        .connectTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .readTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .writeTimeout(REST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .build()
+    suspend fun testProxyDelayNative(proxyName: String, groupName: String? = null): Int = withContext(Dispatchers.IO) {
+        if (proxyName.equals("DIRECT", ignoreCase = true)) return@withContext 0
+        if (proxyName.equals("REJECT", ignoreCase = true)) return@withContext -2
+        if (proxyName.equals("COMPATIBLE", ignoreCase = true)) return@withContext -2
 
-    suspend fun testProxyDelay(
-        name: String,
-        testUrl: String = DEFAULT_TEST_URL,
-        timeout: Int = DEFAULT_TEST_TIMEOUT
-    ): Int = withContext(Dispatchers.IO) {
-        if (name.equals("DIRECT", ignoreCase = true)) return@withContext 0
-        if (name.equals("REJECT", ignoreCase = true)) return@withContext -2
-
-        val encodedName = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
-        val encodedUrl = URLEncoder.encode(testUrl, "UTF-8")
-        val url = "http://127.0.0.1:9090/proxies/$encodedName/delay?url=$encodedUrl&timeout=$timeout"
-        runCatching {
-            val request = Request.Builder().url(url).build()
-            restClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
-                    val jsonObj = json.decodeFromString<JsonObject>(body)
-                    val d = jsonObj["delay"]?.jsonPrimitive?.intOrNull ?: -2
-                    if (d in 1..65534) d else -2
-                } else {
-                    -2
-                }
+        val deferred = CompletableDeferred<Unit>()
+        try {
+            Bridge.nativeHealthCheck(deferred, proxyName)
+            withTimeout(5500L) {
+                deferred.await()
             }
-        }.getOrDefault(-2)
-    }
+        } catch (_: Throwable) {
+        }
 
-    suspend fun testGroupDelay(
-        groupName: String,
-        testUrl: String = DEFAULT_TEST_URL,
-        timeout: Int = DEFAULT_TEST_TIMEOUT
-    ): Map<String, Int> = withContext(Dispatchers.IO) {
-        val encodedGroup = URLEncoder.encode(groupName, "UTF-8").replace("+", "%20")
-        val encodedUrl = URLEncoder.encode(testUrl, "UTF-8")
-        val url = "http://127.0.0.1:9090/group/$encodedGroup/delay?url=$encodedUrl&timeout=$timeout"
-        runCatching {
-            val request = Request.Builder().url(url).build()
-            restClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
-                    val element = json.decodeFromString<JsonObject>(body)
-                    val resultMap = mutableMapOf<String, Int>()
-                    element.forEach { (proxyName, delayElem) ->
-                        val delay = delayElem.jsonPrimitive.intOrNull ?: -2
-                        resultMap[proxyName] = if (delay in 1..65534) delay else -2
-                    }
-                    resultMap
-                } else {
-                    emptyMap()
-                }
+        if (!groupName.isNullOrBlank()) {
+            val group = queryGroup(groupName)
+            val p = group?.proxies?.find { it.name == proxyName }
+            if (p != null) {
+                return@withContext if (p.delay in 1..65534) p.delay else -2
             }
-        }.getOrDefault(emptyMap())
-    }
+        }
 
-    suspend fun testProxyDelayNative(nodeName: String): Int = withContext(Dispatchers.IO) {
-        testProxyDelay(nodeName)
+        val groups = queryGroupNames()
+        for (g in groups) {
+            val group = queryGroup(g)
+            val p = group?.proxies?.find { it.name == proxyName }
+            if (p != null) {
+                return@withContext if (p.delay in 1..65534) p.delay else -2
+            }
+        }
+        -2
     }
 
     fun healthCheckAll() {

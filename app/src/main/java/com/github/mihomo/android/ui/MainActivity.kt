@@ -339,27 +339,26 @@ class MainActivity : ComponentActivity() {
                         try {
                             val curTime = System.currentTimeMillis()
 
-                            // 1. Primary test: FlClash group delay REST API
-                            val groupDelays = ClashCore.testGroupDelay(g)
-                            withContext(Dispatchers.Main) {
-                                groupDelays.forEach { (name, delay) ->
-                                    if (delay > 0 || delay == -2) {
-                                        delayCache[name] = delay
-                                        if (delay > 0) {
-                                            nodeLastTestedTimes[name] = curTime
+                            // If it's a background auto test on an auto group, native group test is fast
+                            if (isAutoTest && isAutoGroup) {
+                                val groupDelays = ClashCore.healthCheckGroupNative(g)
+                                withContext(Dispatchers.Main) {
+                                    groupDelays.forEach { (name, delay) ->
+                                        if (delay > 0 || delay == -2) {
+                                            delayCache[name] = delay
+                                            if (delay > 0) {
+                                                nodeLastTestedTimes[name] = curTime
+                                            }
                                         }
                                     }
                                 }
-                            }
-
-                            // 2. Concurrency fallback: for any member proxy not returned by groupDelay
-                            val untestedProxies = memberProxies.filter { !groupDelays.containsKey(it) }
-                            if (untestedProxies.isNotEmpty() && !isAutoTest) {
-                                val poolSemaphore = Semaphore(16)
-                                val testJobs = untestedProxies.map { nodeName ->
+                            } else {
+                                // Manual speed test: test each member proxy concurrently with bounded pool
+                                val poolSemaphore = Semaphore(8)
+                                val testJobs = memberProxies.map { nodeName ->
                                     launch(Dispatchers.IO) {
                                         poolSemaphore.withPermit {
-                                            val d = ClashCore.testProxyDelay(nodeName)
+                                            val d = ClashCore.testProxyDelayNative(nodeName, g)
                                             withContext(Dispatchers.Main) {
                                                 if (d > 0 || d == -2) {
                                                     delayCache[nodeName] = d
@@ -367,6 +366,7 @@ class MainActivity : ComponentActivity() {
                                                         nodeLastTestedTimes[nodeName] = curTime
                                                     }
                                                 }
+                                                testingNodes = testingNodes - nodeName
                                             }
                                         }
                                     }
@@ -374,9 +374,9 @@ class MainActivity : ComponentActivity() {
                                 testJobs.joinAll()
                             }
 
-                            // 3. Member sub-groups test
+                            // Member sub-groups test (nested groups)
                             for (subG in memberSubGroups) {
-                                val subDelays = ClashCore.testGroupDelay(subG)
+                                val subDelays = ClashCore.healthCheckGroupNative(subG)
                                 val subGroupData = ClashCore.queryGroup(subG)
                                 val subBestName = subGroupData?.now ?: ""
                                 val subBestDelay = subDelays[subBestName] ?: subGroupData?.proxies?.find { it.name == subBestName }?.delay ?: -1
@@ -391,10 +391,11 @@ class MainActivity : ComponentActivity() {
                                             liveGroupMap = liveGroupMap + (subG to existing.copy(now = subGroupData.now))
                                         }
                                     }
+                                    testingNodes = testingNodes - subG
                                 }
                             }
 
-                            // 4. Update group delay and 'now'
+                            // Update group delay and 'now'
                             val finalGroup = ClashCore.queryGroup(g)
                             withContext(Dispatchers.Main) {
                                 val bestNodeName = finalGroup?.now ?: ""
@@ -428,7 +429,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun runSpeedTestForSingleNode(nodeName: String) {
+        fun runSpeedTestForSingleNode(groupName: String?, nodeName: String) {
             if (testingNodes.contains(nodeName)) return
 
             if (parsedProfile.groups.containsKey(nodeName)) {
@@ -443,7 +444,7 @@ class MainActivity : ComponentActivity() {
                     if (!ClashCore.isCoreLoaded) {
                         ClashCore.ensureCoreLoaded(this@MainActivity)
                     }
-                    val delay = ClashCore.testProxyDelay(nodeName)
+                    val delay = ClashCore.testProxyDelayNative(nodeName, groupName)
                     val curTime = System.currentTimeMillis()
                     withContext(Dispatchers.Main) {
                         if (delay > 0 || delay == -2) {
@@ -860,7 +861,7 @@ class MainActivity : ComponentActivity() {
                                 onSelectProxy = { group, proxy -> handleSelectProxy(group, proxy) },
                                 onHealthCheck = { group -> runSpeedTestForGroup(group) },
                                 testingNodes = testingNodes,
-                                onTestSingleNode = { _, nodeName -> runSpeedTestForSingleNode(nodeName) }
+                                onTestSingleNode = { group, nodeName -> runSpeedTestForSingleNode(group, nodeName) }
                             )
                         }
                         2 -> SettingsScreen(
