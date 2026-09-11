@@ -384,7 +384,7 @@ object ConfigManager {
         )
 
         raw.lineSequence().forEach { line ->
-            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") && !line.startsWith("#") && !line.startsWith("-")
+            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") && !line.startsWith("#") && !line.startsWith("-") && line.contains(":")
 
             if (isTopLevel) {
                 val key = line.substringBefore(":").trim()
@@ -396,71 +396,6 @@ object ConfigManager {
             }
         }
         return builder.toString()
-    }
-
-    internal fun injectHealthCheckUrlsToProxyGroups(raw: String): String {
-        val lines = raw.lines()
-        val result = StringBuilder()
-        var insideProxyGroups = false
-        var currentGroupHasUrl = false
-        var groupBaseIndent = -1
-        var inGroup = false
-        var propIndent = "    "
-
-        fun closeCurrentGroupIfNeeded() {
-            if (inGroup && !currentGroupHasUrl && groupBaseIndent >= 0) {
-                result.appendLine("${propIndent}url: http://cp.cloudflare.com/generate_204")
-                result.appendLine("${propIndent}interval: 300")
-            }
-            inGroup = false
-            currentGroupHasUrl = false
-        }
-
-        for (line in lines) {
-            val trimmed = line.trim()
-            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") && !line.startsWith("#")
-
-            if (isTopLevel) {
-                closeCurrentGroupIfNeeded()
-                insideProxyGroups = trimmed.startsWith("proxy-groups:", ignoreCase = true) || trimmed.startsWith("Proxy Group:", ignoreCase = true)
-                groupBaseIndent = -1
-                result.appendLine(line)
-                continue
-            }
-
-            if (insideProxyGroups) {
-                val dashIndex = line.indexOf('-')
-                val isDashItem = dashIndex >= 0 && line.substring(0, dashIndex).isBlank()
-
-                if (isDashItem) {
-                    if (groupBaseIndent == -1) {
-                        groupBaseIndent = dashIndex
-                    }
-                    if (dashIndex == groupBaseIndent) {
-                        // A new group item starts!
-                        closeCurrentGroupIfNeeded()
-                        inGroup = true
-                        currentGroupHasUrl = false
-                        propIndent = " ".repeat(groupBaseIndent + 2)
-                    }
-                }
-
-                if (inGroup) {
-                    if (trimmed.startsWith("url:", ignoreCase = true) || trimmed.startsWith("url :", ignoreCase = true)) {
-                        currentGroupHasUrl = true
-                    } else if ((trimmed.startsWith("proxies:", ignoreCase = true) || trimmed.startsWith("use:", ignoreCase = true)) && !currentGroupHasUrl) {
-                        // Inject right BEFORE the proxies/use list, at the group's property indentation
-                        result.appendLine("${propIndent}url: http://cp.cloudflare.com/generate_204")
-                        result.appendLine("${propIndent}interval: 300")
-                        currentGroupHasUrl = true
-                    }
-                }
-            }
-
-            result.appendLine(line)
-        }
-        closeCurrentGroupIfNeeded()
-        return result.toString()
     }
 
     fun prepareConfig(context: Context, sourceFile: File?): File {
@@ -513,7 +448,7 @@ object ConfigManager {
         if (sourceFile != null && sourceFile.exists()) {
             var rawContent = sourceFile.readText()
             val activeProfile = getProfiles(context).find { it.file.absolutePath == sourceFile.absolutePath }
-            val shouldRunScripts = settings.scriptingEnabled && (activeProfile == null || (activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()))
+            val shouldRunScripts = (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) || settings.scriptingEnabled
             if (shouldRunScripts) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name}...")
                 rawContent = ConfigScriptEngine.executeScripts(
@@ -523,9 +458,8 @@ object ConfigManager {
                 )
             }
             val userContent = sanitizeUserConfig(rawContent)
-            val processedContent = injectHealthCheckUrlsToProxyGroups(userContent)
             // Cleanly prepend runtime settings without mangling proxies, rules or formatting
-            targetFile.writeText("$header\n$processedContent")
+            targetFile.writeText("$header\n$userContent")
             Log.i(TAG, "Prepared synthesized config with user profile: ${sourceFile.name}")
         } else {
             val defaultBody = """

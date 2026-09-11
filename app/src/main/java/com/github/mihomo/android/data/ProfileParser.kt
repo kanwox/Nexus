@@ -58,7 +58,7 @@ object ProfileParser {
         if (context != null) {
             val settings = SettingsManager(context)
             val activeProfile = ConfigManager.getProfiles(context).find { it.file.absolutePath == file.absolutePath }
-            val shouldRunScripts = settings.scriptingEnabled && (activeProfile == null || (activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()))
+            val shouldRunScripts = (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) || settings.scriptingEnabled
             if (shouldRunScripts) {
                 content = runCatching {
                     ConfigScriptEngine.executeScripts(

@@ -100,10 +100,28 @@ object ConfigScriptEngine {
                         }
                     }
                 } else {
-                    if (code.contains("rules:") || code.contains("proxies:") || code.contains("proxy-groups:")) {
-                        currentYaml = currentYaml + "\n" + code
-                        if (logToRepo) {
-                            LogRepository.addLog("info", "已合并脚本 [${script.name}] YAML 片段")
+                    val snippetMap: Any? = runCatching { yamlParser.load<Any>(code) }.getOrNull()
+                    if (snippetMap is Map<*, *>) {
+                        val baseMap = runCatching { yamlParser.load<Any>(currentYaml) as? Map<*, *> }.getOrNull()
+                        if (baseMap != null) {
+                            val mergedMap = LinkedHashMap<String, Any?>()
+                            for ((k, v) in baseMap) {
+                                if (k != null) mergedMap[k.toString()] = v
+                            }
+                            for ((k, v) in snippetMap) {
+                                val kStr = k?.toString() ?: continue
+                                val baseVal = mergedMap[kStr]
+                                if (baseVal is List<*> && v is List<*>) {
+                                    mergedMap[kStr] = (baseVal + v).distinct()
+                                } else {
+                                    mergedMap[kStr] = v
+                                }
+                            }
+                            val normalized = normalizeYamlData(mergedMap)
+                            currentYaml = yamlParser.dump(normalized)
+                            if (logToRepo) {
+                                LogRepository.addLog("info", "已安全合并脚本 [${script.name}] YAML 片段")
+                            }
                         }
                     }
                 }

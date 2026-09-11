@@ -76,7 +76,7 @@ class SettingsManager(context: Context) {
 
     // JavaScript Scripting & Rewrite Settings
     var scriptingEnabled: Boolean
-        get() = prefs.getBoolean("scripting_enabled", false)
+        get() = prefs.getBoolean("scripting_enabled", true)
         set(value) = prefs.edit().putBoolean("scripting_enabled", value).apply()
 
     var rewriteEnabled: Boolean

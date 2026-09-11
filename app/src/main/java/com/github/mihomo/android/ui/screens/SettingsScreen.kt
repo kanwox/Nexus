@@ -60,7 +60,6 @@ fun SettingsScreen(
     onNavigateToLogs: () -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val settingsManager = remember { SettingsManager(context) }
     val lang = LocalAppLanguage.current
 
@@ -181,6 +180,14 @@ fun SettingsScreen(
         // Section 2: 脚本
         LoonSectionHeader(title = AppStrings.get("settings_scripts", lang))
         LoonGroupCard {
+            LoonSettingsSwitchItem(
+                icon = Icons.Default.Javascript,
+                iconBg = Color(0xFFF59E0B),
+                title = "启用脚本引擎",
+                checked = scriptingEnabled,
+                onCheckedChange = onScriptingEnabledChanged
+            )
+            LoonDivider()
             LoonSettingsItem(
                 icon = Icons.Default.Code,
                 iconBg = Color(0xFF3B82F6),
