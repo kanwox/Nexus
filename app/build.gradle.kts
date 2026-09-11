@@ -7,7 +7,6 @@ plugins {
 android {
     namespace = "com.github.mihomo.android"
     compileSdk = 36
-    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.github.mihomo.android"
