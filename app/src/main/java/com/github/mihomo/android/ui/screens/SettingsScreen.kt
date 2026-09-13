@@ -38,7 +38,9 @@ import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
 import com.github.mihomo.android.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,10 +49,14 @@ fun SettingsScreen(
     tunStack: String,
     bootOnStartup: Boolean,
     scriptingEnabled: Boolean,
+    allowLan: Boolean,
+    fakeIpEnabled: Boolean,
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     onTunStackChanged: (String) -> Unit,
     onBootOnStartupChanged: (Boolean) -> Unit,
     onScriptingEnabledChanged: (Boolean) -> Unit,
+    onAllowLanChanged: (Boolean) -> Unit,
+    onFakeIpEnabledChanged: (Boolean) -> Unit,
     onThemeModeChanged: (ThemeMode) -> Unit = {},
     onLanguageChanged: (String) -> Unit = {},
     onScriptsChanged: () -> Unit = {},
@@ -62,17 +68,24 @@ fun SettingsScreen(
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
     val lang = LocalAppLanguage.current
+    val scope = rememberCoroutineScope()
 
     var showTunDialog by remember { mutableStateOf(false) }
     var showLogLevelDialog by remember { mutableStateOf(false) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showLanguageDialog by remember { mutableStateOf(false) }
+    var showResetDialog by remember { mutableStateOf(false) }
     var currentLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
     var currentLogLevel by remember { mutableStateOf(settingsManager.logLevel) }
-    var allowLan by remember { mutableStateOf(false) }
-    var fakeIpEnabled by remember { mutableStateOf(true) }
 
-    var scripts by remember { mutableStateOf(ScriptManager.getScripts(context)) }
+    var scripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
+    var coreVersion by remember { mutableStateOf("") }
+
+    // SharedPreferences + JSON decoding and the native version query are not composition work.
+    LaunchedEffect(Unit) {
+        scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
+        coreVersion = withContext(Dispatchers.IO) { ClashCore.getCoreVersion() }
+    }
 
     fun refreshScripts() {
         scripts = ScriptManager.getScripts(context)
@@ -217,7 +230,7 @@ fun SettingsScreen(
                 iconBg = Color(0xFFEC4899),
                 title = AppStrings.get("settings_lan_share", lang),
                 checked = allowLan,
-                onCheckedChange = { allowLan = it }
+                onCheckedChange = onAllowLanChanged
             )
             LoonDivider()
             LoonSettingsItem(
@@ -240,7 +253,7 @@ fun SettingsScreen(
                 iconBg = Color(0xFF0284C7),
                 title = AppStrings.get("settings_fakeip", lang),
                 checked = fakeIpEnabled,
-                onCheckedChange = { fakeIpEnabled = it }
+                onCheckedChange = onFakeIpEnabledChanged
             )
             LoonDivider()
             LoonSettingsItem(
@@ -280,7 +293,7 @@ fun SettingsScreen(
                 icon = Icons.Default.Info,
                 iconBg = Color(0xFF4B5563),
                 title = AppStrings.get("settings_core_version", lang),
-                value = ClashCore.getCoreVersion().ifBlank { "v1.18.x" },
+                value = coreVersion.ifBlank { "v1.18.x" },
                 showChevron = false
             )
             LoonDivider()
@@ -298,9 +311,33 @@ fun SettingsScreen(
                 title = AppStrings.get("settings_reset_core", lang),
                 value = "",
                 showChevron = true,
-                onClick = { ClashCore.reset() }
+                onClick = { showResetDialog = true }
             )
         }
+    }
+
+    // Core Reset Confirmation -- the native reset can block, so it runs off the main thread.
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title = { Text(AppStrings.get("settings_reset_core", lang)) },
+            text = { Text(AppStrings.get("settings_reset_core_confirm", lang)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetDialog = false
+                    scope.launch {
+                        withContext(Dispatchers.IO) { ClashCore.reset() }
+                    }
+                }) {
+                    Text(AppStrings.get("confirm", lang))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) {
+                    Text(AppStrings.get("cancel", lang))
+                }
+            }
+        )
     }
 
     // Theme Selection Dialog

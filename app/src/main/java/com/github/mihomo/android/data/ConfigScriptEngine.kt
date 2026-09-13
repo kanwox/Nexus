@@ -8,6 +8,7 @@ import org.yaml.snakeyaml.Yaml
 
 object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
+    private const val RHINO_TIMEOUT_MS = 5_000L
 
     fun executeScripts(
         context: Context,
@@ -185,12 +186,30 @@ object ConfigScriptEngine {
         }
     }
 
+    /**
+     * Rhino runs without any Java bridge: [org.mozilla.javascript.Context.initSafeStandardObjects]
+     * removes the `Packages`/`JavaAdapter`/`getClass` reachability that `initStandardObjects`
+     * exposes, and a denying ClassShutter is layered on top as defence in depth. Scripts are
+     * pulled from remote subscriptions, so an unrestricted bridge here is remote code execution.
+     * A ContextFactory-based instruction observer also bounds runaway scripts.
+     */
     private fun executeWithRhino(code: String, jsonStr: String, scriptName: String, gson: Gson): String? {
-        val rhinoCtx = org.mozilla.javascript.Context.enter()
-        rhinoCtx.optimizationLevel = -1
-        rhinoCtx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
-        try {
-            val scope = rhinoCtx.initStandardObjects()
+        val deadline = System.currentTimeMillis() + RHINO_TIMEOUT_MS
+        val factory = object : org.mozilla.javascript.ContextFactory() {
+            override fun observeInstructionCount(cx: org.mozilla.javascript.Context, instructionCount: Int) {
+                if (System.currentTimeMillis() > deadline) {
+                    throw org.mozilla.javascript.EvaluatorException("脚本执行超时（超过 ${RHINO_TIMEOUT_MS / 1000}s）")
+                }
+            }
+        }
+
+        return factory.call { rhinoCtx ->
+            rhinoCtx.optimizationLevel = -1
+            rhinoCtx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
+            rhinoCtx.instructionObserverThreshold = 10_000
+            rhinoCtx.setClassShutter(org.mozilla.javascript.ClassShutter { false })
+
+            val scope = rhinoCtx.initSafeStandardObjects()
             val envPolyfill = """
                 var console = {
                     log: function() {},
@@ -234,9 +253,7 @@ object ConfigScriptEngine {
                 })();
             """.trimIndent()
             val resultObj = rhinoCtx.evaluateString(scope, runnerCode, "runner.js", 1, null)
-            return if (resultObj != null) org.mozilla.javascript.Context.toString(resultObj) else null
-        } finally {
-            org.mozilla.javascript.Context.exit()
+            if (resultObj != null) org.mozilla.javascript.Context.toString(resultObj) else null
         }
     }
 

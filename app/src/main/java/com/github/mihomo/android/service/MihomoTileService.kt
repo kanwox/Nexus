@@ -53,21 +53,28 @@ class MihomoTileService : TileService() {
         when (status) {
             VpnState.Status.RUNNING -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.subtitle = "已连接"
+                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_connected"))
             }
             VpnState.Status.STARTING -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.subtitle = "连接中…"
+                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_connecting"))
             }
             VpnState.Status.STOPPING -> {
                 tile.state = Tile.STATE_INACTIVE
-                tile.subtitle = "断开中…"
+                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_disconnecting"))
             }
             VpnState.Status.STOPPED -> {
                 tile.state = Tile.STATE_INACTIVE
-                tile.subtitle = "已断开"
+                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_disconnected"))
             }
         }
         tile.updateTile()
+    }
+
+    private fun setSubtitle(tile: Tile, subtitle: String) {
+        // Tile.setSubtitle only exists from API 29 while minSdk is 26; calling it on 8.x/9 throws.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tile.subtitle = subtitle
+        }
     }
 }

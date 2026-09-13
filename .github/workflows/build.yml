@@ -26,38 +26,83 @@ jobs:
           java-version: "21"
           distribution: "temurin"
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK with Gradle
+      # detekt is configured with maxIssues: 0, so this gate is meaningful.
+      - name: Static analysis (detekt)
+        run: ./gradlew detekt --no-configuration-cache
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --no-configuration-cache
+
+      # Restores the release keystore from the repository secrets. When the secret is absent the
+      # workflow falls back to a debug build so the pipeline never produces an unsigned APK.
+      - name: Restore signing keystore
+        env:
+          RELEASE_STORE_BASE64: ${{ secrets.RELEASE_STORE_BASE64 }}
+        run: |
+          if [ -n "$RELEASE_STORE_BASE64" ]; then
+            echo "$RELEASE_STORE_BASE64" | base64 -d > "$RUNNER_TEMP/nexus-release.jks"
+            echo "RELEASE_STORE_FILE=$RUNNER_TEMP/nexus-release.jks" >> "$GITHUB_ENV"
+            echo "SIGNING_CONFIGURED=true" >> "$GITHUB_ENV"
+            echo "Release signing configured."
+          else
+            echo "SIGNING_CONFIGURED=false" >> "$GITHUB_ENV"
+            echo "::warning::RELEASE_STORE_BASE64 is not set; falling back to a debug build."
+          fi
+
+      - name: Build signed Release APK
+        if: env.SIGNING_CONFIGURED == 'true'
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Build Debug APK (fallback)
+        if: env.SIGNING_CONFIGURED != 'true'
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Prepare APK Output
         run: |
           mkdir -p build_output
-          cp app/build/outputs/apk/debug/app-debug.apk build_output/Nexus-debug.apk
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk build_output/Nexus-arm64-v8a-release.apk
+          else
+            cp app/build/outputs/apk/debug/app-debug.apk build_output/Nexus-arm64-v8a-debug.apk
+          fi
+          ls -lh build_output
 
       - name: Upload APK as Workflow Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Nexus-debug-apk
-          path: build_output/Nexus-debug.apk
+          name: Nexus-arm64-v8a-apk
+          path: build_output/*.apk
 
+      # A real version tag publishes under its own name; main keeps a rolling "latest".
       - name: Publish Automatic Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
-          tag_name: "latest"
-          name: "Nexus Latest Auto Build"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Nexus Latest Auto Build' }}
           body: |
             ### Nexus Automated Cloud Build
             - Core: Mihomo ARM64 (libclash.so & libbridge.so)
-            - APK: Download `Nexus-debug.apk` below directly to install on your Android device.
+            - ABI: arm64-v8a only
+            - APK: download below and install directly on a 64-bit ARM Android device.
           draft: false
           prerelease: false
-          files: build_output/Nexus-debug.apk
+          files: build_output/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

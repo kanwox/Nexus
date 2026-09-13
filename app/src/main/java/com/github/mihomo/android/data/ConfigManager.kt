@@ -40,6 +40,17 @@ object ConfigManager {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    /** Top-level config keys that only the injected runtime header may set. */
+    private val PROTECTED_TOP_LEVEL_KEYS = setOf(
+        "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
+        "redir-port", "tproxy-port", "allow-lan", "bind-address",
+        "external-controller", "external-controller-cors", "secret",
+        "authentication", "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
+        "external-ui", "external-ui-name", "external-ui-url",
+        "tun", "dns", "interface-name", "routing-mark",
+        "geodata-mode", "geo-auto-update", "geox-url"
+    )
+
     fun parseSubscriptionUserInfo(header: String?): SubscriptionUserInfo? {
         if (header.isNullOrBlank()) return null
         var upload = 0L
@@ -150,39 +161,41 @@ object ConfigManager {
         name: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
         runCatching {
+            requireSecureRemoteUrl(url)
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                error("HTTP 错误: ${response.code} ${response.message}")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("HTTP 错误: ${response.code} ${response.message}")
+                }
+
+                val userInfo = parseSubscriptionUserInfo(
+                    response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
+                )
+
+                val body = response.body?.string() ?: error("响应内容为空")
+                val id = java.util.UUID.randomUUID().toString()
+                val file = getProfilesDir(context).resolve("$id.yaml")
+                file.writeText(body)
+
+                val resolvedName = extractProfileName(name, response, body, url)
+                val item = ProfileItem(
+                    id = id,
+                    name = resolvedName,
+                    url = url,
+                    file = file,
+                    lastUpdated = System.currentTimeMillis(),
+                    uploadBytes = userInfo?.upload ?: 0L,
+                    downloadBytes = userInfo?.download ?: 0L,
+                    totalBytes = userInfo?.total ?: 0L,
+                    expireTimestamp = userInfo?.expire ?: 0L
+                )
+                saveProfileMetadata(context, item)
+                item
             }
-
-            val userInfo = parseSubscriptionUserInfo(
-                response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
-            )
-
-            val body = response.body?.string() ?: error("响应内容为空")
-            val id = System.currentTimeMillis().toString()
-            val file = getProfilesDir(context).resolve("$id.yaml")
-            file.writeText(body)
-
-            val resolvedName = extractProfileName(name, response, body, url)
-            val item = ProfileItem(
-                id = id,
-                name = resolvedName,
-                url = url,
-                file = file,
-                lastUpdated = System.currentTimeMillis(),
-                uploadBytes = userInfo?.upload ?: 0L,
-                downloadBytes = userInfo?.download ?: 0L,
-                totalBytes = userInfo?.total ?: 0L,
-                expireTimestamp = userInfo?.expire ?: 0L
-            )
-            saveProfileMetadata(context, item)
-            item
         }
     }
 
@@ -193,44 +206,46 @@ object ConfigManager {
         url: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
         runCatching {
+            requireSecureRemoteUrl(url)
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                error("HTTP 错误: ${response.code} ${response.message}")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("HTTP 错误: ${response.code} ${response.message}")
+                }
+
+                val userInfo = parseSubscriptionUserInfo(
+                    response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
+                )
+
+                val body = response.body?.string() ?: error("响应内容为空")
+                // Overwrite the EXISTING file without creating a duplicate ID!
+                val file = getProfilesDir(context).resolve("$id.yaml")
+                file.writeText(body)
+
+                val existing = getProfiles(context).find { it.id == id }
+                val item = ProfileItem(
+                    id = id,
+                    name = name,
+                    url = url,
+                    file = file,
+                    lastUpdated = System.currentTimeMillis(),
+                    scriptEnabled = existing?.scriptEnabled ?: false,
+                    scriptIds = existing?.scriptIds ?: emptyList(),
+                    autoUpdate = existing?.autoUpdate ?: false,
+                    autoUpdateInterval = existing?.autoUpdateInterval ?: 1440,
+                    uploadBytes = userInfo?.upload ?: (existing?.uploadBytes ?: 0L),
+                    downloadBytes = userInfo?.download ?: (existing?.downloadBytes ?: 0L),
+                    totalBytes = userInfo?.total ?: (existing?.totalBytes ?: 0L),
+                    expireTimestamp = userInfo?.expire ?: (existing?.expireTimestamp ?: 0L)
+                )
+                saveProfileMetadata(context, item)
+                Log.i(TAG, "Successfully overwritten existing profile id=$id ($name)")
+                item
             }
-
-            val userInfo = parseSubscriptionUserInfo(
-                response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
-            )
-
-            val body = response.body?.string() ?: error("响应内容为空")
-            // Overwrite the EXISTING file without creating a duplicate ID!
-            val file = getProfilesDir(context).resolve("$id.yaml")
-            file.writeText(body)
-
-            val existing = getProfiles(context).find { it.id == id }
-            val item = ProfileItem(
-                id = id,
-                name = name,
-                url = url,
-                file = file,
-                lastUpdated = System.currentTimeMillis(),
-                scriptEnabled = existing?.scriptEnabled ?: false,
-                scriptIds = existing?.scriptIds ?: emptyList(),
-                autoUpdate = existing?.autoUpdate ?: false,
-                autoUpdateInterval = existing?.autoUpdateInterval ?: 1440,
-                uploadBytes = userInfo?.upload ?: (existing?.uploadBytes ?: 0L),
-                downloadBytes = userInfo?.download ?: (existing?.downloadBytes ?: 0L),
-                totalBytes = userInfo?.total ?: (existing?.totalBytes ?: 0L),
-                expireTimestamp = userInfo?.expire ?: (existing?.expireTimestamp ?: 0L)
-            )
-            saveProfileMetadata(context, item)
-            Log.i(TAG, "Successfully overwritten existing profile id=$id ($name)")
-            item
         }
     }
 
@@ -372,23 +387,45 @@ object ConfigManager {
         invalidateProfilesCache()
     }
 
-    private fun sanitizeUserConfig(raw: String): String {
+    /**
+     * Runtime-critical top-level keys belong to the injected header. A subscription must not be
+     * able to reintroduce or override them, so they are removed structurally after parsing: text
+     * matching is trivially defeated by quoting a key (`"external-controller": 0.0.0.0:9090`).
+     */
+    internal fun sanitizeUserConfig(raw: String): String {
+        return try {
+            val yaml = org.yaml.snakeyaml.Yaml(org.yaml.snakeyaml.DumperOptions().apply {
+                defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
+                isPrettyFlow = true
+                indent = 2
+            })
+            val parsed = yaml.load<Any?>(raw)
+            if (parsed !is Map<*, *>) return raw
+
+            val sanitized = LinkedHashMap<String, Any?>()
+            for ((key, value) in parsed) {
+                val keyStr = key?.toString() ?: continue
+                if (keyStr.lowercase() in PROTECTED_TOP_LEVEL_KEYS) continue
+                sanitized[keyStr] = value
+            }
+            yaml.dump(sanitized)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Structural config sanitization failed, falling back to text filter", e)
+            sanitizeUserConfigByText(raw)
+        }
+    }
+
+    /** Last-resort filter for configs that are not valid YAML on their own. */
+    private fun sanitizeUserConfigByText(raw: String): String {
         val builder = StringBuilder()
         var skipBlock = false
-        val skipTopKeys = setOf(
-            "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
-            "redir-port", "tproxy-port", "allow-lan", "bind-address",
-            "external-controller", "secret", "tun", "dns"
-        )
-
         raw.lineSequence().forEach { line ->
-            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") && !line.startsWith("#") && !line.startsWith("-") && line.contains(":")
-
+            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") &&
+                !line.startsWith("#") && !line.startsWith("-") && line.contains(":")
             if (isTopLevel) {
-                val key = line.substringBefore(":").trim()
-                skipBlock = skipTopKeys.contains(key)
+                val key = line.substringBefore(":").trim().trim('"', '\'')
+                skipBlock = key.lowercase() in PROTECTED_TOP_LEVEL_KEYS
             }
-
             if (!skipBlock) {
                 builder.appendLine(line)
             }
@@ -406,9 +443,7 @@ object ConfigManager {
             log-level: ${settings.logLevel}
             ipv6: false
             mixed-port: 7890
-            allow-lan: false
-            external-controller: 127.0.0.1:9090
-            secret: ""
+            allow-lan: ${settings.allowLan}
             geodata-mode: false
             geo-auto-update: false
             geox-url:
@@ -419,7 +454,7 @@ object ConfigManager {
               enable: true
               listen: 127.0.0.1:1053
               ipv6: false
-              enhanced-mode: fake-ip
+              enhanced-mode: ${if (settings.fakeIpEnabled) "fake-ip" else "redir-host"}
               fake-ip-range: 198.18.0.1/16
               default-nameserver:
                 - 223.5.5.5
@@ -469,7 +504,7 @@ object ConfigManager {
             val defaultBody = """
                 port: 7890
                 socks-port: 7891
-                allow-lan: false
+                allow-lan: ${settings.allowLan}
                 proxies: []
                 proxy-groups:
                   - name: GLOBAL

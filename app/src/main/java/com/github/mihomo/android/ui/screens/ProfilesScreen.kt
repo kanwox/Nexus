@@ -36,6 +36,8 @@ import androidx.compose.ui.zIndex
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.data.ScriptManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -777,8 +779,13 @@ fun ProfilesScreen(
     // 4. Online YAML Editor Dialog
     if (onlineEditorProfile != null) {
         val target = onlineEditorProfile!!
-        var yamlText by remember(target) {
-            mutableStateOf(runCatching { target.file.readText() }.getOrDefault(""))
+        var yamlText by remember(target) { mutableStateOf("") }
+
+        // The profile file can be large; never read it synchronously during composition.
+        LaunchedEffect(target) {
+            yamlText = withContext(Dispatchers.IO) {
+                runCatching { target.file.readText() }.getOrDefault("")
+            }
         }
 
         Dialog(onDismissRequest = { onlineEditorProfile = null }) {

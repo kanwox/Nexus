@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.InstalledApp
 import com.github.mihomo.android.data.PerAppProxyMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.github.mihomo.android.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,6 +41,7 @@ fun AppRoutingScreen(
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showSystemApps by remember { mutableStateOf(false) }
+    val lang = LocalAppLanguage.current
 
     Column(
         modifier = Modifier
@@ -57,12 +60,12 @@ fun AppRoutingScreen(
         ) {
             if (onBack != null) {
                 IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = LoonTextPrimary)
+                    Icon(Icons.Default.ArrowBack, contentDescription = AppStrings.get("back", lang), tint = LoonTextPrimary)
                 }
                 Spacer(modifier = Modifier.width(6.dp))
             }
             Text(
-                text = "分应用代理",
+                text = AppStrings.get("app_routing_title", lang),
                 color = LoonTextPrimary,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
@@ -78,9 +81,9 @@ fun AppRoutingScreen(
         ) {
             Row(modifier = Modifier.padding(4.dp)) {
                 val modes = listOf(
-                    PerAppProxyMode.DISABLED to "关闭",
-                    PerAppProxyMode.WHITELIST to "仅代理选中",
-                    PerAppProxyMode.BLACKLIST to "绕过选中"
+                    PerAppProxyMode.DISABLED to AppStrings.get("per_app_disabled", lang),
+                    PerAppProxyMode.WHITELIST to AppStrings.get("per_app_whitelist", lang),
+                    PerAppProxyMode.BLACKLIST to AppStrings.get("per_app_blacklist", lang)
                 )
                 modes.forEach { (mode, label) ->
                     val isSelected = currentMode == mode
@@ -114,7 +117,7 @@ fun AppRoutingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 8.dp),
-                placeholder = { Text("搜索应用名称或包名…", color = LoonTextMuted, fontSize = 13.sp) },
+                placeholder = { Text(AppStrings.get("app_search_placeholder", lang), color = LoonTextMuted, fontSize = 13.sp) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = LoonTextSecondary, modifier = Modifier.size(18.dp)) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = LoonCard,
@@ -137,14 +140,14 @@ fun AppRoutingScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "已选 ${selectedPackages.size} 个应用",
+                    text = AppStrings.get("app_selected_count", lang).replace("{n}", selectedPackages.size.toString()),
                     color = LoonTextSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "显示系统应用",
+                        text = AppStrings.get("app_show_system", lang),
                         color = LoonTextSecondary,
                         fontSize = 12.sp
                     )
@@ -190,7 +193,7 @@ fun AppRoutingScreen(
                     if (checkedApps.isNotEmpty()) {
                         item(key = "hdr_checked") {
                             Text(
-                                text = "已代理应用 (${checkedApps.size})",
+                                text = AppStrings.get("app_proxied_section", lang).replace("{n}", checkedApps.size.toString()),
                                 color = LoonBlue,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
@@ -214,7 +217,7 @@ fun AppRoutingScreen(
                         if (checkedApps.isNotEmpty()) {
                             item(key = "hdr_other") {
                                 Text(
-                                    text = "未代理应用 (${unselectedApps.size})",
+                                    text = AppStrings.get("app_unproxied_section", lang).replace("{n}", unselectedApps.size.toString()),
                                     color = LoonTextSecondary,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
@@ -237,7 +240,7 @@ fun AppRoutingScreen(
                                     .padding(vertical = 40.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("没有找到匹配的应用", color = LoonTextMuted, fontSize = 13.sp)
+                                Text(AppStrings.get("app_no_match", lang), color = LoonTextMuted, fontSize = 13.sp)
                             }
                         }
                     }
@@ -251,7 +254,7 @@ fun AppRoutingScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "分应用代理已关闭\n所有应用网络均经由 Mihomo 规则分流",
+                    text = AppStrings.get("app_routing_disabled_hint", lang),
                     color = LoonTextSecondary,
                     fontSize = 14.sp,
                     lineHeight = 22.sp,
@@ -286,25 +289,32 @@ private fun AppItemRow(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                val bitmap = remember(app.packageName, app.icon) {
-                    iconBitmapCache.get(app.packageName) ?: run {
-                        app.icon?.let { d ->
-                            val w = d.intrinsicWidth.coerceAtLeast(48)
-                            val h = d.intrinsicHeight.coerceAtLeast(48)
-                            val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-                            val canvas = android.graphics.Canvas(bmp)
-                            d.setBounds(0, 0, canvas.width, canvas.height)
-                            d.draw(canvas)
-                            val imgBmp = bmp.asImageBitmap()
-                            iconBitmapCache.put(app.packageName, imgBmp)
-                            imgBmp
+                // Drawing the launcher icon allocates a bitmap; doing it in a `remember` initializer
+                // would run that work on the composition thread for every row.
+                val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+                    initialValue = iconBitmapCache.get(app.packageName),
+                    key1 = app.packageName,
+                    key2 = app.icon
+                ) {
+                    if (value == null) {
+                        value = withContext(Dispatchers.Default) {
+                            iconBitmapCache.get(app.packageName) ?: app.icon?.let { d ->
+                                val w = d.intrinsicWidth.coerceAtLeast(48)
+                                val h = d.intrinsicHeight.coerceAtLeast(48)
+                                val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                                val canvas = android.graphics.Canvas(bmp)
+                                d.setBounds(0, 0, canvas.width, canvas.height)
+                                d.draw(canvas)
+                                bmp.asImageBitmap().also { iconBitmapCache.put(app.packageName, it) }
+                            }
                         }
                     }
                 }
 
-                if (bitmap != null) {
+                val iconBitmap = bitmap
+                if (iconBitmap != null) {
                     androidx.compose.foundation.Image(
-                        bitmap = bitmap,
+                        bitmap = iconBitmap,
                         contentDescription = app.label,
                         modifier = Modifier
                             .size(38.dp)

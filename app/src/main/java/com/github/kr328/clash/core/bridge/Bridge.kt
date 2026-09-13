@@ -27,6 +27,8 @@ object Bridge {
             }
             System.loadLibrary("bridge")
 
+            // Deliberately keep an open fd to the APK: the native core locates the package through
+            // /proc/self/fd during nativeInit. Removing this broke native startup.
             try {
                 ParcelFileDescriptor.open(File(context.packageCodePath), ParcelFileDescriptor.MODE_READ_ONLY)
                     .detachFd()

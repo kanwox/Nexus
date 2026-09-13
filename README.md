@@ -57,3 +57,55 @@
 编译生成的 APK 位于：
 `app/build/outputs/apk/debug/app-debug.apk`
 
+### Release 签名
+
+签名材料**不进入版本库**。release 构建从 `local.properties`（已被 gitignore）或环境变量读取：
+
+| local.properties 键 | 环境变量 |
+| --- | --- |
+| `releaseStoreFile` | `RELEASE_STORE_FILE` |
+| `releaseStorePassword` | `RELEASE_STORE_PASSWORD` |
+| `releaseKeyAlias` | `RELEASE_KEY_ALIAS` |
+| `releaseKeyPassword` | `RELEASE_KEY_PASSWORD` |
+
+未提供时 release 任务会打印警告并产出未签名 APK。`debug` 构建使用 Android 自动调试签名。
+
+### 在 GitHub Actions 中启用正式签名
+
+CI 从仓库 Secrets 读取签名材料。在仓库 `Settings → Secrets and variables → Actions` 添加：
+
+| Secret 名称 | 内容 |
+| --- | --- |
+| `RELEASE_STORE_BASE64` | 签名库文件（`.jks`）的 Base64 文本 |
+| `RELEASE_STORE_PASSWORD` | 签名库口令 |
+| `RELEASE_KEY_ALIAS` | 密钥别名 |
+| `RELEASE_KEY_PASSWORD` | 密钥口令 |
+
+生成 Base64（PowerShell，直接复制到剪贴板）：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("路径\nexus-release.jks")) | Set-Clipboard
+```
+
+配置齐全后，CI 会用 `assembleRelease` 打出**已签名的正式版**并发布；缺少 `RELEASE_STORE_BASE64` 时自动退回 debug 构建，不会产出装不上的未签名包。只要每次都用同一把密钥签名，新包即可覆盖安装旧包。
+
+### 常用校验命令
+
+```bash
+./gradlew detekt              # 静态检查（maxIssues = 0，失败即阻断）
+./gradlew testDebugUnitTest   # JVM 单元测试
+./gradlew assembleRelease     # 已签名的正式版
+```
+
+> R8 混淆与资源裁剪当前**关闭**（`isMinifyEnabled = false`）。相关 keep 规则已备在
+> `proguard-rules.pro`，待真机验证后再启用，避免混淆引入的启动期问题。
+
+---
+
+## ⚠️ 已知限制
+
+- **仅支持 arm64-v8a**：仓库只包含该架构的预编译内核（`libclash.so` / `libbridge.so`），armeabi-v7a 与 x86_64 设备无法安装。
+- **明文 HTTP 默认禁止**：`network_security_config` 全局关闭 cleartext，仅放行 `127.0.0.1` / `localhost`。订阅与脚本地址必须使用 `https://`。
+- **`QUERY_ALL_PACKAGES`**：分应用代理需要枚举已安装应用；若上架 Google Play，需按政策提交使用声明。
+
+

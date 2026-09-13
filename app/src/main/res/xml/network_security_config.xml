@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Cleartext HTTP is disabled globally; subscriptions and config fetches must use HTTPS. -->
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- The loopback exception is kept for local tooling only. -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
     </domain-config>
-    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

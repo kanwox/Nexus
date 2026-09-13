@@ -23,6 +23,12 @@ app/build/
 # Local configuration file (sdk path, etc)
 local.properties
 
+# Signing material and secrets -- never commit these
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
 # Log Files
 *.log
 
@@ -38,3 +44,6 @@ Thumbs.db
 
 # Scratch files
 old_canvas.txt
+
+# Tooling scratch
+.zcode/

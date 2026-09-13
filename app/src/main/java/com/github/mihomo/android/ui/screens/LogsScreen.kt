@@ -41,6 +41,7 @@ fun LogsScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val lang = LocalAppLanguage.current
     val clipboardManager = LocalClipboardManager.current
     val logs by LogRepository.logsFlow.collectAsState()
     var selectedLevel by remember { mutableStateOf("ALL") }
@@ -79,20 +80,20 @@ fun LogsScreen(
                 IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "返回",
+                        contentDescription = AppStrings.get("back", lang),
                         tint = LoonTextPrimary
                     )
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = "核心实时日志",
+                        text = AppStrings.get("logs_title", lang),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         color = LoonTextPrimary
                     )
                     Text(
-                        text = "共 ${filteredLogs.size} 条记录",
+                        text = AppStrings.get("logs_count", lang).replace("{n}", filteredLogs.size.toString()),
                         fontSize = 12.sp,
                         color = LoonTextSecondary
                     )
@@ -106,13 +107,13 @@ fun LogsScreen(
                             "[${timeFormat.format(Date(it.timestamp))}] [${it.level.uppercase()}] ${it.message}"
                         }
                         clipboardManager.setText(AnnotatedString(text))
-                        Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, AppStrings.get("logs_copied", lang), Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "复制日志",
+                        contentDescription = AppStrings.get("logs_copy", lang),
                         tint = LoonTextSecondary
                     )
                 }
@@ -126,13 +127,13 @@ fun LogsScreen(
                             type = "text/plain"
                             putExtra(Intent.EXTRA_TEXT, text)
                         }
-                        context.startActivity(Intent.createChooser(intent, "导出日志"))
+                        context.startActivity(Intent.createChooser(intent, AppStrings.get("logs_export", lang)))
                     },
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Share,
-                        contentDescription = "导出日志",
+                        contentDescription = AppStrings.get("logs_export", lang),
                         tint = LoonTextSecondary
                     )
                 }
@@ -143,7 +144,7 @@ fun LogsScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
-                        contentDescription = "清空日志",
+                        contentDescription = AppStrings.get("logs_clear", lang),
                         tint = LoonTextSecondary
                     )
                 }
@@ -157,7 +158,13 @@ fun LogsScreen(
                 .padding(bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("ALL" to "全部", "INFO" to "信息", "WARNING" to "警告", "ERROR" to "错误", "DEBUG" to "调试").forEach { (lvl, title) ->
+            listOf(
+                "ALL" to AppStrings.get("log_level_all", lang),
+                "INFO" to AppStrings.get("log_level_info", lang),
+                "WARNING" to AppStrings.get("log_level_warning", lang),
+                "ERROR" to AppStrings.get("log_level_error", lang),
+                "DEBUG" to AppStrings.get("log_level_debug", lang)
+            ).forEach { (lvl, title) ->
                 val isSelected = selectedLevel == lvl
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -193,7 +200,7 @@ fun LogsScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "暂无日志输出\n连接 VPN 后，Mihomo 内核实时输出将显示在此处",
+                        text = AppStrings.get("logs_empty", lang),
                         color = Color(0xFFA6ADC8),
                         fontSize = 13.sp,
                         lineHeight = 20.sp,

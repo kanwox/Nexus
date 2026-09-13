@@ -58,6 +58,8 @@ object ScriptManager {
     private fun saveScripts(context: Context, list: List<ScriptItem>) {
         val raw = json.encodeToString(list)
         getScriptsPrefs(context).edit().putString("script_items", raw).apply()
+        // Script content changes the parsed profile, whose cache key does not include it.
+        ProfileParser.clearCache()
     }
 
     suspend fun downloadScript(
@@ -68,38 +70,40 @@ object ScriptManager {
         type: String
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
+            requireSecureRemoteUrl(url)
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                error("HTTP 错误: ${response.code} ${response.message}")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("HTTP 错误: ${response.code} ${response.message}")
+                }
+
+                val body = response.body?.string() ?: error("脚本内容为空")
+                val id = java.util.UUID.randomUUID().toString()
+                val fileName = "$id.js"
+                val file = getScriptsDir(context).resolve(fileName)
+                file.writeText(body)
+
+                val item = ScriptItem(
+                    id = id,
+                    name = name.ifBlank { url.substringAfterLast("/").substringBefore("?") },
+                    url = url,
+                    pattern = pattern,
+                    type = type,
+                    scriptFile = fileName,
+                    enabled = true,
+                    updatedAt = System.currentTimeMillis()
+                )
+
+                val current = getScripts(context).toMutableList()
+                current.add(0, item)
+                saveScripts(context, current)
+                Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
+                item
             }
-
-            val body = response.body?.string() ?: error("脚本内容为空")
-            val id = System.currentTimeMillis().toString()
-            val fileName = "$id.js"
-            val file = getScriptsDir(context).resolve(fileName)
-            file.writeText(body)
-
-            val item = ScriptItem(
-                id = id,
-                name = name.ifBlank { url.substringAfterLast("/").substringBefore("?") },
-                url = url,
-                pattern = pattern,
-                type = type,
-                scriptFile = fileName,
-                enabled = true,
-                updatedAt = System.currentTimeMillis()
-            )
-
-            val current = getScripts(context).toMutableList()
-            current.add(0, item)
-            saveScripts(context, current)
-            Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
-            item
         }
     }
 
@@ -110,7 +114,7 @@ object ScriptManager {
         type: String,
         code: String
     ): ScriptItem {
-        val id = System.currentTimeMillis().toString()
+        val id = java.util.UUID.randomUUID().toString()
         val fileName = "$id.js"
         val file = getScriptsDir(context).resolve(fileName)
         file.writeText(code)
@@ -151,25 +155,27 @@ object ScriptManager {
     suspend fun updateScriptFromRemote(context: Context, script: ScriptItem): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
             if (script.url.isBlank()) error("无远程更新链接")
+            requireSecureRemoteUrl(script.url)
             val request = Request.Builder()
                 .url(script.url)
                 .header("User-Agent", "Mozilla/5.0")
                 .build()
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) error("更新失败 HTTP ${response.code}")
-            val body = response.body?.string() ?: error("响应内容为空")
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("更新失败 HTTP ${response.code}")
+                val body = response.body?.string() ?: error("响应内容为空")
 
-            val file = getScriptsDir(context).resolve(script.scriptFile)
-            file.writeText(body)
+                val file = getScriptsDir(context).resolve(script.scriptFile)
+                file.writeText(body)
 
-            val updated = script.copy(updatedAt = System.currentTimeMillis())
-            val current = getScripts(context).toMutableList()
-            val idx = current.indexOfFirst { it.id == script.id }
-            if (idx >= 0) {
-                current[idx] = updated
-                saveScripts(context, current)
+                val updated = script.copy(updatedAt = System.currentTimeMillis())
+                val current = getScripts(context).toMutableList()
+                val idx = current.indexOfFirst { it.id == script.id }
+                if (idx >= 0) {
+                    current[idx] = updated
+                    saveScripts(context, current)
+                }
+                updated
             }
-            updated
         }
     }
 
@@ -204,6 +210,7 @@ object ScriptManager {
     private fun saveRewrites(context: Context, list: List<RewriteRule>) {
         val raw = json.encodeToString(list)
         getScriptsPrefs(context).edit().putString("rewrite_rules", raw).apply()
+        ProfileParser.clearCache()
     }
 
     fun saveRewrite(context: Context, rule: RewriteRule) {

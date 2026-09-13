@@ -22,7 +22,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
+import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.github.mihomo.android.ui.theme.*
 
 @Composable
@@ -33,7 +36,12 @@ fun ProfileOverrideScreen(
     onProfileUpdated: (ProfileItem) -> Unit
 ) {
     val context = LocalContext.current
-    val allScripts = remember { ScriptManager.getScripts(context) }
+    val lang = LocalAppLanguage.current
+    var allScripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
+
+    LaunchedEffect(Unit) {
+        allScripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
+    }
     var scriptEnabled by remember(profile) { mutableStateOf(profile.scriptEnabled) }
     val selectedScriptIds = remember(profile) { profile.scriptIds.toMutableStateList() }
 
@@ -58,12 +66,12 @@ fun ProfileOverrideScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.ArrowBack,
-                    contentDescription = "返回",
+                    contentDescription = AppStrings.get("back", lang),
                     tint = LoonTextPrimary
                 )
             }
             Text(
-                text = "配置覆写",
+                text = AppStrings.get("profile_override_title", lang),
                 color = LoonTextPrimary,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
@@ -94,7 +102,8 @@ fun ProfileOverrideScreen(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (profile.url != null) "远程订阅配置" else "本地配置文件",
+                            text = if (profile.url != null) AppStrings.get("override_remote", lang)
+                            else AppStrings.get("override_local", lang),
                             fontSize = 12.sp,
                             color = LoonTextSecondary
                         )
@@ -108,7 +117,7 @@ fun ProfileOverrideScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "开启后，此配置将由选中的脚本进行动态规则与策略组复写。",
+                    text = AppStrings.get("override_desc", lang),
                     fontSize = 11.5.sp,
                     color = LoonTextMuted,
                     lineHeight = 16.sp
@@ -153,13 +162,13 @@ fun ProfileOverrideScreen(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "前往脚本管理",
+                            text = AppStrings.get("override_go_scripts", lang),
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.5.sp,
                             color = LoonTextPrimary
                         )
                         Text(
-                            text = "导入、新建或编辑脚本代码",
+                            text = AppStrings.get("override_scripts_hint", lang),
                             fontSize = 11.sp,
                             color = LoonTextMuted
                         )
@@ -178,7 +187,7 @@ fun ProfileOverrideScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "选择要绑定的脚本",
+            text = AppStrings.get("override_select_scripts", lang),
             fontWeight = FontWeight.Bold,
             fontSize = 14.sp,
             color = LoonTextPrimary,
@@ -206,7 +215,7 @@ fun ProfileOverrideScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "当前尚无任何脚本\n请点击上方“前往脚本管理”导入脚本",
+                            text = AppStrings.get("override_no_scripts", lang),
                             color = LoonTextSecondary,
                             fontSize = 13.sp,
                             lineHeight = 20.sp,
@@ -298,7 +307,7 @@ fun ProfileOverrideScreen(
                 )
                 ConfigManager.updateProfile(context, updated)
                 onProfileUpdated(updated)
-                Toast.makeText(context, "配置覆写已保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, AppStrings.get("override_saved", lang), Toast.LENGTH_SHORT).show()
                 onBack()
             },
             colors = ButtonDefaults.buttonColors(containerColor = LoonBlue, contentColor = Color.White),
@@ -307,7 +316,7 @@ fun ProfileOverrideScreen(
                 .fillMaxWidth()
                 .height(50.dp)
         ) {
-            Text("保存覆写设置", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(AppStrings.get("override_save", lang), fontWeight = FontWeight.Bold, fontSize = 15.sp)
         }
     }
 }

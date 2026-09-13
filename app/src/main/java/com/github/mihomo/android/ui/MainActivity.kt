@@ -15,6 +15,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -36,6 +38,7 @@ import com.github.mihomo.android.ui.screens.*
 import com.github.mihomo.android.ui.theme.LoonBg
 import com.github.mihomo.android.ui.theme.MihomoTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
@@ -51,6 +54,12 @@ enum class SubScreen {
     SCRIPTS,
     PROFILE_OVERRIDE
 }
+
+/** Persists the current sub-screen across configuration changes. */
+private val subScreenSaver: Saver<SubScreen?, String> = Saver(
+    save = { it?.name },
+    restore = { name -> runCatching { SubScreen.valueOf(name) }.getOrNull() }
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -114,16 +123,33 @@ class MainActivity : ComponentActivity() {
         onThemeModeChanged: (ThemeMode) -> Unit
     ) {
         // Primary Tabs: 0: 仪表, 1: 策略, 2: 配置
-        var currentTab by remember { mutableStateOf(0) }
-        var currentSubScreen by remember { mutableStateOf<SubScreen?>(null) }
+        var currentTab by rememberSaveable { mutableStateOf(0) }
+        var currentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
+            mutableStateOf<SubScreen?>(null)
+        }
+        var overrideTargetProfileId by rememberSaveable { mutableStateOf<String?>(null) }
         var overrideTargetProfile by remember { mutableStateOf<ProfileItem?>(null) }
 
         val vpnState by MihomoVpnService.vpnState.collectAsState()
 
-        var profiles by remember { mutableStateOf(ConfigManager.getProfiles(this@MainActivity)) }
+        var profiles by remember { mutableStateOf(emptyList<ProfileItem>()) }
         var selectedProfileId by remember { mutableStateOf(settingsManager.selectedProfileId) }
         var tunnelMode by remember { mutableStateOf(TunnelMode.fromString(settingsManager.tunnelMode)) }
         var appLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
+
+        // Listing the profile directory touches the disk, so it is not composition work.
+        LaunchedEffect(Unit) {
+            profiles = withContext(Dispatchers.IO) { ConfigManager.getProfiles(this@MainActivity) }
+        }
+
+        // Re-resolve the override target after rotation, when only its id could be restored.
+        LaunchedEffect(overrideTargetProfileId, profiles) {
+            if (overrideTargetProfileId == null) {
+                overrideTargetProfile = null
+            } else if (overrideTargetProfile?.id != overrideTargetProfileId) {
+                overrideTargetProfile = profiles.find { it.id == overrideTargetProfileId }
+            }
+        }
 
         var parsedProfile by remember { mutableStateOf(ParsedProfile()) }
         var proxyGroups by remember { mutableStateOf(listOf<String>()) }
@@ -156,6 +182,8 @@ class MainActivity : ComponentActivity() {
 
         var tunStack by remember { mutableStateOf(settingsManager.tunStack) }
         var bootOnStartup by remember { mutableStateOf(settingsManager.bootOnStartup) }
+        var allowLan by remember { mutableStateOf(settingsManager.allowLan) }
+        var fakeIpEnabled by remember { mutableStateOf(settingsManager.fakeIpEnabled) }
         val settingsScrollState = rememberScrollState()
         val dashboardScrollState = rememberScrollState()
         var testingNodes by remember { mutableStateOf(setOf<String>()) }
@@ -306,8 +334,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false) {
-            lifecycleScope.launch(Dispatchers.IO) {
+        fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false): Job {
+            return lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     if (!ClashCore.isCoreLoaded) {
                         ClashCore.ensureCoreLoaded(this@MainActivity)
@@ -464,7 +492,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val lastAutoTestTimes = remember { mutableMapOf<String, Long>() }
-        var isAutoTestingInProgress by remember { mutableStateOf(false) }
+        var autoTestJob by remember { mutableStateOf<Job?>(null) }
 
         fun isAutoStrategyGroupType(type: String): Boolean {
             val norm = type.lowercase().replace("-", "").replace("_", "").trim()
@@ -472,10 +500,10 @@ class MainActivity : ComponentActivity() {
         }
 
         fun triggerAutoSpeedTest() {
-            if (isAutoTestingInProgress) return
-            lifecycleScope.launch(Dispatchers.IO) {
-                if (isAutoTestingInProgress) return@launch
-                isAutoTestingInProgress = true
+            // Checked and set on the main thread; every caller (LaunchedEffect, ON_RESUME) runs
+            // there, so two triggers cannot both start a sweep.
+            if (autoTestJob?.isActive == true) return
+            autoTestJob = lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     if (!ClashCore.isCoreLoaded) {
                         ClashCore.ensureCoreLoaded(this@MainActivity)
@@ -501,11 +529,14 @@ class MainActivity : ComponentActivity() {
 
                     for (g in groupsToTest) {
                         lastAutoTestTimes[g] = System.currentTimeMillis()
-                        runSpeedTestForGroup(g, isAutoTest = true)
+                        // Await each group so the sweep cannot overlap itself or finish early.
+                        runSpeedTestForGroup(g, isAutoTest = true).join()
                         delay(200L)
                     }
-                } finally {
-                    isAutoTestingInProgress = false
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    android.util.Log.w("MainActivity", "Auto speed test failed", e)
                 }
             }
         }
@@ -533,7 +564,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        LaunchedEffect(selectedProfileId) {
+        // Re-parse once the profile list finishes loading, otherwise the first run (when the list
+        // starts empty) would parse nothing and show no nodes.
+        LaunchedEffect(selectedProfileId, profiles) {
             parseActiveProfile()
         }
 
@@ -548,17 +581,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Load apps when entering App Routing screen (delayed so transition completes smoothly)
+        // Load apps when entering App Routing screen (delayed so the transition completes smoothly)
         LaunchedEffect(currentSubScreen) {
             if (currentSubScreen == SubScreen.APP_ROUTING && installedApps.isEmpty()) {
                 isAppsLoading = true
-                lifecycleScope.launch(Dispatchers.IO) {
+                try {
                     delay(300L)
-                    val list = AppInfoManager.getInstalledApps(this@MainActivity)
-                    withContext(Dispatchers.Main) {
-                        installedApps = list
-                        isAppsLoading = false
+                    // Child of the effect, so leaving the screen cancels the load instead of leaking it.
+                    installedApps = withContext(Dispatchers.IO) {
+                        AppInfoManager.getInstalledApps(this@MainActivity)
                     }
+                } finally {
+                    isAppsLoading = false
                 }
             }
         }
@@ -695,6 +729,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onNavigateToOverride = { profile ->
                                 overrideTargetProfile = profile
+                                overrideTargetProfileId = profile.id
                                 currentSubScreen = SubScreen.PROFILE_OVERRIDE
                             }
                         )
@@ -708,6 +743,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToScripts = { currentSubScreen = SubScreen.SCRIPTS },
                                 onProfileUpdated = { updated ->
                                     overrideTargetProfile = updated
+                                    overrideTargetProfileId = updated.id
                                     reloadProfiles()
                                     parseActiveProfile()
                                 }
@@ -869,6 +905,8 @@ class MainActivity : ComponentActivity() {
                                 tunStack = tunStack,
                                 bootOnStartup = bootOnStartup,
                                 scriptingEnabled = scriptingEnabled,
+                                allowLan = allowLan,
+                                fakeIpEnabled = fakeIpEnabled,
                                 themeMode = currentThemeMode,
                                 onTunStackChanged = { stack ->
                                     tunStack = stack
@@ -883,6 +921,14 @@ class MainActivity : ComponentActivity() {
                                     settingsManager.scriptingEnabled = enabled
                                     parseActiveProfile()
                                 },
+                                onAllowLanChanged = { enabled ->
+                                    allowLan = enabled
+                                    settingsManager.allowLan = enabled
+                                },
+                                onFakeIpEnabledChanged = { enabled ->
+                                    fakeIpEnabled = enabled
+                                    settingsManager.fakeIpEnabled = enabled
+                                },
                                 onThemeModeChanged = onThemeModeChanged,
                                 onLanguageChanged = { code -> appLanguage = code },
                                 onScriptsChanged = {
@@ -890,6 +936,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onNavigateToScripts = {
                                     overrideTargetProfile = null
+                                    overrideTargetProfileId = null
                                     currentSubScreen = SubScreen.SCRIPTS
                                 },
                                 onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },

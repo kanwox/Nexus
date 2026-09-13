@@ -40,6 +40,8 @@ object ImageCache {
         return File(dir, "$hash.bin")
     }
 
+    fun getMemory(url: String): ImageBitmap? = memoryCache.get(url)
+
     fun get(url: String): ImageBitmap? {
         memoryCache.get(url)?.let { return it }
         val diskFile = getDiskFile(url)
@@ -69,18 +71,19 @@ object ImageCache {
                 .url(url)
                 .header("User-Agent", "Mozilla/5.0")
                 .build()
-            val resp = httpClient.newCall(req).execute()
-            if (!resp.isSuccessful) return@withContext null
-            val bytes = resp.body?.bytes() ?: return@withContext null
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val bytes = resp.body?.bytes() ?: return@withContext null
 
-            // Write to disk cache
-            val diskFile = getDiskFile(url)
-            diskFile?.writeBytes(bytes)
+                // Write to disk cache
+                val diskFile = getDiskFile(url)
+                diskFile?.writeBytes(bytes)
 
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@withContext null
-            val imageBitmap = bitmap.asImageBitmap()
-            memoryCache.put(url, imageBitmap)
-            imageBitmap
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@withContext null
+                val imageBitmap = bitmap.asImageBitmap()
+                memoryCache.put(url, imageBitmap)
+                imageBitmap
+            }
         }.getOrNull()
     }
 }
@@ -94,12 +97,12 @@ fun RemoteIcon(
     if (url.isNullOrBlank()) return
     val context = LocalContext.current
 
-    var imageBitmap by remember(url) {
-        ImageCache.initDiskCache(context.cacheDir)
-        mutableStateOf(ImageCache.get(url))
-    }
+    // Memory-only: a disk read plus BitmapFactory decode in the composition initializer would
+    // block the frame. The LaunchedEffect below performs the (async) load on a miss.
+    var imageBitmap by remember(url) { mutableStateOf(ImageCache.getMemory(url)) }
 
     LaunchedEffect(url) {
+        ImageCache.initDiskCache(context.cacheDir)
         if (imageBitmap == null) {
             val loaded = ImageCache.load(url, context)
             if (loaded != null) {

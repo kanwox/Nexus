@@ -28,7 +28,9 @@ import androidx.compose.ui.window.Dialog
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,8 +39,13 @@ fun ScriptsScreen(
     onScriptsChanged: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
-    var scripts by remember { mutableStateOf(ScriptManager.getScripts(context)) }
+    var scripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
+
+    LaunchedEffect(Unit) {
+        scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
+    }
 
     fun refresh() {
         scripts = ScriptManager.getScripts(context)
@@ -74,12 +81,20 @@ fun ScriptsScreen(
                         code = content
                     )
                     refresh()
-                    Toast.makeText(context, "成功导入本地脚本: $scriptName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        context,
+                        AppStrings.get("scripts_imported_toast", lang).replace("{name}", scriptName),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } else {
-                    Toast.makeText(context, "脚本内容为空", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, AppStrings.get("scripts_empty_content", lang), Toast.LENGTH_SHORT).show()
                 }
             }.onFailure {
-                Toast.makeText(context, "读取脚本文件失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    AppStrings.get("scripts_read_failed", lang).replace("{msg}", it.message ?: ""),
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
@@ -107,12 +122,12 @@ fun ScriptsScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "返回",
+                        contentDescription = AppStrings.get("back", lang),
                         tint = LoonTextPrimary
                     )
                 }
                 Text(
-                    text = "脚本",
+                    text = AppStrings.get("scripts_title", lang),
                     color = LoonTextPrimary,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold
@@ -124,7 +139,7 @@ fun ScriptsScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.Link,
-                    contentDescription = "网络导入",
+                    contentDescription = AppStrings.get("scripts_import_network", lang),
                     tint = LoonTextSecondary
                 )
             }
@@ -160,7 +175,7 @@ fun ScriptsScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "本地导入",
+                        text = AppStrings.get("scripts_import_local", lang),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -191,7 +206,7 @@ fun ScriptsScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "新建脚本",
+                        text = AppStrings.get("scripts_new", lang),
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -217,7 +232,7 @@ fun ScriptsScreen(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "暂无 JS 复写脚本\n点击上方按钮导入或新建脚本",
+                        text = AppStrings.get("scripts_empty", lang),
                         color = LoonTextSecondary,
                         fontSize = 14.sp,
                         lineHeight = 22.sp,
@@ -283,7 +298,7 @@ fun ScriptsScreen(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = "删除",
+                                        contentDescription = AppStrings.get("scripts_delete_title", lang),
                                         tint = RedDanger,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -309,7 +324,7 @@ fun ScriptsScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "在配置覆写中绑定生效",
+                                    text = AppStrings.get("scripts_bind_hint", lang),
                                     fontSize = 11.sp,
                                     color = LoonTextMuted
                                 )
@@ -336,7 +351,7 @@ fun ScriptsScreen(
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
-                                            text = "编辑",
+                                            text = AppStrings.get("scripts_edit", lang),
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = LoonBlue
@@ -364,15 +379,15 @@ fun ScriptsScreen(
             containerColor = LoonCard,
             shape = RoundedCornerShape(20.dp),
             title = {
-                Text("新建配置脚本", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
+                Text(AppStrings.get("scripts_new_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = newName,
                         onValueChange = { newName = it },
-                        label = { Text("脚本名称") },
-                        placeholder = { Text("例如：Clash_rule") },
+                        label = { Text(AppStrings.get("scripts_name_label", lang)) },
+                        placeholder = { Text(AppStrings.get("scripts_name_placeholder", lang)) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = LoonTextPrimary,
                             unfocusedTextColor = LoonTextPrimary,
@@ -398,18 +413,18 @@ fun ScriptsScreen(
                             )
                             refresh()
                             showCreateDialog = false
-                            Toast.makeText(context, "脚本创建成功", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, AppStrings.get("scripts_created", lang), Toast.LENGTH_SHORT).show()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.White),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("创建", fontWeight = FontWeight.Bold)
+                    Text(AppStrings.get("scripts_create", lang), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) {
-                    Text("取消", color = LoonTextSecondary)
+                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
                 }
             }
         )
@@ -425,14 +440,14 @@ fun ScriptsScreen(
             containerColor = LoonCard,
             shape = RoundedCornerShape(20.dp),
             title = {
-                Text("从网络链接导入脚本", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
+                Text(AppStrings.get("scripts_import_url_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = urlName,
                         onValueChange = { urlName = it },
-                        label = { Text("脚本名称（选填）") },
+                        label = { Text(AppStrings.get("scripts_name_optional", lang)) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = LoonTextPrimary,
                             unfocusedTextColor = LoonTextPrimary,
@@ -446,7 +461,7 @@ fun ScriptsScreen(
                     OutlinedTextField(
                         value = scriptUrl,
                         onValueChange = { scriptUrl = it },
-                        label = { Text("脚本 URL") },
+                        label = { Text(AppStrings.get("scripts_url_label", lang)) },
                         placeholder = { Text("https://.../script.js") },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = LoonTextPrimary,
@@ -477,9 +492,14 @@ fun ScriptsScreen(
                                 if (res.isSuccess) {
                                     refresh()
                                     showImportUrlDialog = false
-                                    Toast.makeText(context, "脚本下载成功", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, AppStrings.get("scripts_downloaded", lang), Toast.LENGTH_SHORT).show()
                                 } else {
-                                    Toast.makeText(context, "下载失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        context,
+                                        AppStrings.get("scripts_download_failed", lang)
+                                            .replace("{msg}", res.exceptionOrNull()?.message ?: ""),
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                         }
@@ -488,12 +508,16 @@ fun ScriptsScreen(
                     shape = RoundedCornerShape(12.dp),
                     enabled = !isDownloading
                 ) {
-                    Text(if (isDownloading) "正在下载…" else "导入", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (isDownloading) AppStrings.get("scripts_downloading", lang)
+                        else AppStrings.get("scripts_import", lang),
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showImportUrlDialog = false }, enabled = !isDownloading) {
-                    Text("取消", color = LoonTextSecondary)
+                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
                 }
             }
         )
@@ -521,13 +545,17 @@ fun ScriptsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "编辑: ${target.name}",
+                            text = AppStrings.get("scripts_edit_title", lang).replace("{name}", target.name),
                             fontWeight = FontWeight.Bold,
                             fontSize = 17.sp,
                             color = LoonTextPrimary
                         )
                         IconButton(onClick = { editingScript = null }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "关闭", tint = LoonTextSecondary)
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = AppStrings.get("scripts_close", lang),
+                                tint = LoonTextSecondary
+                            )
                         }
                     }
 
@@ -562,7 +590,7 @@ fun ScriptsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         TextButton(onClick = { editingScript = null }) {
-                            Text("取消", color = LoonTextSecondary)
+                            Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         Button(
@@ -570,12 +598,12 @@ fun ScriptsScreen(
                                 ScriptManager.updateScriptCode(context, target, scriptCodeInput)
                                 refresh()
                                 editingScript = null
-                                Toast.makeText(context, "脚本已保存", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, AppStrings.get("scripts_saved", lang), Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = LoonBlue),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("保存代码", color = Color.White, fontWeight = FontWeight.Bold)
+                            Text(AppStrings.get("scripts_save_code", lang), color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -590,10 +618,14 @@ fun ScriptsScreen(
             containerColor = LoonCard,
             shape = RoundedCornerShape(20.dp),
             title = {
-                Text("删除脚本", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
+                Text(AppStrings.get("scripts_delete_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
-                Text("确定要删除脚本 [${target.name}] 吗？", color = LoonTextSecondary, fontSize = 14.sp)
+                Text(
+                    AppStrings.get("scripts_delete_confirm", lang).replace("{name}", target.name),
+                    color = LoonTextSecondary,
+                    fontSize = 14.sp
+                )
             },
             confirmButton = {
                 Button(
@@ -605,12 +637,12 @@ fun ScriptsScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = RedDanger, contentColor = Color.White),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("确认删除", fontWeight = FontWeight.Bold)
+                    Text(AppStrings.get("scripts_confirm_delete", lang), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirmScript = null }) {
-                    Text("取消", color = LoonTextSecondary)
+                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
                 }
             }
         )

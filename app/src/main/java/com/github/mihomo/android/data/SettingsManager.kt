@@ -41,6 +41,16 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("boot_on_startup", false)
         set(value) = prefs.edit().putBoolean("boot_on_startup", value).apply()
 
+    /** Exposes the mixed port to the local network (LAN sharing). */
+    var allowLan: Boolean
+        get() = prefs.getBoolean("allow_lan", false)
+        set(value) = prefs.edit().putBoolean("allow_lan", value).apply()
+
+    /** Switches the DNS enhanced mode between fake-ip and redir-host. */
+    var fakeIpEnabled: Boolean
+        get() = prefs.getBoolean("fake_ip_enabled", true)
+        set(value) = prefs.edit().putBoolean("fake_ip_enabled", value).apply()
+
     fun getSelectedNode(group: String): String? {
         return prefs.getString("sel_node_$group", null)
     }

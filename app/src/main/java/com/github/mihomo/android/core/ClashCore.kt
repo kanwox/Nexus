@@ -23,14 +23,17 @@ import java.net.InetSocketAddress
 
 object ClashCore {
     private const val TAG = "ClashCore"
+    private const val LOAD_TIMEOUT_MS = 20_000L
 
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
     }
 
+    @Volatile
     private var initialized = false
 
+    @Volatile
     var isCoreLoaded = false
         private set
 
@@ -52,13 +55,18 @@ object ClashCore {
         }
     }
 
+    /** Idempotent; safe to call from any thread. Native loading and asset extraction are heavy. */
+    @Synchronized
     fun init(context: Context) {
-        if (!initialized) {
-            Bridge.init(context)
-            initialized = true
-            notifyNetworkChanged(context)
-            Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
-        }
+        if (initialized) return
+        Bridge.init(context)
+        initialized = true
+        notifyNetworkChanged(context)
+        Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
+    }
+
+    suspend fun ensureInitialized(context: Context) = withContext(Dispatchers.IO) {
+        init(context)
     }
 
     suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
@@ -76,7 +84,6 @@ object ClashCore {
                 val res = load(configFile)
                 if (res.isSuccess) {
                     isCoreLoaded = true
-                    startHttp("127.0.0.1:10809")
                     notifyNetworkChanged(context)
                     return@withContext true
                 }
@@ -99,9 +106,8 @@ object ClashCore {
             val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
             Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
             Bridge.nativeLoad(deferred, configDir)
-            deferred.await()
+            withTimeout(LOAD_TIMEOUT_MS) { deferred.await() }
             isCoreLoaded = true
-            startHttp("127.0.0.1:10809")
             Unit
         }
     }
@@ -145,14 +151,6 @@ object ClashCore {
     fun stopTun() {
         Log.i(TAG, "Stopping TUN")
         runCatching { Bridge.nativeStopTun() }
-    }
-
-    fun startHttp(listenAt: String = "127.0.0.1:10809"): String? {
-        return runCatching { Bridge.nativeStartHttp(listenAt) }.getOrNull()
-    }
-
-    fun stopHttp() {
-        runCatching { Bridge.nativeStopHttp() }
     }
 
     fun queryTrafficNow(): Traffic {

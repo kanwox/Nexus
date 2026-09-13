@@ -1,6 +1,8 @@
 package com.github.mihomo.android.ui.theme
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -100,7 +102,7 @@ fun MihomoTheme(
         val statusBarColor = loonColors.bg.toArgb()
         val navBarColor = loonColors.bg.toArgb()
         SideEffect {
-            val window = (view.context as Activity).window
+            val window = view.context.findActivity()?.window ?: return@SideEffect
             window.statusBarColor = statusBarColor
             window.navigationBarColor = navBarColor
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDark
@@ -114,4 +116,10 @@ fun MihomoTheme(
             content = content
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

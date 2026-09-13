@@ -1,9 +1,28 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("io.gitlab.arturbosch.detekt")
 }
+
+// Release signing is supplied out-of-band: local.properties (gitignored) or the
+// RELEASE_* environment variables used by CI. Nothing secret lives in this file.
+val signingProperties = Properties().apply {
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) localFile.inputStream().use { load(it) }
+}
+
+fun signingValue(propertyKey: String, envKey: String): String? =
+    (signingProperties.getProperty(propertyKey) ?: System.getenv(envKey))?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile = signingValue("releaseStoreFile", "RELEASE_STORE_FILE")
+val releaseKeyAlias = signingValue("releaseKeyAlias", "RELEASE_KEY_ALIAS")
+val releaseKeyPassword = signingValue("releaseKeyPassword", "RELEASE_KEY_PASSWORD")
+val releaseStorePassword = signingValue("releaseStorePassword", "RELEASE_STORE_PASSWORD")
+val hasReleaseSigning = releaseStoreFile != null && releaseStorePassword != null &&
+    releaseKeyAlias != null && releaseKeyPassword != null && file(releaseStoreFile).exists()
 
 android {
     namespace = "com.github.mihomo.android"
@@ -16,24 +35,40 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         ndk {
             abiFilters.add("arm64-v8a")
         }
     }
 
     signingConfigs {
-        create("unified") {
-            storeFile = file("nexus.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         release {
+            // R8 shrinking/obfuscation stays off: it crashes on startup with the native core
+            // (verified on device). Keep rules are kept in proguard-rules.pro for reference.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("unified")
+            isShrinkResources = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "Release signing is not configured; set releaseStoreFile/" +
+                        "releaseStorePassword/releaseKeyAlias/releaseKeyPassword in " +
+                        "local.properties or the matching RELEASE_* env vars. " +
+                        "The release APK will be left unsigned."
+                )
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -41,7 +76,6 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("unified")
         }
     }
 
@@ -52,6 +86,10 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     packaging {
@@ -95,6 +133,12 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.5")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.5")
+
+    // Tests
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
 
 detekt {

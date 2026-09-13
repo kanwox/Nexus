@@ -23,6 +23,8 @@ import com.github.mihomo.android.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,23 +62,29 @@ class MihomoVpnService : VpnService() {
             val intent = Intent(context, MihomoVpnService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }.onFailure { Log.e(TAG, "Failed to start VPN service", it) }
         }
 
         fun stop(context: Context) {
             val intent = Intent(context, MihomoVpnService::class.java).apply {
                 action = ACTION_STOP
             }
-            context.startService(intent)
+            // Background-start restrictions can reject this; the tunnel cleanup also runs from
+            // onDestroy, so a rejected command is not fatal.
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "Failed to deliver stop command to VPN service", it) }
         }
     }
 
-    private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var trafficMonitorJob: Job? = null
+    private var startJob: Job? = null
     private var vpnInterface: ParcelFileDescriptor? = null
 
     override fun onCreate() {
@@ -93,14 +101,15 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        if (_vpnState.value.status == VpnState.Status.RUNNING || _vpnState.value.status == VpnState.Status.STARTING) {
+        val status = _vpnState.value.status
+        if (startJob?.isActive == true || status == VpnState.Status.RUNNING || status == VpnState.Status.STARTING) {
             return
         }
 
         _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STARTING, error = null)
         startForegroundServiceNotification("启动 Nexus 核心")
 
-        serviceScope.launch {
+        startJob = serviceScope.launch {
             try {
                 // 1. Initialize native core
                 ClashCore.init(this@MihomoVpnService)
@@ -205,9 +214,7 @@ class MihomoVpnService : VpnService() {
                     vpnService = this@MihomoVpnService
                 )
 
-                // 6. Start REST HTTP controller
-                ClashCore.startHttp("127.0.0.1:9090")
-
+                // 6. Report running state
                 _vpnState.value = _vpnState.value.copy(
                     status = VpnState.Status.RUNNING,
                     coreVersion = coreVer,
@@ -218,6 +225,8 @@ class MihomoVpnService : VpnService() {
                 Log.i(TAG, "Nexus VPN successfully started! Core: $coreVer")
                 com.github.mihomo.android.data.LogRepository.addLog("info", "Nexus VPN 已成功建立！核心版本: $coreVer")
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to start Nexus VPN", e)
                 com.github.mihomo.android.data.LogRepository.addLog("error", "启动失败: ${e.message}")
@@ -257,22 +266,27 @@ class MihomoVpnService : VpnService() {
 
     private fun stopVpn() {
         _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING)
+        // Cancel an in-flight start first: otherwise it can establish the TUN and flip the state
+        // back to RUNNING after we have already torn down and reported STOPPED.
+        startJob?.cancel()
+        startJob = null
         trafficMonitorJob?.cancel()
 
-        serviceScope.launch {
-            try {
-                ClashCore.stopTun()
-                ClashCore.stopHttp()
-                vpnInterface?.close()
-                vpnInterface = null
-            } catch (e: Throwable) {
-                Log.w(TAG, "Error closing VPN", e)
-            } finally {
-                _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                Log.i(TAG, "Nexus VPN stopped.")
-            }
+        serviceScope.launch { closeTunnel() }
+    }
+
+    private fun closeTunnel() {
+        try {
+            ClashCore.stopTun()
+            vpnInterface?.close()
+            vpnInterface = null
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error closing VPN", e)
+        } finally {
+            _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf()
+            Log.i(TAG, "Nexus VPN stopped.")
         }
     }
 
@@ -334,7 +348,18 @@ class MihomoVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // The service can be destroyed without ACTION_STOP (process death, low memory), so the
+        // native tunnel and the shared state are cleaned up here as well.
         trafficMonitorJob?.cancel()
+        startJob?.cancel()
+        serviceScope.cancel()
+        runCatching { ClashCore.stopTun() }
+        runCatching { vpnInterface?.close() }
+        vpnInterface = null
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        if (_vpnState.value.status != VpnState.Status.STOPPED) {
+            _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
+        }
     }
 
     override fun onRevoke() {

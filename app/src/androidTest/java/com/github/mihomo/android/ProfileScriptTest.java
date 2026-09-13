@@ -17,7 +17,7 @@ public class ProfileScriptTest {
     public void testScriptProxyCaps() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String originalYaml = "Proxy:\n  - name: \"Node 1\"\n    type: ss\n    port: 443\nProxy Group:\n  - name: PROXY\n    type: select\n    proxies:\n      - \"Node 1\"\n";
-        ScriptManager.INSTANCE.saveLocalScript(context, "test2", "", "profile-modify", "function main(config) { return config; }", 1);
+        ScriptManager.INSTANCE.saveLocalScript(context, "test2", "", "profile-modify", "function main(config) { return config; }");
         ScriptItem script = ScriptManager.INSTANCE.getScripts(context).get(0);
         String modified = ConfigScriptEngine.INSTANCE.executeScripts(context, originalYaml, Collections.singletonList(script.getId()), false);
         File f = new File(context.getCacheDir(), "test2.yaml");
