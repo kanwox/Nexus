@@ -20,11 +20,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
+import com.github.mihomo.android.data.ProfileParser
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
+import com.github.mihomo.android.data.SettingsManager
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.github.mihomo.android.ui.theme.*
 
@@ -37,6 +42,7 @@ fun ProfileOverrideScreen(
 ) {
     val context = LocalContext.current
     val lang = LocalAppLanguage.current
+    val scope = rememberCoroutineScope()
     var allScripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
 
     LaunchedEffect(Unit) {
@@ -226,7 +232,9 @@ fun ProfileOverrideScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .bounceOverscroll(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(allScripts, key = { it.id }) { script ->
@@ -306,7 +314,21 @@ fun ProfileOverrideScreen(
                     scriptIds = selectedScriptIds.toList()
                 )
                 ConfigManager.updateProfile(context, updated)
+                ProfileParser.clearCache()
                 onProfileUpdated(updated)
+                scope.launch(Dispatchers.IO) {
+                    val settings = SettingsManager(context)
+                    val profiles = ConfigManager.getProfiles(context)
+                    val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
+                    if (activeProfile?.id == profile.id && ClashCore.isCoreLoaded) {
+                        try {
+                            val configFile = ConfigManager.prepareConfig(context, updated.file)
+                            ClashCore.load(configFile)
+                        } catch (e: Exception) {
+                            android.util.Log.e("ProfileOverride", "Failed to reload config", e)
+                        }
+                    }
+                }
                 Toast.makeText(context, AppStrings.get("override_saved", lang), Toast.LENGTH_SHORT).show()
                 onBack()
             },

@@ -335,6 +335,9 @@ class MainActivity : ComponentActivity() {
         }
 
         fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false): Job {
+            if (groupName.isNotBlank() && testingNodes.contains(groupName)) {
+                return Job().apply { complete() }
+            }
             return lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     if (!ClashCore.isCoreLoaded) {
@@ -358,7 +361,6 @@ class MainActivity : ComponentActivity() {
                         if (allNodeNames.isEmpty()) continue
 
                         val memberSubGroups = allNodeNames.filter { parsedProfile.groups.containsKey(it) }
-                        val memberProxies = allNodeNames.filter { !parsedProfile.groups.containsKey(it) }
 
                         withContext(Dispatchers.Main) {
                             testingNodes = if (isAutoTest) testingNodes + g else testingNodes + allNodeNames + g
@@ -367,39 +369,18 @@ class MainActivity : ComponentActivity() {
                         try {
                             val curTime = System.currentTimeMillis()
 
-                            // If it's a background auto test on an auto group, native group test is fast
-                            if (isAutoTest && isAutoGroup) {
-                                val groupDelays = ClashCore.healthCheckGroupNative(g)
-                                withContext(Dispatchers.Main) {
-                                    groupDelays.forEach { (name, delay) ->
-                                        if (delay > 0 || delay == -2) {
-                                            delayCache[name] = delay
-                                            if (delay > 0) {
-                                                nodeLastTestedTimes[name] = curTime
-                                            }
+                            // Native group health check: Mihomo core tests all member nodes concurrently in Go!
+                            val groupDelays = ClashCore.healthCheckGroupNative(g)
+                            withContext(Dispatchers.Main) {
+                                groupDelays.forEach { (name, delay) ->
+                                    if (delay > 0 || delay == -2) {
+                                        delayCache[name] = delay
+                                        delayCache["$g:$name"] = delay
+                                        if (delay > 0) {
+                                            nodeLastTestedTimes[name] = curTime
                                         }
                                     }
                                 }
-                            } else {
-                                // Manual speed test: test each member proxy concurrently with bounded pool
-                                val poolSemaphore = Semaphore(8)
-                                val testJobs = memberProxies.map { nodeName ->
-                                    launch(Dispatchers.IO) {
-                                        poolSemaphore.withPermit {
-                                            val d = ClashCore.testProxyDelayNative(nodeName, g)
-                                            withContext(Dispatchers.Main) {
-                                                if (d > 0 || d == -2) {
-                                                    delayCache[nodeName] = d
-                                                    if (d > 0) {
-                                                        nodeLastTestedTimes[nodeName] = curTime
-                                                    }
-                                                }
-                                                testingNodes = testingNodes - nodeName
-                                            }
-                                        }
-                                    }
-                                }
-                                testJobs.joinAll()
                             }
 
                             // Member sub-groups test (nested groups)
@@ -412,6 +393,12 @@ class MainActivity : ComponentActivity() {
                                 withContext(Dispatchers.Main) {
                                     if (finalSubDelay > 0 || finalSubDelay == -2) {
                                         delayCache[subG] = finalSubDelay
+                                    }
+                                    subDelays.forEach { (subNodeName, subNodeDelay) ->
+                                        if (subNodeDelay > 0 || subNodeDelay == -2) {
+                                            delayCache[subNodeName] = subNodeDelay
+                                            delayCache["$subG:$subNodeName"] = subNodeDelay
+                                        }
                                     }
                                     if (subGroupData != null && subGroupData.now.isNotBlank()) {
                                         val existing = liveGroupMap[subG] ?: parsedProfile.groups[subG]
@@ -451,7 +438,9 @@ class MainActivity : ComponentActivity() {
                     }
                 } catch (_: Throwable) {
                     withContext(Dispatchers.Main) {
-                        testingNodes = emptySet()
+                        if (groupName.isNotBlank()) {
+                            testingNodes = testingNodes - groupName
+                        }
                     }
                 }
             }

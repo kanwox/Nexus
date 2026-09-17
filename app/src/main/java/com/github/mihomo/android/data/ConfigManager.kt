@@ -460,10 +460,14 @@ object ConfigManager {
                 - 223.5.5.5
                 - 119.29.29.29
               nameserver:
+                - https://223.5.5.5/dns-query
+                - https://doh.pub/dns-query
                 - 223.5.5.5
                 - 119.29.29.29
                 - 180.76.76.76
               fallback:
+                - https://1.1.1.1/dns-query
+                - https://8.8.8.8/dns-query
                 - 1.1.1.1
                 - 8.8.8.8
               fake-ip-filter:
@@ -487,13 +491,16 @@ object ConfigManager {
         if (sourceFile != null && sourceFile.exists()) {
             var rawContent = sourceFile.readText()
             val activeProfile = getProfiles(context).find { it.file.absolutePath == sourceFile.absolutePath }
-            val shouldRunScripts = (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) || settings.scriptingEnabled
+            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) {
+                activeProfile.scriptIds
+            } else null
+            val shouldRunScripts = targetIds != null || settings.scriptingEnabled
             if (shouldRunScripts) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name}...")
                 rawContent = ConfigScriptEngine.executeScripts(
                     context = context,
                     rawYaml = rawContent,
-                    targetScriptIds = activeProfile?.scriptIds
+                    targetScriptIds = targetIds
                 )
             }
             val userContent = sanitizeUserConfig(rawContent)

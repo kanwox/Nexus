@@ -1,5 +1,6 @@
 package com.github.mihomo.android.ui.screens
 
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,6 +29,7 @@ import kotlinx.coroutines.launch
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.mihomo.android.ui.components.RemoteIcon
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 
 @Composable
@@ -36,10 +38,25 @@ fun AnimatedSpeedTestIcon(
     tint: Color = LoonTextPrimary,
     modifier: Modifier = Modifier
 ) {
+    val alpha by if (isTesting) {
+        val infiniteTransition = rememberInfiniteTransition(label = "speed_test_anim")
+        infiniteTransition.animateFloat(
+            initialValue = 0.4f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "speed_test_alpha"
+        )
+    } else {
+        remember { mutableFloatStateOf(1f) }
+    }
+
     Icon(
         imageVector = Icons.Default.Bolt,
         contentDescription = "测速",
-        tint = if (isTesting) LoonBlue else tint,
+        tint = tint.copy(alpha = alpha),
         modifier = modifier
     )
 }
@@ -444,7 +461,9 @@ fun ProxiesScreen(
                 val currentNow = currentGroup?.now
 
                 LazyColumn(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .bounceOverscroll(allowTop = false, allowBottom = true),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(
@@ -499,7 +518,9 @@ fun ProxiesScreen(
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .bounceOverscroll(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     visibleGroups.forEach { groupName ->
@@ -508,58 +529,66 @@ fun ProxiesScreen(
                         val proxies = group?.proxies ?: emptyList()
                         val iconUrl = groupIcons[groupName]
 
-                        // 1. Group Header Item
-                        item(key = "hdr_$groupName", contentType = "group_header") {
+                        item(key = "grp_item_$groupName", contentType = "group_container") {
                             val isGroupTesting = testingNodes.contains(groupName) || proxies.any { testingNodes.contains("$groupName:${it.name}") || (it.isGroup && testingNodes.contains(it.name)) }
-                            LoonGroupHeaderCard(
-                                groupName = groupName,
-                                groupType = group?.type ?: "select",
-                                activeNode = group?.now ?: "",
-                                iconUrl = iconUrl,
-                                showGroupIcons = showGroupIcons,
-                                isExpanded = isExpanded,
-                                isTesting = isGroupTesting,
-                                onHealthCheck = {
-                                    onHealthCheck(groupName)
-                                },
-                                onToggleExpand = {
-                                    expandedGroups[groupName] = !isExpanded
-                                }
-                            )
-                        }
-
-                        // 2. If expanded, emit chunked proxy rows directly
-                        if (isExpanded) {
-                            val chunkedRows = proxies.chunked(nodeColumns.coerceIn(1, 3))
-                            val groupNow = group?.now
-
-                            items(
-                                items = chunkedRows,
-                                key = { row -> "prx_${groupName}_${row.first().name}" }
-                            ) { rowProxies ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 10.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    for (proxy in rowProxies) {
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            val isItemTesting = testingNodes.contains(proxy.name) || testingNodes.contains("$groupName:${proxy.name}")
-                                            LoonProxyItemCard(
-                                                proxy = proxy,
-                                                isSelected = proxy.name == groupNow,
-                                                columns = nodeColumns,
-                                                isTesting = isItemTesting,
-                                                onClick = { onSelectProxy(groupName, proxy) },
-                                                onTestSingleNode = { onTestSingleNode(groupName, proxy.name) }
-                                            )
-                                        }
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                LoonGroupHeaderCard(
+                                    groupName = groupName,
+                                    groupType = group?.type ?: "select",
+                                    activeNode = group?.now ?: "",
+                                    iconUrl = iconUrl,
+                                    showGroupIcons = showGroupIcons,
+                                    isExpanded = isExpanded,
+                                    isTesting = isGroupTesting,
+                                    onHealthCheck = {
+                                        onHealthCheck(groupName)
+                                    },
+                                    onToggleExpand = {
+                                        expandedGroups[groupName] = !isExpanded
                                     }
-                                    val remainder = nodeColumns - rowProxies.size
-                                    if (remainder > 0) {
-                                        repeat(remainder) {
-                                            Spacer(modifier = Modifier.weight(1f))
+                                )
+
+                                AnimatedVisibility(
+                                    visible = isExpanded,
+                                    enter = expandVertically(animationSpec = tween(250, easing = FastOutSlowInEasing)) + fadeIn(animationSpec = tween(200)),
+                                    exit = shrinkVertically(animationSpec = tween(250, easing = FastOutSlowInEasing)) + fadeOut(animationSpec = tween(150))
+                                ) {
+                                    val chunkedRows = remember(proxies, nodeColumns) {
+                                        proxies.chunked(nodeColumns.coerceIn(1, 3))
+                                    }
+                                    val groupNow = group?.now
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp, start = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        for (rowProxies in chunkedRows) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                for (proxy in rowProxies) {
+                                                    Box(modifier = Modifier.weight(1f)) {
+                                                        val isItemTesting = testingNodes.contains(proxy.name) || testingNodes.contains("$groupName:${proxy.name}")
+                                                        LoonProxyItemCard(
+                                                            proxy = proxy,
+                                                            isSelected = proxy.name == groupNow,
+                                                            columns = nodeColumns,
+                                                            isTesting = isItemTesting,
+                                                            onClick = { onSelectProxy(groupName, proxy) },
+                                                            onTestSingleNode = { onTestSingleNode(groupName, proxy.name) }
+                                                        )
+                                                    }
+                                                }
+                                                val remainder = nodeColumns - rowProxies.size
+                                                if (remainder > 0) {
+                                                    repeat(remainder) {
+                                                        Spacer(modifier = Modifier.weight(1f))
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -649,25 +678,19 @@ private fun LoonGroupHeaderCard(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isTesting) {
-                    AnimatedSpeedTestIcon(
-                        isTesting = true,
-                        tint = LoonTextPrimary,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                } else if (isExpanded) {
+                if (isExpanded) {
                     IconButton(
-                        onClick = onHealthCheck,
-                        modifier = Modifier.size(28.dp)
+                        onClick = { if (!isTesting) onHealthCheck() },
+                        enabled = !isTesting,
+                        modifier = Modifier.size(36.dp)
                     ) {
                         AnimatedSpeedTestIcon(
-                            isTesting = false,
+                            isTesting = isTesting,
                             tint = LoonTextPrimary,
-                            modifier = Modifier.size(17.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                 } else {
                     Text(
                         text = groupType.uppercase(),
@@ -678,11 +701,18 @@ private fun LoonGroupHeaderCard(
                     )
                 }
 
+                val arrowRotation by animateFloatAsState(
+                    targetValue = if (isExpanded) 180f else 0f,
+                    animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+                    label = "arrow_rot"
+                )
                 Icon(
-                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = null,
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (isExpanded) "收起" else "展开",
                     tint = LoonTextSecondary,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier
+                        .size(20.dp)
+                        .graphicsLayer { rotationZ = arrowRotation }
                 )
             }
         }

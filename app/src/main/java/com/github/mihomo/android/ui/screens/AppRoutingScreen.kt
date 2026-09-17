@@ -26,6 +26,7 @@ import com.github.mihomo.android.data.InstalledApp
 import com.github.mihomo.android.data.PerAppProxyMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -186,7 +187,9 @@ fun AppRoutingScreen(
                 }
 
                 LazyColumn(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .bounceOverscroll(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // Category 1: Selected (Checked) Apps

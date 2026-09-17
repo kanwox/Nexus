@@ -38,10 +38,79 @@ object ScriptManager {
     private const val TAG = "ScriptManager"
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
 
+    // GitHub mirror prefixes to try when raw.githubusercontent.com is unreachable
+    private val GITHUB_MIRRORS = listOf(
+        "https://raw.gitmirror.com/",
+        "https://ghproxy.net/https://raw.githubusercontent.com/",
+        "https://gh.con.sh/https://raw.githubusercontent.com/"
+    )
+
+    // Direct client (no proxy) - for subscriptions that go through VPN already
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    // Client that routes through local mixed-port proxy (127.0.0.1:7890)
+    // Used when app traffic bypasses VPN (app is in disallowedApplications)
+    private val localProxyClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .proxy(java.net.Proxy(java.net.Proxy.Type.HTTP, java.net.InetSocketAddress("127.0.0.1", 7890)))
+        .build()
+
+    /**
+     * Attempt to fetch a URL, with special handling for raw.githubusercontent.com:
+     * 1. First try through local proxy (127.0.0.1:7890) - works when core is running
+     * 2. Then try mirror URLs directly
+     * 3. Finally fall back to direct connection
+     */
+    private fun fetchUrl(url: String): String {
+        val isGithubRaw = url.contains("raw.githubusercontent.com")
+
+        if (isGithubRaw) {
+            // Strategy 1: Local proxy (covers the case where VPN is on but app bypasses it)
+            runCatching {
+                val req = Request.Builder().url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .build()
+                localProxyClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        return resp.body?.string() ?: error("响应内容为空")
+                    }
+                }
+            }.onFailure { Log.d(TAG, "Local proxy failed for $url: ${it.message}") }
+
+            // Strategy 2: Mirror URLs (direct connection, mirrors bypass GFW)
+            val rawPath = url.removePrefix("https://raw.githubusercontent.com/")
+            for (mirror in GITHUB_MIRRORS) {
+                val mirrorUrl = when {
+                    mirror.endsWith("/https://raw.githubusercontent.com/") -> mirror + rawPath
+                    else -> mirror + rawPath
+                }
+                runCatching {
+                    val req = Request.Builder().url(mirrorUrl)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            Log.i(TAG, "Mirror success: $mirrorUrl")
+                            return resp.body?.string() ?: error("响应内容为空")
+                        }
+                    }
+                }.onFailure { Log.d(TAG, "Mirror $mirrorUrl failed: ${it.message}") }
+            }
+        }
+
+        // Strategy 3 (or primary for non-GitHub URLs): Direct download
+        val req = Request.Builder().url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("HTTP 错误: ${resp.code} ${resp.message}")
+            return resp.body?.string() ?: error("脚本内容为空")
+        }
+    }
 
     private fun getScriptsDir(context: Context): File {
         return context.filesDir.resolve("scripts").apply { mkdirs() }
@@ -71,39 +140,29 @@ object ScriptManager {
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
             requireSecureRemoteUrl(url)
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .build()
+            val body = fetchUrl(url)
 
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    error("HTTP 错误: ${response.code} ${response.message}")
-                }
+            val id = java.util.UUID.randomUUID().toString()
+            val fileName = "$id.js"
+            val file = getScriptsDir(context).resolve(fileName)
+            file.writeText(body)
 
-                val body = response.body?.string() ?: error("脚本内容为空")
-                val id = java.util.UUID.randomUUID().toString()
-                val fileName = "$id.js"
-                val file = getScriptsDir(context).resolve(fileName)
-                file.writeText(body)
+            val item = ScriptItem(
+                id = id,
+                name = name.ifBlank { url.substringAfterLast("/").substringBefore("?") },
+                url = url,
+                pattern = pattern,
+                type = type,
+                scriptFile = fileName,
+                enabled = true,
+                updatedAt = System.currentTimeMillis()
+            )
 
-                val item = ScriptItem(
-                    id = id,
-                    name = name.ifBlank { url.substringAfterLast("/").substringBefore("?") },
-                    url = url,
-                    pattern = pattern,
-                    type = type,
-                    scriptFile = fileName,
-                    enabled = true,
-                    updatedAt = System.currentTimeMillis()
-                )
-
-                val current = getScripts(context).toMutableList()
-                current.add(0, item)
-                saveScripts(context, current)
-                Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
-                item
-            }
+            val current = getScripts(context).toMutableList()
+            current.add(0, item)
+            saveScripts(context, current)
+            Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
+            item
         }
     }
 
@@ -156,26 +215,19 @@ object ScriptManager {
         runCatching {
             if (script.url.isBlank()) error("无远程更新链接")
             requireSecureRemoteUrl(script.url)
-            val request = Request.Builder()
-                .url(script.url)
-                .header("User-Agent", "Mozilla/5.0")
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) error("更新失败 HTTP ${response.code}")
-                val body = response.body?.string() ?: error("响应内容为空")
+            val body = fetchUrl(script.url)
 
-                val file = getScriptsDir(context).resolve(script.scriptFile)
-                file.writeText(body)
+            val file = getScriptsDir(context).resolve(script.scriptFile)
+            file.writeText(body)
 
-                val updated = script.copy(updatedAt = System.currentTimeMillis())
-                val current = getScripts(context).toMutableList()
-                val idx = current.indexOfFirst { it.id == script.id }
-                if (idx >= 0) {
-                    current[idx] = updated
-                    saveScripts(context, current)
-                }
-                updated
+            val updated = script.copy(updatedAt = System.currentTimeMillis())
+            val current = getScripts(context).toMutableList()
+            val idx = current.indexOfFirst { it.id == script.id }
+            if (idx >= 0) {
+                current[idx] = updated
+                saveScripts(context, current)
             }
+            updated
         }
     }
 

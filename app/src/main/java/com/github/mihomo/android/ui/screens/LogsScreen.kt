@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.LogEntry
 import com.github.mihomo.android.data.LogRepository
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -212,6 +213,7 @@ fun LogsScreen(
                     state = listState,
                     modifier = Modifier
                         .fillMaxSize()
+                        .bounceOverscroll()
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {

@@ -62,12 +62,7 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
-                logger.warn(
-                    "Release signing is not configured; set releaseStoreFile/" +
-                        "releaseStorePassword/releaseKeyAlias/releaseKeyPassword in " +
-                        "local.properties or the matching RELEASE_* env vars. " +
-                        "The release APK will be left unsigned."
-                )
+                signingConfig = signingConfigs.getByName("debug")
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -98,6 +93,17 @@ android {
         }
         jniLibs {
             useLegacyPackaging = true
+        }
+    }
+}
+
+// Use a unique output filename to avoid conflicts with previously locked APK files
+androidComponents {
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
+                output.outputFileName.set("nexus-${variant.buildType}.apk")
+            }
         }
     }
 }

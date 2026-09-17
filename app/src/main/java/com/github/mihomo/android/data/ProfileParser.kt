@@ -61,13 +61,16 @@ object ProfileParser {
         if (context != null) {
             val settings = SettingsManager(context)
             val activeProfile = ConfigManager.getProfiles(context).find { it.file.absolutePath == file.absolutePath }
-            val shouldRunScripts = (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) || settings.scriptingEnabled
+            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) {
+                activeProfile.scriptIds
+            } else null
+            val shouldRunScripts = targetIds != null || settings.scriptingEnabled
             if (shouldRunScripts) {
                 content = runCatching {
                     ConfigScriptEngine.executeScripts(
                         context = context,
                         rawYaml = content,
-                        targetScriptIds = activeProfile?.scriptIds,
+                        targetScriptIds = targetIds,
                         logToRepo = false
                     )
                 }.getOrElse {

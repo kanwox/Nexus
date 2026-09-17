@@ -3,6 +3,7 @@ package com.github.mihomo.android.ui.theme
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -16,6 +17,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.github.mihomo.android.data.ThemeMode
+
 
 data class LoonThemeColors(
     val bg: Color,
@@ -55,6 +57,7 @@ val DarkLoonThemeColors = LoonThemeColors(
 
 val LocalLoonColors = staticCompositionLocalOf { LightLoonThemeColors }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MihomoTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -110,7 +113,10 @@ fun MihomoTheme(
         }
     }
 
-    CompositionLocalProvider(LocalLoonColors provides loonColors) {
+    CompositionLocalProvider(
+        LocalLoonColors provides loonColors,
+        LocalOverscrollConfiguration provides null
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             content = content

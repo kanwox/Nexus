@@ -25,8 +25,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.github.mihomo.android.data.ProfileParser
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -242,7 +244,9 @@ fun ScriptsScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .bounceOverscroll(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(scripts, key = { it.id }) { script ->
@@ -292,16 +296,27 @@ fun ScriptsScreen(
                                     )
                                 }
 
-                                IconButton(
-                                    onClick = { deleteConfirmScript = script },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.DeleteOutline,
-                                        contentDescription = AppStrings.get("scripts_delete_title", lang),
-                                        tint = RedDanger,
-                                        modifier = Modifier.size(18.dp)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Switch(
+                                        checked = script.enabled,
+                                        onCheckedChange = { isChecked ->
+                                            ScriptManager.toggleScript(context, script.id, isChecked)
+                                            ProfileParser.clearCache()
+                                            refresh()
+                                        },
+                                        modifier = Modifier.padding(end = 4.dp)
                                     )
+                                    IconButton(
+                                        onClick = { deleteConfirmScript = script },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = AppStrings.get("scripts_delete_title", lang),
+                                            tint = RedDanger,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
 

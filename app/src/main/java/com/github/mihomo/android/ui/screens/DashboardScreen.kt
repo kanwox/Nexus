@@ -216,6 +216,7 @@ fun DashboardScreen(
                     .background(topBgBrush)
                     .statusBarsPadding()
                     .verticalScroll(state = scrollState, enabled = draggedId == null)
+                    .bounceOverscroll()
                     .padding(horizontal = 20.dp)
                     .padding(top = 16.dp, bottom = 110.dp)
             ) {
@@ -538,7 +539,7 @@ fun DashboardScreen(
                         .fillMaxWidth()
                         .height(52.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .border(1.5.dp, LoonBlue, RoundedCornerShape(16.dp))
+                        .border(1.dp, LoonCardBorder, RoundedCornerShape(16.dp))
                         .clickable { showAddShortcutSheet = true },
                     color = LoonCard
                 ) {
@@ -550,13 +551,13 @@ fun DashboardScreen(
                         Icon(
                             imageVector = Icons.Default.AddCircle,
                             contentDescription = null,
-                            tint = LoonBlue,
+                            tint = LoonTextPrimary,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (hiddenShortcuts.isEmpty()) AppStrings.get("shortcuts_all_shown", lang) else "${AppStrings.get("shortcuts_add", lang)} (${hiddenShortcuts.size})",
-                            color = LoonBlue,
+                            color = LoonTextPrimary,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )

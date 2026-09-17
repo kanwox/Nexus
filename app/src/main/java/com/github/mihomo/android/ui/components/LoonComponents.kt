@@ -1,5 +1,6 @@
 package com.github.mihomo.android.ui.components
 
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,11 +14,18 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -116,8 +124,8 @@ fun LoonShortcutCard(
             .height(118.dp)
             .clip(RoundedCornerShape(18.dp))
             .border(
-                width = if (isEditing) 1.5.dp else 1.dp,
-                color = if (isEditing) LoonBlue.copy(alpha = 0.5f) else LoonCardBorder,
+                width = 1.dp,
+                color = LoonCardBorder,
                 shape = RoundedCornerShape(18.dp)
             )
             .shadow(2.dp, RoundedCornerShape(18.dp), spotColor = Color(0x0A000000))
@@ -166,7 +174,7 @@ fun LoonShortcutCard(
                         Text(
                             text = "☰",
                             fontSize = 14.sp,
-                            color = LoonBlue,
+                            color = LoonTextSecondary,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -808,4 +816,99 @@ private fun BottomNavItem(
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
         )
     }
+}
+
+// -------------------------------------------------------------
+// iOS-style Rubber-Band Bounce Overscroll (Translates content rigidly without stretching)
+// allowTop=true  → produces space when pulling past the top edge
+// allowBottom=true → produces space when pushing past the bottom edge
+// -------------------------------------------------------------
+@Composable
+fun rememberBounceOverscrollConnection(
+    allowTop: Boolean = true,
+    allowBottom: Boolean = true
+): Pair<NestedScrollConnection, State<Float>> {
+    val coroutineScope = rememberCoroutineScope()
+    val overscrollOffset = remember { Animatable(0f) }
+
+    val connection = remember(allowTop, allowBottom) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                val current = overscrollOffset.value
+                // Scroll back toward zero before passing to the list
+                if (current > 0f && available.y < 0f) {
+                    val consumed = available.y.coerceAtLeast(-current)
+                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
+                    return Offset(0f, consumed)
+                } else if (current < 0f && available.y > 0f) {
+                    val consumed = available.y.coerceAtMost(-current)
+                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
+                    return Offset(0f, consumed)
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    // available.y > 0 → pulling down past top edge (top overscroll)
+                    // available.y < 0 → pushing up past bottom edge (bottom overscroll)
+                    val isTopOverscroll = available.y > 0f
+                    val isBottomOverscroll = available.y < 0f
+                    if ((isTopOverscroll && !allowTop) || (isBottomOverscroll && !allowBottom)) {
+                        return Offset.Zero
+                    }
+                    val current = overscrollOffset.value
+                    val resistance = (1f - (kotlin.math.abs(current) / 500f).coerceIn(0f, 0.85f)) * 0.42f
+                    val delta = available.y * resistance
+                    coroutineScope.launch { overscrollOffset.snapTo(current + delta) }
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (overscrollOffset.value != 0f) {
+                    overscrollOffset.animateTo(
+                        targetValue = 0f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                    return available
+                }
+                return Velocity.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (overscrollOffset.value != 0f) {
+                    overscrollOffset.animateTo(
+                        targetValue = 0f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+    return Pair(connection, overscrollOffset.asState())
+}
+
+fun Modifier.bounceOverscroll(
+    allowTop: Boolean = true,
+    allowBottom: Boolean = true
+): Modifier = composed {
+    val (connection, offsetState) = rememberBounceOverscrollConnection(allowTop, allowBottom)
+    this
+        .nestedScroll(connection)
+        .graphicsLayer {
+            translationY = offsetState.value
+        }
 }

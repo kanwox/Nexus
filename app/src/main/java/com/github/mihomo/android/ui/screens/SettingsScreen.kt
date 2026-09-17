@@ -37,6 +37,7 @@ import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -97,9 +98,8 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .verticalScroll(scrollState)
             .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 110.dp)
+            .padding(top = 16.dp)
     ) {
         // Top Title
         Row(
@@ -116,8 +116,17 @@ fun SettingsScreen(
             )
         }
 
-        // Section 1: 基础网络与 TUN
-        LoonSectionHeader(title = AppStrings.get("settings_core_service", lang))
+        // Scrollable content area below Top Title
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(scrollState)
+                .bounceOverscroll()
+                .padding(bottom = 110.dp)
+        ) {
+            // Section 1: 基础网络与 TUN
+            LoonSectionHeader(title = AppStrings.get("settings_core_service", lang))
         LoonGroupCard {
             LoonSettingsItem(
                 icon = Icons.Default.VpnKey,
@@ -193,14 +202,6 @@ fun SettingsScreen(
         // Section 2: 脚本
         LoonSectionHeader(title = AppStrings.get("settings_scripts", lang))
         LoonGroupCard {
-            LoonSettingsSwitchItem(
-                icon = Icons.Default.Javascript,
-                iconBg = Color(0xFFF59E0B),
-                title = "启用脚本引擎",
-                checked = scriptingEnabled,
-                onCheckedChange = onScriptingEnabledChanged
-            )
-            LoonDivider()
             LoonSettingsItem(
                 icon = Icons.Default.Code,
                 iconBg = Color(0xFF3B82F6),
@@ -315,6 +316,7 @@ fun SettingsScreen(
             )
         }
     }
+}
 
     // Core Reset Confirmation -- the native reset can block, so it runs off the main thread.
     if (showResetDialog) {

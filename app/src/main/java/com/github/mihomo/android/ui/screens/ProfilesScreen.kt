@@ -38,6 +38,7 @@ import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.data.ScriptManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -207,7 +208,9 @@ fun ProfilesScreen(
         } else {
             LazyColumn(
                 state = lazyListState,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .bounceOverscroll(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 itemsIndexed(localProfiles, key = { _, item -> item.id }) { index, item ->
