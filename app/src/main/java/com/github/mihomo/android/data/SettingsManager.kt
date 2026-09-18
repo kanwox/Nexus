@@ -59,6 +59,16 @@ class SettingsManager(context: Context) {
         prefs.edit().putString("sel_node_$group", node).apply()
     }
 
+    fun getAllSelectedNodes(): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        for ((key, value) in prefs.all) {
+            if (key.startsWith("sel_node_") && value is String && value.isNotBlank()) {
+                result[key.removePrefix("sel_node_")] = value
+            }
+        }
+        return result
+    }
+
     // View mode persistence (TABS or LIST)
     var proxiesViewMode: String
         get() = prefs.getString("proxies_view_mode", "TABS") ?: "TABS"

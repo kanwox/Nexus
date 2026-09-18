@@ -231,10 +231,7 @@ class MainActivity : ComponentActivity() {
             val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
             parseJob?.cancel()
             parseJob = lifecycleScope.launch(Dispatchers.IO) {
-                val savedMap = mutableMapOf<String, String>()
-                proxyGroups.forEach { g ->
-                    settingsManager.getSelectedNode(g)?.let { savedMap[g] = it }
-                }
+                val savedMap = settingsManager.getAllSelectedNodes()
                 val parsed = ProfileParser.parse(active?.file, savedMap, this@MainActivity)
                 withContext(Dispatchers.Main) {
                     parsedProfile = parsed
@@ -833,8 +830,14 @@ class MainActivity : ComponentActivity() {
                                     parsedProfile.groups.mapValues { (gName, baseGroup) ->
                                         val live = liveGroupMap[gName]
                                         val liveProxyMap = live?.proxies?.associateBy { it.name } ?: emptyMap()
+                                        val savedNode = settingsManager.getSelectedNode(gName)
+                                        val resolvedNow = if (!savedNode.isNullOrBlank() && baseGroup.proxies.any { it.name == savedNode }) {
+                                            savedNode
+                                        } else {
+                                            live?.now?.ifBlank { baseGroup.now } ?: baseGroup.now
+                                        }
                                         baseGroup.copy(
-                                            now = live?.now?.ifBlank { baseGroup.now } ?: baseGroup.now,
+                                            now = resolvedNow,
                                             proxies = baseGroup.proxies.map { bp ->
                                                 val p = liveProxyMap[bp.name] ?: bp
                                                 val scopedKey = "$gName:${bp.name}"
@@ -893,7 +896,6 @@ class MainActivity : ComponentActivity() {
                                 scrollState = settingsScrollState,
                                 tunStack = tunStack,
                                 bootOnStartup = bootOnStartup,
-                                scriptingEnabled = scriptingEnabled,
                                 allowLan = allowLan,
                                 fakeIpEnabled = fakeIpEnabled,
                                 themeMode = currentThemeMode,
@@ -904,11 +906,6 @@ class MainActivity : ComponentActivity() {
                                 onBootOnStartupChanged = { enabled ->
                                     bootOnStartup = enabled
                                     settingsManager.bootOnStartup = enabled
-                                },
-                                onScriptingEnabledChanged = { enabled ->
-                                    scriptingEnabled = enabled
-                                    settingsManager.scriptingEnabled = enabled
-                                    parseActiveProfile()
                                 },
                                 onAllowLanChanged = { enabled ->
                                     allowLan = enabled

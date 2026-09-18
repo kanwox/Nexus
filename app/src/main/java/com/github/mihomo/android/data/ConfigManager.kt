@@ -491,10 +491,10 @@ object ConfigManager {
         if (sourceFile != null && sourceFile.exists()) {
             var rawContent = sourceFile.readText()
             val activeProfile = getProfiles(context).find { it.file.absolutePath == sourceFile.absolutePath }
-            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) {
+            val targetIds = if (activeProfile != null && activeProfile.scriptIds.isNotEmpty()) {
                 activeProfile.scriptIds
             } else null
-            val shouldRunScripts = targetIds != null || settings.scriptingEnabled
+            val shouldRunScripts = targetIds != null || ScriptManager.getScripts(context).isNotEmpty()
             if (shouldRunScripts) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name}...")
                 rawContent = ConfigScriptEngine.executeScripts(

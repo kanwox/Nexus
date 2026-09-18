@@ -417,7 +417,6 @@ fun ProfilesScreen(
     if (overrideDialogProfile != null) {
         val target = overrideDialogProfile!!
         val availableScripts = remember { ScriptManager.getScripts(context) }
-        var scriptEnabled by remember(target) { mutableStateOf(target.scriptEnabled) }
         var selectedScriptIds by remember(target) { mutableStateOf(target.scriptIds.toSet()) }
 
         AlertDialog(
@@ -441,108 +440,73 @@ fun ProfilesScreen(
                         fontSize = 13.sp
                     )
 
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonBg,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "对此配置启用 JS 覆写",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextPrimary
-                                )
-                                Text(
-                                    text = "启用后将按选中脚本动态重写配置",
-                                    fontSize = 11.sp,
-                                    color = LoonTextMuted
-                                )
-                            }
-                            Switch(
-                                checked = scriptEnabled,
-                                onCheckedChange = { scriptEnabled = it }
-                            )
-                        }
-                    }
+                    Text(
+                        text = "选择生效的脚本：",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LoonTextPrimary
+                    )
 
-                    if (scriptEnabled) {
+                    if (availableScripts.isEmpty()) {
                         Text(
-                            text = "选择生效的脚本：",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary
+                            text = "脚本库暂无可用脚本，请前往 [设置 - JS 脚本复写] 导入或创建脚本",
+                            fontSize = 12.sp,
+                            color = LoonTextSecondary,
+                            lineHeight = 18.sp
                         )
-
-                        if (availableScripts.isEmpty()) {
-                            Text(
-                                text = "脚本库暂无可用脚本，请前往 [设置 - JS 脚本复写] 导入或创建脚本",
-                                fontSize = 12.sp,
-                                color = LoonTextSecondary,
-                                lineHeight = 18.sp
-                            )
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                availableScripts.forEach { script ->
-                                    val isChecked = selectedScriptIds.contains(script.id)
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = if (isChecked) LoonEditBlueBg else LoonBg,
-                                        border = androidx.compose.foundation.BorderStroke(
-                                            width = 1.dp,
-                                            color = if (isChecked) LoonBlue else LoonCardBorder
-                                        ),
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            availableScripts.forEach { script ->
+                                val isChecked = selectedScriptIds.contains(script.id)
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isChecked) LoonEditBlueBg else LoonBg,
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        width = 1.dp,
+                                        color = if (isChecked) LoonBlue else LoonCardBorder
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedScriptIds = if (isChecked) {
+                                                selectedScriptIds - script.id
+                                            } else {
+                                                selectedScriptIds + script.id
+                                            }
+                                        }
+                                ) {
+                                    Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable {
-                                                selectedScriptIds = if (isChecked) {
-                                                    selectedScriptIds - script.id
-                                                } else {
-                                                    selectedScriptIds + script.id
-                                                }
-                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Checkbox(
-                                                checked = isChecked,
-                                                onCheckedChange = { checked ->
-                                                    selectedScriptIds = if (checked) {
-                                                        selectedScriptIds + script.id
-                                                    } else {
-                                                        selectedScriptIds - script.id
-                                                    }
-                                                },
-                                                colors = CheckboxDefaults.colors(checkedColor = LoonBlue)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Column {
-                                                Text(
-                                                    text = script.name,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = LoonTextPrimary
-                                                )
-                                                if (script.url.isNotBlank()) {
-                                                    Text(
-                                                        text = "远程: ${script.url}",
-                                                        fontSize = 10.sp,
-                                                        color = LoonTextMuted,
-                                                        maxLines = 1
-                                                    )
+                                        Checkbox(
+                                            checked = isChecked,
+                                            onCheckedChange = { checked ->
+                                                selectedScriptIds = if (checked) {
+                                                    selectedScriptIds + script.id
+                                                } else {
+                                                    selectedScriptIds - script.id
                                                 }
+                                            },
+                                            colors = CheckboxDefaults.colors(checkedColor = LoonBlue)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column {
+                                            Text(
+                                                text = script.name,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = LoonTextPrimary
+                                            )
+                                            if (script.url.isNotBlank()) {
+                                                Text(
+                                                    text = "远程: ${script.url}",
+                                                    fontSize = 10.sp,
+                                                    color = LoonTextMuted,
+                                                    maxLines = 1
+                                                )
                                             }
                                         }
                                     }
@@ -556,7 +520,7 @@ fun ProfilesScreen(
                 Button(
                     onClick = {
                         val updated = target.copy(
-                            scriptEnabled = scriptEnabled,
+                            scriptEnabled = true,
                             scriptIds = selectedScriptIds.toList()
                         )
                         ConfigManager.updateProfile(context, updated)

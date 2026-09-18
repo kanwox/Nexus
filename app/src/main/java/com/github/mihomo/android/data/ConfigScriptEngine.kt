@@ -16,7 +16,7 @@ object ConfigScriptEngine {
         targetScriptIds: List<String>? = null,
         logToRepo: Boolean = true
     ): String {
-        val allScripts = ScriptManager.getScripts(context).filter { it.enabled }
+        val allScripts = ScriptManager.getScripts(context)
         val scripts = if (targetScriptIds != null) {
             allScripts.filter { targetScriptIds.contains(it.id) }
         } else {

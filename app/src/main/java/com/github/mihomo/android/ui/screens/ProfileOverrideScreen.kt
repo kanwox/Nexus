@@ -48,7 +48,6 @@ fun ProfileOverrideScreen(
     LaunchedEffect(Unit) {
         allScripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
     }
-    var scriptEnabled by remember(profile) { mutableStateOf(profile.scriptEnabled) }
     val selectedScriptIds = remember(profile) { profile.scriptIds.toMutableStateList() }
 
     Column(
@@ -114,11 +113,6 @@ fun ProfileOverrideScreen(
                             color = LoonTextSecondary
                         )
                     }
-
-                    Switch(
-                        checked = scriptEnabled,
-                        onCheckedChange = { scriptEnabled = it }
-                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -245,17 +239,17 @@ fun ProfileOverrideScreen(
                             .clip(RoundedCornerShape(14.dp))
                             .border(
                                 1.dp,
-                                if (isChecked && scriptEnabled) LoonBlue else LoonCardBorder,
+                                if (isChecked) LoonBlue else LoonCardBorder,
                                 RoundedCornerShape(14.dp)
                             )
-                            .clickable(enabled = scriptEnabled) {
+                            .clickable {
                                 if (isChecked) {
                                     selectedScriptIds.remove(script.id)
                                 } else {
                                     selectedScriptIds.add(script.id)
                                 }
                             },
-                        color = if (isChecked && scriptEnabled) LoonEditBlueBg else LoonCard,
+                        color = if (isChecked) LoonEditBlueBg else LoonCard,
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Row(
@@ -270,7 +264,7 @@ fun ProfileOverrideScreen(
                                     text = script.name,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
-                                    color = if (scriptEnabled) LoonTextPrimary else LoonTextMuted
+                                    color = LoonTextPrimary
                                 )
                                 if (script.url.isNotBlank()) {
                                     Text(
@@ -285,7 +279,6 @@ fun ProfileOverrideScreen(
 
                             Checkbox(
                                 checked = isChecked,
-                                enabled = scriptEnabled,
                                 onCheckedChange = { checked ->
                                     if (checked) {
                                         selectedScriptIds.add(script.id)
@@ -310,7 +303,7 @@ fun ProfileOverrideScreen(
         Button(
             onClick = {
                 val updated = profile.copy(
-                    scriptEnabled = scriptEnabled,
+                    scriptEnabled = true,
                     scriptIds = selectedScriptIds.toList()
                 )
                 ConfigManager.updateProfile(context, updated)

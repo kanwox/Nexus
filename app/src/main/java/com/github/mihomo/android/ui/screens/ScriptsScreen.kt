@@ -297,15 +297,6 @@ fun ScriptsScreen(
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Switch(
-                                        checked = script.enabled,
-                                        onCheckedChange = { isChecked ->
-                                            ScriptManager.toggleScript(context, script.id, isChecked)
-                                            ProfileParser.clearCache()
-                                            refresh()
-                                        },
-                                        modifier = Modifier.padding(end = 4.dp)
-                                    )
                                     IconButton(
                                         onClick = { deleteConfirmScript = script },
                                         modifier = Modifier.size(32.dp)

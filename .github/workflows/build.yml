@@ -94,15 +94,29 @@ jobs:
           name: Nexus-arm64-v8a-apk
           path: build_output/*.apk
 
-      # A real version tag publishes under its own name; main keeps a rolling "latest".
+      - name: Extract App Version
+        id: get_version
+        run: |
+          VERSION_NAME=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${VERSION_NAME}"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_TITLE=Nexus $TAG" >> "$GITHUB_ENV"
+
+      # Publishes a new release corresponding to the version tag (e.g. v1.0.1-Beta.2)
       - name: Publish Automatic Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Nexus Latest Auto Build' }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
           body: |
             ### Nexus Automated Cloud Build
+            - Version: ${{ env.VERSION_NAME }}
             - Core: Mihomo ARM64 (libclash.so & libbridge.so)
             - ABI: arm64-v8a only
             - APK: download below and install directly on a 64-bit ARM Android device.

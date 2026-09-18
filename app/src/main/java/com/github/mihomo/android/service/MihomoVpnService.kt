@@ -130,13 +130,10 @@ class MihomoVpnService : VpnService() {
 
                 // Restore user's saved proxy selections into core
                 runCatching {
-                    val groupNames = ClashCore.queryGroupNames()
-                    groupNames.forEach { gName ->
-                        val savedNode = settings.getSelectedNode(gName)
-                        if (!savedNode.isNullOrBlank()) {
-                            ClashCore.patchSelector(gName, savedNode)
-                            Log.i(TAG, "Restored group selector: $gName -> $savedNode")
-                        }
+                    val allSaved = settings.getAllSelectedNodes()
+                    allSaved.forEach { (gName, savedNode) ->
+                        ClashCore.patchSelector(gName, savedNode)
+                        Log.i(TAG, "Restored group selector: $gName -> $savedNode")
                     }
                 }
 

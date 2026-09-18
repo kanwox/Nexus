@@ -84,6 +84,12 @@ object ClashCore {
                 val res = load(configFile)
                 if (res.isSuccess) {
                     isCoreLoaded = true
+                    runCatching {
+                        val allSaved = settings.getAllSelectedNodes()
+                        allSaved.forEach { (gName, sNode) ->
+                            patchSelector(gName, sNode)
+                        }
+                    }
                     notifyNetworkChanged(context)
                     return@withContext true
                 }
