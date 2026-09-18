@@ -858,7 +858,10 @@ fun rememberBounceOverscrollConnection(
                     // available.y < 0 → pushing up past bottom edge (bottom overscroll)
                     val isTopOverscroll = available.y > 0f
                     val isBottomOverscroll = available.y < 0f
-                    if ((isTopOverscroll && !allowTop) || (isBottomOverscroll && !allowBottom)) {
+                    if (isTopOverscroll && !allowTop) {
+                        return Offset.Zero
+                    }
+                    if (isBottomOverscroll && !allowBottom) {
                         return Offset.Zero
                     }
                     val current = overscrollOffset.value

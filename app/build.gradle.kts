@@ -97,17 +97,6 @@ android {
     }
 }
 
-// Use a unique output filename to avoid conflicts with previously locked APK files
-androidComponents {
-    onVariants { variant ->
-        variant.outputs.forEach { output ->
-            if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                output.outputFileName.set("nexus-${variant.buildType}.apk")
-            }
-        }
-    }
-}
-
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)

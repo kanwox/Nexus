@@ -202,6 +202,14 @@ fun SettingsScreen(
         // Section 2: 脚本
         LoonSectionHeader(title = AppStrings.get("settings_scripts", lang))
         LoonGroupCard {
+            LoonSettingsSwitchItem(
+                icon = Icons.Default.Javascript,
+                iconBg = Color(0xFFF59E0B),
+                title = if (lang == "zh") "启用脚本引擎" else if (lang == "ru") "Включить скрипты" else "Enable Scripting",
+                checked = scriptingEnabled,
+                onCheckedChange = onScriptingEnabledChanged
+            )
+            LoonDivider()
             LoonSettingsItem(
                 icon = Icons.Default.Code,
                 iconBg = Color(0xFF3B82F6),
