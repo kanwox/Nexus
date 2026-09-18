@@ -121,8 +121,8 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .verticalScroll(scrollState)
                 .bounceOverscroll()
+                .verticalScroll(scrollState)
                 .padding(bottom = 110.dp)
         ) {
             // Section 1: 基础网络与 TUN

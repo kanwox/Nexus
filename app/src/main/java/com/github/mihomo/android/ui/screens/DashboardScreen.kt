@@ -215,8 +215,8 @@ fun DashboardScreen(
                     .fillMaxSize()
                     .background(topBgBrush)
                     .statusBarsPadding()
+                    .bounceOverscroll(allowTop = false, allowBottom = true)
                     .verticalScroll(state = scrollState, enabled = draggedId == null)
-                    .bounceOverscroll()
                     .padding(horizontal = 20.dp)
                     .padding(top = 16.dp, bottom = 110.dp)
             ) {
