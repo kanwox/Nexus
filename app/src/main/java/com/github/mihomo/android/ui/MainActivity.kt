@@ -862,20 +862,6 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onFakeIpEnabledChanged = { enabled ->
-                            fakeIpEnabled = enabled
-                            settingsManager.fakeIpEnabled = enabled
-                            if (vpnState.status == VpnState.Status.RUNNING) {
-                                lifecycleScope.launch(Dispatchers.IO) {
-                                    val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
-                                    val conf = ConfigManager.prepareConfig(this@MainActivity, active?.file)
-                                    ClashCore.load(conf)
-                                }
-                            }
-                        },
-                        onScriptsChanged = {
-                            parseActiveProfile()
-                        },
                         onNavigateToScripts = {
                             overrideTargetProfile = null
                             overrideTargetProfileId = null

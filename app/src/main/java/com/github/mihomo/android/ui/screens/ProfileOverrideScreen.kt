@@ -41,7 +41,6 @@ fun ProfileOverrideScreen(
     onProfileUpdated: (ProfileItem) -> Unit
 ) {
     val context = LocalContext.current
-    val lang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     var allScripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
 

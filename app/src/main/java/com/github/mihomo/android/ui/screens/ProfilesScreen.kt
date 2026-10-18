@@ -73,6 +73,7 @@ private fun formatTraffic(bytes: Long): String {
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+@Suppress("UnusedParameter")
 @Composable
 fun ProfilesScreen(
     profiles: List<ProfileItem>,

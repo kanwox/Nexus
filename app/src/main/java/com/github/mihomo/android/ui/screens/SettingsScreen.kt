@@ -50,8 +50,6 @@ fun SettingsScreen(
     onTunStackChanged: (String) -> Unit,
     onBootOnStartupChanged: (Boolean) -> Unit,
     onAllowLanChanged: (Boolean) -> Unit,
-    onFakeIpEnabledChanged: (Boolean) -> Unit,
-    onScriptsChanged: () -> Unit = {},
     onNavigateToScripts: () -> Unit = {},
     onNavigateToProfiles: () -> Unit,
     onNavigateToAppRouting: () -> Unit,

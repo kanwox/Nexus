@@ -57,7 +57,6 @@ fun ScriptsScreen(
     onScriptsChanged: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val lang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
     val haptic = rememberIosHaptic()
 

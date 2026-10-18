@@ -314,7 +314,11 @@ fun CupertinoDivider(
     startIndent: Dp = 59.dp,
     endIndent: Dp = 0.dp
 ) {
-    CupertinoIndentedDivider(startIndent = startIndent, endIndent = endIndent)
+    HorizontalDivider(
+        modifier = modifier.padding(start = startIndent, end = endIndent),
+        color = LoonSeparator,
+        thickness = 0.5.dp
+    )
 }
 
 // =============================================================================
