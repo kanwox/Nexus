@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.service.VpnState
-import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -91,35 +91,20 @@ fun NetworkShareScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 24.dp)
     ) {
-        // Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.padding(end = 6.dp)) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = AppStrings.get("back", lang),
-                    tint = LoonTextPrimary
-                )
-            }
-            Text(
-                text = AppStrings.get("network_share_screen_title", lang),
-                color = LoonTextPrimary,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        // Cupertino Navigation Bar
+        CupertinoNavBar(
+            title = AppStrings.get("network_share_screen_title", lang),
+            showBackButton = true,
+            onBack = onBack
+        )
 
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .bounceOverscroll(allowTop = false, allowBottom = true),
+                .bounceOverscroll()
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Card 1: Switch & Status
@@ -127,7 +112,7 @@ fun NetworkShareScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -138,9 +123,9 @@ fun NetworkShareScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "允许局域网连接 (Allow LAN)",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    text = "允许局域网连接",
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -150,13 +135,13 @@ fun NetworkShareScreen(
                                     color = LoonTextMuted
                                 )
                             }
-                            Switch(
+                            CupertinoSwitch(
                                 checked = allowLan,
                                 onCheckedChange = { onAllowLanChanged(it) }
                             )
                         }
 
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = LoonCardBorder)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = LoonCardBorder, thickness = 0.5.dp)
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -199,7 +184,7 @@ fun NetworkShareScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -223,7 +208,7 @@ fun NetworkShareScreen(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = LoonBg,
-                                border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
@@ -264,7 +249,7 @@ fun NetworkShareScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -343,7 +328,7 @@ fun NetworkShareScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -355,34 +340,22 @@ fun NetworkShareScreen(
                         )
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Platform Selector Chips
-                        val platforms = listOf("WINDOWS" to "Windows", "MACOS" to "macOS", "IOS" to "iOS", "ANDROID" to "Android")
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            platforms.forEach { (key, label) ->
-                                val isSel = selectedPlatform == key
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isSel) LoonEditBlueBg else LoonBg,
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isSel) LoonBlue else LoonCardBorder),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable { selectedPlatform = key }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 6.dp)) {
-                                        Text(
-                                            text = label,
-                                            fontSize = 11.5.sp,
-                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSel) LoonBlue else LoonTextSecondary
-                                        )
-                                    }
+                        // Platform Selector Segmented Control
+                        val platforms = listOf("WINDOWS", "MACOS", "IOS", "ANDROID")
+                        CupertinoSegmentedControl(
+                            items = platforms,
+                            selectedItem = selectedPlatform,
+                            onItemSelected = { selectedPlatform = it },
+                            labelProvider = { key ->
+                                when (key) {
+                                    "WINDOWS" -> "Windows"
+                                    "MACOS" -> "macOS"
+                                    "IOS" -> "iOS"
+                                    else -> "Android"
                                 }
-                            }
-                        }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
                         Spacer(modifier = Modifier.height(12.dp))
 

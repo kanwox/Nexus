@@ -1,27 +1,25 @@
 package com.github.mihomo.android.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,7 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.LogEntry
 import com.github.mihomo.android.data.LogRepository
 import com.github.mihomo.android.service.VpnState
-import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -90,16 +88,22 @@ private fun parseRequestLog(entry: LogEntry): StructuredRequest {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RequestLogsScreen(
     vpnState: VpnState,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val lang = LocalAppLanguage.current
+    val haptic = rememberIosHaptic()
+
     val rawLogs by LogRepository.logsFlow.collectAsState()
     var isPaused by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedProtocol by remember { mutableStateOf("ALL") }
+    var inspectedRequest by remember { mutableStateOf<StructuredRequest?>(null) }
 
     val capturedLogs = remember(isPaused) {
         if (!isPaused) rawLogs else null
@@ -129,42 +133,33 @@ fun RequestLogsScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 24.dp)
     ) {
-        // Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack, modifier = Modifier.padding(end = 6.dp)) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = AppStrings.get("back", lang),
-                        tint = LoonTextPrimary
-                    )
-                }
-                Text(
-                    text = AppStrings.get("requests_screen_title", lang),
-                    color = LoonTextPrimary,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { isPaused = !isPaused }, modifier = Modifier.size(36.dp)) {
+        // Cupertino Navigation Bar
+        CupertinoNavBar(
+            title = AppStrings.get("requests_screen_title", lang),
+            showBackButton = true,
+            onBack = onBack,
+            actions = {
+                IconButton(
+                    onClick = {
+                        haptic.selection()
+                        isPaused = !isPaused
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
                     Icon(
                         imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
                         contentDescription = if (isPaused) "继续" else "暂停",
-                        tint = if (isPaused) LoonGreen else LoonTextSecondary
+                        tint = if (isPaused) IosGreen else IosBlue
                     )
                 }
-                IconButton(onClick = { LogRepository.clear() }, modifier = Modifier.size(36.dp)) {
+                IconButton(
+                    onClick = {
+                        haptic.selection()
+                        LogRepository.clear()
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.DeleteSweep,
                         contentDescription = "清空",
@@ -172,218 +167,351 @@ fun RequestLogsScreen(
                     )
                 }
             }
-        }
-
-        // Live Traffic Metrics Card
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = LoonCard,
-            border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text("实时速率 (↑ / ↓)", fontSize = 11.sp, color = LoonTextMuted)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "${vpnState.upSpeed.ifBlank { "0 B/s" }} / ${vpnState.downSpeed.ifBlank { "0 B/s" }}",
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonBlue
-                    )
-                }
-
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("流量累计 (↑ / ↓)", fontSize = 11.sp, color = LoonTextMuted)
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "${vpnState.totalUp.ifBlank { "0 B" }} / ${vpnState.totalDown.ifBlank { "0 B" }}",
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Search Bar
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("搜索请求目标、域名、规则、节点...", fontSize = 12.5.sp, color = LoonTextMuted) },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, tint = LoonTextMuted, modifier = Modifier.size(18.dp))
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Default.Clear, contentDescription = "清除", tint = LoonTextMuted, modifier = Modifier.size(16.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = LoonCard,
-                unfocusedContainerColor = LoonCard,
-                focusedBorderColor = LoonBlue,
-                unfocusedBorderColor = LoonCardBorder,
-                focusedTextColor = LoonTextPrimary,
-                unfocusedTextColor = LoonTextPrimary
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(46.dp)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Protocol Filter Chips
-        val protocols = listOf("ALL", "TCP", "UDP", "DNS")
-        LazyRow(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                .fillMaxSize()
+                .padding(horizontal = 16.dp)
         ) {
-            items(protocols) { proto ->
-                val isSel = selectedProtocol == proto
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (isSel) LoonEditBlueBg else LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, if (isSel) LoonBlue else LoonCardBorder),
+            // Live Traffic Metrics Card
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = LoonCard,
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { selectedProtocol = proto }
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (proto == "ALL") "全部协议 (${requests.size})" else proto,
-                        fontSize = 11.5.sp,
-                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSel) LoonBlue else LoonTextSecondary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
-                }
-            }
-        }
-
-        // Requests List
-        if (filteredRequests.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = if (!isRunning) "代理服务未开启\n连接建立后，应用请求记录将在此实时滚动"
-                        else if (searchQuery.isNotBlank()) "未找到包含「$searchQuery」的请求记录"
-                        else "暂无请求记录",
-                        color = LoonTextSecondary,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .bounceOverscroll(allowTop = false, allowBottom = true),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(filteredRequests, key = { it.id }) { req ->
-                    val protoColor = when (req.protocol) {
-                        "TCP" -> LoonBlue
-                        "UDP" -> LoonGreen
-                        "DNS" -> Color(0xFFF59E0B)
-                        else -> Color(0xFF8B5CF6)
+                    Column {
+                        Text("实时速率 (↑ / ↓)", fontSize = 11.sp, color = LoonTextMuted)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${vpnState.upSpeed.ifBlank { "0 B/s" }} / ${vpnState.downSpeed.ifBlank { "0 B/s" }}",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = IosBlue
+                        )
                     }
 
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonCard,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = req.protocol,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = protoColor,
-                                        modifier = Modifier.padding(end = 8.dp)
-                                    )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("流量累计 (↑ / ↓)", fontSize = 11.sp, color = LoonTextMuted)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "${vpnState.totalUp.ifBlank { "0 B" }} / ${vpnState.totalDown.ifBlank { "0 B" }}",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LoonTextPrimary
+                        )
+                    }
+                }
+            }
 
-                                    Text(
-                                        text = req.destination,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = LoonTextPrimary,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                    )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Cupertino Search Bar
+            TextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("搜索请求域名、IP、规则、出站节点...", fontSize = 13.sp, color = LoonTextMuted) },
+                leadingIcon = {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = LoonTextMuted, modifier = Modifier.size(18.dp))
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Clear, contentDescription = "清除", tint = LoonTextMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = LoonCard,
+                    unfocusedContainerColor = LoonCard,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    focusedTextColor = LoonTextPrimary,
+                    unfocusedTextColor = LoonTextPrimary
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Protocol Filter Segmented Control
+            val protocols = listOf("ALL", "TCP", "UDP", "DNS")
+            CupertinoSegmentedControl(
+                items = protocols,
+                selectedItem = selectedProtocol,
+                onItemSelected = { selectedProtocol = it },
+                labelProvider = { proto ->
+                    if (proto == "ALL") "全部 (${requests.size})" else proto
+                },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            )
+
+            // Requests Stream List
+            if (filteredRequests.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .bounceOverscroll(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = if (!isRunning) "代理服务未开启\n连接建立后，应用请求明细将在此实时滚动"
+                            else if (searchQuery.isNotBlank()) "未找到匹配「$searchQuery」的请求记录"
+                            else "暂无实时请求记录",
+                            color = LoonTextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .bounceOverscroll(),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 120.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filteredRequests, key = { it.id }) { req ->
+                        val protoColor = when (req.protocol) {
+                            "TCP" -> IosBlue
+                            "UDP" -> IosGreen
+                            "DNS" -> IosOrange
+                            else -> Color(0xFFAF52DE)
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = LoonCard,
+                            border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .iosPressable {
+                                    haptic.selection()
+                                    inspectedRequest = req
                                 }
-
-                                Text(
-                                    text = timeFormat.format(req.timestamp),
-                                    fontSize = 10.5.sp,
-                                    color = LoonTextMuted,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-
-                            if (req.rule.isNotBlank() || req.outbound.isNotBlank()) {
-                                Spacer(modifier = Modifier.height(6.dp))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (req.rule.isNotBlank()) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        // Protocol label: clean colored text typography - NO square box!
                                         Text(
-                                            text = "规则: ${req.rule}",
+                                            text = req.protocol,
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = protoColor
+                                        )
+
+                                        Spacer(modifier = Modifier.width(10.dp))
+
+                                        Text(
+                                            text = req.destination,
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = LoonTextPrimary,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Text(
+                                        text = timeFormat.format(req.timestamp),
+                                        fontSize = 10.5.sp,
+                                        color = LoonTextMuted,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.padding(start = 6.dp)
+                                    )
+                                }
+
+                                if (req.rule.isNotBlank() || req.outbound.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (req.rule.isNotBlank()) "匹配: ${req.rule}" else "默认路由",
                                             fontSize = 11.sp,
                                             color = LoonTextSecondary,
                                             maxLines = 1,
                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f)
                                         )
-                                    } else {
-                                        Spacer(modifier = Modifier.weight(1f))
-                                    }
 
-                                    if (req.outbound.isNotBlank()) {
-                                        Text(
-                                            text = req.outbound,
-                                            fontSize = 11.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = when {
-                                                req.outbound.contains("DIRECT", ignoreCase = true) -> Color(0xFF10B981)
-                                                req.outbound.contains("REJECT", ignoreCase = true) -> RedDanger
-                                                else -> LoonBlue
+                                        if (req.outbound.isNotBlank()) {
+                                            val isDirect = req.outbound.contains("DIRECT", ignoreCase = true)
+                                            val isReject = req.outbound.contains("REJECT", ignoreCase = true)
+                                            val outboundColor = when {
+                                                isDirect -> IosGreen
+                                                isReject -> IosRed
+                                                else -> IosBlue
                                             }
-                                        )
+
+                                            // Rounded capsule pill strictly for essential highlight
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = outboundColor.copy(alpha = 0.12f)
+                                            ) {
+                                                Text(
+                                                    text = req.outbound,
+                                                    fontSize = 10.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = outboundColor,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // iOS Inspection Bottom Sheet (Flat layout, NO box-in-a-box)
+    // =========================================================================
+    if (inspectedRequest != null) {
+        val req = inspectedRequest!!
+
+        ModalBottomSheet(
+            onDismissRequest = { inspectedRequest = null },
+            containerColor = LoonCard,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "请求明细",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = LoonTextPrimary
+                        )
+                        Text(
+                            text = timeFormat.format(req.timestamp),
+                            fontSize = 12.sp,
+                            color = LoonTextSecondary
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(req.destination))
+                            Toast.makeText(context, "已复制请求目标", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "复制", tint = IosBlue, modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Flat detail rows with dividers
+                val details = mutableListOf(
+                    "请求协议" to req.protocol,
+                    "目标主机" to req.destination
+                )
+                if (req.source.isNotBlank()) details.add("来源地址" to req.source)
+                if (req.rule.isNotBlank()) details.add("匹配规则" to req.rule)
+                if (req.outbound.isNotBlank()) details.add("最终出站" to req.outbound)
+
+                details.forEachIndexed { i, (label, value) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(label, fontSize = 14.sp, color = LoonTextSecondary)
+                        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = LoonTextPrimary)
+                    }
+                    if (i < details.size - 1) {
+                        HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text("原始链路日志", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LoonTextSecondary)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = req.rawMessage,
+                    fontSize = 11.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = LoonTextPrimary,
+                    lineHeight = 16.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(LoonBg)
+                        .padding(12.dp)
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(req.rawMessage))
+                            Toast.makeText(context, "已复制全量日志", Toast.LENGTH_SHORT).show()
+                            inspectedRequest = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).height(46.dp)
+                    ) {
+                        Text("复制日志", fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = { inspectedRequest = null },
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                        modifier = Modifier.weight(1f).height(46.dp)
+                    ) {
+                        Text("关闭", color = LoonTextPrimary)
                     }
                 }
             }

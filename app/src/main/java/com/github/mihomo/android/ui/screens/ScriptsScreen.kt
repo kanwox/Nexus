@@ -4,15 +4,15 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,14 +25,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import com.github.mihomo.android.core.ClashCore
-import com.github.mihomo.android.data.ConfigManager
-import com.github.mihomo.android.data.ProfileParser
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
-import com.github.mihomo.android.data.SettingsManager
-import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,6 +59,8 @@ fun ScriptsScreen(
     val context = LocalContext.current
     val lang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
+    val haptic = rememberIosHaptic()
+
     var scripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
     var updatingScriptIds by remember { mutableStateOf(setOf<String>()) }
 
@@ -76,8 +73,11 @@ fun ScriptsScreen(
         onScriptsChanged()
     }
 
+    var showActionMenuSheet by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showImportUrlDialog by remember { mutableStateOf(false) }
+    var showTemplateDialog by remember { mutableStateOf(false) }
+
     var editingScript by remember { mutableStateOf<ScriptItem?>(null) }
     var scriptCodeInput by remember { mutableStateOf("") }
     var deleteConfirmScript by remember { mutableStateOf<ScriptItem?>(null) }
@@ -101,24 +101,16 @@ fun ScriptsScreen(
                         context = context,
                         name = scriptName,
                         pattern = "",
-                        type = "profile-modify",
+                        type = "http-response",
                         code = content
                     )
                     refresh()
-                    Toast.makeText(
-                        context,
-                        AppStrings.get("scripts_imported_toast", lang).replace("{name}", scriptName),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(context, "已导入本地脚本: $scriptName", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(context, AppStrings.get("scripts_empty_content", lang), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "脚本内容为空", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure {
-                Toast.makeText(
-                    context,
-                    AppStrings.get("scripts_read_failed", lang).replace("{msg}", it.message ?: ""),
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(context, "读取脚本失败: ${it.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -128,356 +120,200 @@ fun ScriptsScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 24.dp)
     ) {
-        // Top Header Row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        // Cupertino Navigation Bar
+        CupertinoNavBar(
+            title = "脚本中心",
+            subtitle = "${scripts.size} 个配置覆写脚本",
+            showBackButton = true,
+            onBack = onBack,
+            actions = {
                 IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.padding(end = 6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = AppStrings.get("back", lang),
-                        tint = LoonTextPrimary
-                    )
-                }
-                Text(
-                    text = AppStrings.get("scripts_title", lang),
-                    color = LoonTextPrimary,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (scripts.any { it.url.isNotBlank() }) {
-                    val isAnyUpdating = updatingScriptIds.isNotEmpty()
-                    IconButton(
-                        onClick = {
-                            if (isAnyUpdating) return@IconButton
-                            val remoteScripts = scripts.filter { it.url.isNotBlank() }
-                            scope.launch {
-                                updatingScriptIds = updatingScriptIds + remoteScripts.map { it.id }
-                                var successCount = 0
-                                for (s in remoteScripts) {
-                                    val r = ScriptManager.updateScriptFromRemote(context, s)
-                                    if (r.isSuccess) successCount++
-                                }
-                                updatingScriptIds = updatingScriptIds - remoteScripts.map { it.id }.toSet()
-                                refresh()
-                                withContext(Dispatchers.IO) {
-                                    val settings = SettingsManager(context)
-                                    val profiles = ConfigManager.getProfiles(context)
-                                    val active = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
-                                    if (active?.scriptEnabled == true && ClashCore.isCoreLoaded) {
-                                        runCatching {
-                                            val cf = ConfigManager.prepareConfig(context, active.file)
-                                            ClashCore.load(cf)
-                                        }
-                                    }
-                                }
-                                Toast.makeText(context, "已同步 $successCount/${remoteScripts.size} 个远程脚本", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        enabled = !isAnyUpdating
-                    ) {
-                        if (isAnyUpdating) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = LoonBlue,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = "同步所有远程脚本",
-                                tint = LoonTextPrimary
-                            )
-                        }
-                    }
-                }
-
-                IconButton(
-                    onClick = { showCreateDialog = true }
+                    onClick = {
+                        haptic.selection()
+                        showActionMenuSheet = true
+                    },
+                    modifier = Modifier.size(34.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = AppStrings.get("scripts_new", lang),
-                        tint = LoonTextPrimary
+                        contentDescription = "添加脚本",
+                        tint = IosBlue,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
-        }
+        )
 
-        // Action Buttons: Distinct colors
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 18.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Button 1: 本地导入 (Solid Brand Blue)
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable { localScriptLauncher.launch("*/*") },
-                color = LoonBlue,
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileUpload,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = AppStrings.get("scripts_import_local", lang),
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // Button 2: 链接导入 (Emerald Green, swapped with 新建脚本)
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable { showImportUrlDialog = true },
-                color = Color(0xFF10B981),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Link,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = AppStrings.get("scripts_import_link", lang),
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-
-        // Script list
         if (scripts.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.Javascript,
-                        contentDescription = null,
-                        tint = LoonTextMuted,
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(68.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(LoonCard),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Code,
+                            contentDescription = null,
+                            tint = Color(0xFF5856D6),
+                            modifier = Modifier.size(34.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = AppStrings.get("scripts_empty", lang),
-                        color = LoonTextSecondary,
-                        fontSize = 14.sp,
-                        lineHeight = 22.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        text = "暂无配置脚本",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LoonTextPrimary
                     )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "脚本可用于在节点解析、规则匹配时动态重写配置",
+                        fontSize = 13.sp,
+                        color = LoonTextSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                haptic.selection()
+                                showCreateDialog = true
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("新建脚本", fontWeight = FontWeight.Bold)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                haptic.selection()
+                                showTemplateDialog = true
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder)
+                        ) {
+                            Text("模板创建", color = LoonTextPrimary)
+                        }
+                    }
                 }
             }
         } else {
             LazyColumn(
                 modifier = Modifier
-                    .weight(1f)
-                    .bounceOverscroll(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .fillMaxSize()
+                    .bounceOverscroll()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
             ) {
-                items(scripts, key = { it.id }) { script ->
+                item {
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .border(1.dp, LoonCardBorder, RoundedCornerShape(16.dp)),
+                            .clip(RoundedCornerShape(14.dp)),
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                         color = LoonCard,
-                        shape = RoundedCornerShape(16.dp)
+                        shape = RoundedCornerShape(14.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            scripts.forEachIndexed { index, script ->
+                                val isUpdating = updatingScriptIds.contains(script.id)
+                                val isRemote = script.url.isNotBlank()
+
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-
-                                    Text(
-                                        text = script.name,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        color = LoonTextPrimary,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                    )
-                                }
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (script.url.isNotBlank()) {
-                                        val isUpdating = updatingScriptIds.contains(script.id)
-                                        IconButton(
-                                            onClick = {
-                                                if (isUpdating) return@IconButton
-                                                updatingScriptIds = updatingScriptIds + script.id
-                                                scope.launch {
-                                                    val res = ScriptManager.updateScriptFromRemote(context, script)
-                                                    updatingScriptIds = updatingScriptIds - script.id
-                                                    if (res.isSuccess) {
-                                                        refresh()
-                                                        withContext(Dispatchers.IO) {
-                                                            val settings = SettingsManager(context)
-                                                            val profiles = ConfigManager.getProfiles(context)
-                                                            val active = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
-                                                            if (active?.scriptEnabled == true && active.scriptIds.contains(script.id) && ClashCore.isCoreLoaded) {
-                                                                runCatching {
-                                                                    val cf = ConfigManager.prepareConfig(context, active.file)
-                                                                    ClashCore.load(cf)
-                                                                }
-                                                            }
-                                                        }
-                                                        Toast.makeText(context, AppStrings.get("scripts_sync_success", lang), Toast.LENGTH_SHORT).show()
-                                                    } else {
-                                                        Toast.makeText(
-                                                            context,
-                                                            AppStrings.get("scripts_sync_failed", lang).replace("{msg}", res.exceptionOrNull()?.message ?: ""),
-                                                            Toast.LENGTH_LONG
-                                                        ).show()
-                                                    }
-                                                }
-                                            },
-                                            modifier = Modifier.size(32.dp),
-                                            enabled = !isUpdating
-                                        ) {
-                                            if (isUpdating) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(16.dp),
-                                                    color = LoonBlue,
-                                                    strokeWidth = 2.dp
-                                                )
-                                            } else {
-                                                Icon(
-                                                    imageVector = Icons.Default.Sync,
-                                                    contentDescription = AppStrings.get("scripts_sync", lang),
-                                                    tint = LoonBlue,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-
-                                    IconButton(
-                                        onClick = { deleteConfirmScript = script },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.DeleteOutline,
-                                            contentDescription = AppStrings.get("scripts_delete_title", lang),
-                                            tint = RedDanger,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            if (script.url.isNotBlank()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = script.url,
-                                    fontSize = 11.sp,
-                                    color = LoonTextMuted,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = if (script.url.isNotBlank()) {
-                                        "更新于: ${formatRelativeTime(script.updatedAt)}"
-                                    } else {
-                                        AppStrings.get("scripts_bind_hint", lang)
-                                    },
-                                    fontSize = 11.sp,
-                                    color = LoonTextMuted
-                                )
-
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = LoonEditBlueBg,
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
                                         .clickable {
-                                            scriptCodeInput = ScriptManager.readScriptCode(context, script)
+                                            haptic.selection()
+                                            val code = ScriptManager.readScriptCode(context, script)
+                                            scriptCodeInput = code
                                             editingScript = script
                                         }
+                                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Edit,
-                                            contentDescription = null,
-                                            tint = LoonBlue,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = AppStrings.get("scripts_edit", lang),
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = LoonBlue
+                                            text = script.name,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = LoonTextPrimary,
+                                            maxLines = 1
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "${script.type.uppercase()} · ${formatRelativeTime(script.updatedAt)}",
+                                            fontSize = 11.5.sp,
+                                            color = LoonTextSecondary
                                         )
                                     }
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (isRemote) {
+                                            IconButton(
+                                                onClick = {
+                                                    if (!isUpdating) {
+                                                        haptic.selection()
+                                                        updatingScriptIds = updatingScriptIds + script.id
+                                                        scope.launch {
+                                                            val res = ScriptManager.updateScriptFromRemote(context, script)
+                                                            updatingScriptIds = updatingScriptIds - script.id
+                                                            if (res.isSuccess) {
+                                                                refresh()
+                                                                Toast.makeText(context, "脚本更新成功", Toast.LENGTH_SHORT).show()
+                                                            } else {
+                                                                Toast.makeText(context, "更新失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                if (isUpdating) {
+                                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = IosBlue)
+                                                } else {
+                                                    Icon(Icons.Default.Refresh, contentDescription = "更新", tint = LoonTextSecondary, modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                        }
+
+                                        CupertinoSwitch(
+                                            checked = script.enabled,
+                                            onCheckedChange = { checked ->
+                                                ScriptManager.toggleScript(context, script.id, checked)
+                                                refresh()
+                                            }
+                                        )
+
+                                        IconButton(
+                                            onClick = {
+                                                haptic.selection()
+                                                deleteConfirmScript = script
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(Icons.Default.DeleteOutline, contentDescription = "删除", tint = LoonTextSecondary, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+
+                                if (index < scripts.size - 1) {
+                                    HorizontalDivider(
+                                        color = LoonCardBorder,
+                                        thickness = 0.5.dp,
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
                                 }
                             }
                         }
@@ -487,251 +323,362 @@ fun ScriptsScreen(
         }
     }
 
-    if (showCreateDialog) {
-        var newName by remember { mutableStateOf("") }
-        var initialCode by remember {
-            mutableStateOf(
-                "/**\n * Nexus 配置复写脚本\n * @param {Object} config\n * @returns {Object}\n */\nfunction main(config) {\n  return config;\n}\n"
-            )
-        }
+    // Flat Action Menu BottomSheet (NO boxed cards inside)
+    if (showActionMenuSheet) {
+        val actions = listOf(
+            Triple("新建空白脚本", "直接编写 JavaScript 自定义逻辑", Icons.Default.EditNote),
+            Triple("从网络链接导入", "支持 GitHub 等直接 RAW 链接", Icons.Default.Link),
+            Triple("从本地文件导入", "选择设备中的 .js 或 .txt 脚本文件", Icons.Default.FolderOpen),
+            Triple("从预设模板创建", "去广告、节点规范化与重定向", Icons.Default.AutoAwesome)
+        )
 
-        AlertDialog(
-            onDismissRequest = { showCreateDialog = false },
+        ModalBottomSheet(
+            onDismissRequest = { showActionMenuSheet = false },
             containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text(AppStrings.get("scripts_new_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = newName,
-                        onValueChange = { newName = it },
-                        label = { Text(AppStrings.get("scripts_name_label", lang)) },
-                        placeholder = { Text(AppStrings.get("scripts_name_placeholder", lang)) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newName.isNotBlank()) {
-                            ScriptManager.saveLocalScript(
-                                context = context,
-                                name = newName.trim(),
-                                pattern = "",
-                                type = "profile-modify",
-                                code = initialCode
-                            )
-                            refresh()
-                            showCreateDialog = false
-                            Toast.makeText(context, AppStrings.get("scripts_created", lang), Toast.LENGTH_SHORT).show()
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = "添加脚本",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                actions.forEachIndexed { index, (title, desc, icon) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                haptic.selection()
+                                showActionMenuSheet = false
+                                when (index) {
+                                    0 -> showCreateDialog = true
+                                    1 -> showImportUrlDialog = true
+                                    2 -> localScriptLauncher.launch("*/*")
+                                    3 -> showTemplateDialog = true
+                                }
+                            }
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(icon, contentDescription = null, tint = IosBlue, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LoonTextPrimary)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(desc, fontSize = 12.sp, color = LoonTextSecondary)
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981), contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(AppStrings.get("scripts_create", lang), fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateDialog = false }) {
-                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = LoonChevronTint, modifier = Modifier.size(16.dp))
+                    }
+
+                    if (index < actions.size - 1) {
+                        HorizontalDivider(
+                            color = LoonCardBorder,
+                            thickness = 0.5.dp,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
                 }
             }
-        )
+        }
     }
 
-    if (showImportUrlDialog) {
-        var urlName by remember { mutableStateOf("") }
-        var scriptUrl by remember { mutableStateOf("") }
-        var isDownloading by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { if (!isDownloading) showImportUrlDialog = false },
+    // Create Empty Script BottomSheet
+    if (showCreateDialog) {
+        var nameInput by remember { mutableStateOf("") }
+        ModalBottomSheet(
+            onDismissRequest = { showCreateDialog = false },
             containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text(AppStrings.get("scripts_import_url_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(
-                        value = urlName,
-                        onValueChange = { urlName = it },
-                        label = { Text(AppStrings.get("scripts_name_optional", lang)) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = scriptUrl,
-                        onValueChange = { scriptUrl = it },
-                        label = { Text(AppStrings.get("scripts_url_label", lang)) },
-                        placeholder = { Text("https://.../script.js") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text("新建脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("脚本名称") },
+                    placeholder = { Text("例如: RuleRewriter") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(18.dp))
                 Button(
                     onClick = {
-                        if (scriptUrl.isNotBlank()) {
+                        val name = nameInput.ifBlank { "Untitled_Script" }
+                        val defaultCode = """
+                            // Nexus Script Studio
+                            // Type: http-response
+                            function main(params) {
+                                return params;
+                            }
+                        """.trimIndent()
+                        ScriptManager.saveLocalScript(context, name, "", "http-response", defaultCode)
+                        refresh()
+                        showCreateDialog = false
+                        Toast.makeText(context, "脚本创建成功", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("创建并保存", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    // Import from URL BottomSheet
+    if (showImportUrlDialog) {
+        var urlInput by remember { mutableStateOf("") }
+        var nameInput by remember { mutableStateOf("") }
+        var isDownloading by remember { mutableStateOf(false) }
+
+        ModalBottomSheet(
+            onDismissRequest = { if (!isDownloading) showImportUrlDialog = false },
+            containerColor = LoonCard,
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text("从链接导入脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = urlInput,
+                    onValueChange = { urlInput = it },
+                    label = { Text("脚本 URL") },
+                    placeholder = { Text("https://raw.githubusercontent.com/...") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("脚本名称 (选填)") },
+                    placeholder = { Text("留空将自动提取文件名") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Button(
+                    onClick = {
+                        if (urlInput.isNotBlank()) {
                             isDownloading = true
                             scope.launch {
-                                val res = ScriptManager.downloadScript(
-                                    context = context,
-                                    url = scriptUrl.trim(),
-                                    name = urlName.trim(),
-                                    pattern = "",
-                                    type = "profile-modify"
-                                )
+                                val res = ScriptManager.downloadScript(context, urlInput.trim(), nameInput.trim(), "", "http-response")
                                 isDownloading = false
                                 if (res.isSuccess) {
                                     refresh()
                                     showImportUrlDialog = false
-                                    Toast.makeText(context, AppStrings.get("scripts_downloaded", lang), Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "导入成功", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    Toast.makeText(
-                                        context,
-                                        AppStrings.get("scripts_download_failed", lang)
-                                            .replace("{msg}", res.exceptionOrNull()?.message ?: ""),
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    Toast.makeText(context, "下载失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = LoonBlue, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp),
-                    enabled = !isDownloading
+                    enabled = urlInput.isNotBlank() && !isDownloading,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text(
-                        if (isDownloading) AppStrings.get("scripts_downloading", lang)
-                        else AppStrings.get("scripts_import", lang),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showImportUrlDialog = false }, enabled = !isDownloading) {
-                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
-                }
-            }
-        )
-    }
-
-    if (editingScript != null) {
-        val target = editingScript!!
-        Dialog(onDismissRequest = { editingScript = null }) {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = LoonCard,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.88f),
-                shadowElevation = 8.dp
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = AppStrings.get("scripts_edit_title", lang).replace("{name}", target.name),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp,
-                            color = LoonTextPrimary
-                        )
-                        IconButton(onClick = { editingScript = null }, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = AppStrings.get("scripts_close", lang),
-                                tint = LoonTextSecondary
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = scriptCodeInput,
-                        onValueChange = { scriptCodeInput = it },
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = LoonTextPrimary,
-                            lineHeight = 17.sp
-                        ),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = LoonBg,
-                            unfocusedContainerColor = LoonBg,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(onClick = { editingScript = null }) {
-                            Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                ScriptManager.updateScriptCode(context, target, scriptCodeInput)
-                                refresh()
-                                editingScript = null
-                                Toast.makeText(context, AppStrings.get("scripts_saved", lang), Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = LoonBlue),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text(AppStrings.get("scripts_save_code", lang), color = Color.White, fontWeight = FontWeight.Bold)
-                        }
+                    if (isDownloading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("立即导入", fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
     }
 
+    // Preset Templates BottomSheet (Flat list, NO box-in-a-box)
+    if (showTemplateDialog) {
+        val templates = listOf(
+            Triple("分流与规则重写模板", "自动为指定域名或路径重定向或注入代理规则", """
+                // 智能分流重写脚本
+                function main(config) {
+                    return config;
+                }
+            """.trimIndent()),
+            Triple("节点智能重命名模板", "去除节点前后缀无用 Emoji 与广告标签", """
+                // 节点名称规范化脚本
+                function main(proxies) {
+                    return proxies.map(p => {
+                        p.name = p.name.replace(/\[.*?\]|\(.*?\)/g, "").trim();
+                        return p;
+                    });
+                }
+            """.trimIndent()),
+            Triple("URL 302 重定向模板", "将目标请求重定向至本地或代理镜像", """
+                // HTTP 302 重定向
+                function handleRequest(req) {
+                    if (req.url.indexOf("example.com") !== -1) {
+                        return { status: 302, headers: { Location: "https://redirected.com" } };
+                    }
+                    return req;
+                }
+            """.trimIndent())
+        )
+
+        ModalBottomSheet(
+            onDismissRequest = { showTemplateDialog = false },
+            containerColor = LoonCard,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = "选择预设模板",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                templates.forEachIndexed { idx, (tplName, tplDesc, tplCode) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                haptic.selection()
+                                ScriptManager.saveLocalScript(context, tplName, "", "rule", tplCode)
+                                refresh()
+                                showTemplateDialog = false
+                                Toast.makeText(context, "已基于模板创建: $tplName", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFFAF52DE), modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(tplName, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = LoonTextPrimary)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(tplDesc, fontSize = 12.sp, color = LoonTextSecondary)
+                        }
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = LoonChevronTint, modifier = Modifier.size(16.dp))
+                    }
+                    if (idx < templates.size - 1) {
+                        HorizontalDivider(
+                            color = LoonCardBorder,
+                            thickness = 0.5.dp,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Cupertino Code Studio Editor Modal
+    if (editingScript != null) {
+        val target = editingScript!!
+        ModalBottomSheet(
+            onDismissRequest = { editingScript = null },
+            containerColor = LoonCard,
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { editingScript = null }) {
+                        Text("取消", color = LoonTextSecondary)
+                    }
+
+                    Text(
+                        text = target.name,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LoonTextPrimary
+                    )
+
+                    TextButton(
+                        onClick = {
+                            haptic.selection()
+                            ScriptManager.updateScriptCode(context, target, scriptCodeInput)
+                            refresh()
+                            editingScript = null
+                            Toast.makeText(context, "代码已保存", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Editor Canvas
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = LoonBg,
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    OutlinedTextField(
+                        value = scriptCodeInput,
+                        onValueChange = { scriptCodeInput = it },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(4.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedBorderColor = Color.Transparent,
+                            unfocusedBorderColor = Color.Transparent
+                        ),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = LoonTextPrimary
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    // Delete Confirmation Dialog
     if (deleteConfirmScript != null) {
         val target = deleteConfirmScript!!
         AlertDialog(
@@ -739,31 +686,26 @@ fun ScriptsScreen(
             containerColor = LoonCard,
             shape = RoundedCornerShape(20.dp),
             title = {
-                Text(AppStrings.get("scripts_delete_title", lang), color = LoonTextPrimary, fontWeight = FontWeight.Bold)
+                Text("删除脚本", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
-                Text(
-                    AppStrings.get("scripts_delete_confirm", lang).replace("{name}", target.name),
-                    color = LoonTextSecondary,
-                    fontSize = 14.sp
-                )
+                Text("确定要删除脚本 [${target.name}] 吗？相关的配置重写将失效。", color = LoonTextSecondary, fontSize = 14.sp)
             },
             confirmButton = {
-                Button(
+                TextButton(
                     onClick = {
                         ScriptManager.deleteScript(context, target.id)
                         refresh()
                         deleteConfirmScript = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = RedDanger, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
+                        Toast.makeText(context, "脚本已删除", Toast.LENGTH_SHORT).show()
+                    }
                 ) {
-                    Text(AppStrings.get("scripts_confirm_delete", lang), fontWeight = FontWeight.Bold)
+                    Text("删除", color = IosRed, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirmScript = null }) {
-                    Text(AppStrings.get("cancel", lang), color = LoonTextSecondary)
+                    Text("取消", color = LoonTextSecondary)
                 }
             }
         )

@@ -3,6 +3,7 @@ package com.github.mihomo.android.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,12 +17,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.LogRepository
-import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -42,6 +44,7 @@ fun DnsScreen(
     onFakeIpEnabledChanged: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val lang = LocalAppLanguage.current
     val scope = rememberCoroutineScope()
 
@@ -105,35 +108,20 @@ fun DnsScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 24.dp)
     ) {
-        // Top Bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.padding(end = 6.dp)) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = AppStrings.get("back", lang),
-                    tint = LoonTextPrimary
-                )
-            }
-            Text(
-                text = AppStrings.get("dns_screen_title", lang),
-                color = LoonTextPrimary,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        // Cupertino Navigation Bar
+        CupertinoNavBar(
+            title = AppStrings.get("dns_screen_title", lang),
+            showBackButton = true,
+            onBack = onBack
+        )
 
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .bounceOverscroll(allowTop = false, allowBottom = true),
+                .bounceOverscroll()
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Card 1: DNS Mode & Status
@@ -141,7 +129,7 @@ fun DnsScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -153,8 +141,8 @@ fun DnsScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "Fake-IP 增强模式",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -164,13 +152,13 @@ fun DnsScreen(
                                     color = LoonTextMuted
                                 )
                             }
-                            Switch(
+                            CupertinoSwitch(
                                 checked = fakeIpEnabled,
                                 onCheckedChange = { onFakeIpEnabledChanged(it) }
                             )
                         }
 
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = LoonCardBorder)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = LoonCardBorder, thickness = 0.5.dp)
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -189,6 +177,35 @@ fun DnsScreen(
                                 Text("已开启", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LoonGreen)
                             }
                         }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Flush Cache Pill Button
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = LoonTertiaryBg,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    scope.launch(Dispatchers.IO) {
+                                        runCatching {
+                                            if (com.github.mihomo.android.core.ClashCore.isCoreLoaded) {
+                                                com.github.mihomo.android.core.ClashCore.notifyNetworkChanged(context)
+                                            }
+                                        }
+                                    }
+                                    Toast.makeText(context, "已成功刷新 Fake-IP 映射与 DNS 缓存", Toast.LENGTH_SHORT).show()
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CleaningServices, contentDescription = null, tint = IosBlue, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("清空 Fake-IP 与 DNS 缓存", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = IosBlue)
+                            }
+                        }
                     }
                 }
             }
@@ -198,7 +215,7 @@ fun DnsScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -215,34 +232,44 @@ fun DnsScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedTextField(
+                            TextField(
                                 value = testDomainInput,
                                 onValueChange = { testDomainInput = it },
-                                placeholder = { Text("输入域名如 www.google.com", fontSize = 12.sp, color = LoonTextMuted) },
+                                placeholder = { Text("输入域名如 www.google.com", fontSize = 12.5.sp, color = LoonTextMuted) },
                                 singleLine = true,
-                                shape = RoundedCornerShape(12.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = LoonBlue,
-                                    unfocusedBorderColor = LoonCardBorder,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = LoonBg,
+                                    unfocusedContainerColor = LoonBg,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
                                     focusedTextColor = LoonTextPrimary,
                                     unfocusedTextColor = LoonTextPrimary
                                 ),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(48.dp)
+                                    .height(46.dp)
                             )
 
-                            Button(
-                                onClick = { executeDnsLookup(testDomainInput) },
-                                enabled = testDomainInput.isNotBlank() && !isQuerying,
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = LoonBlue),
-                                modifier = Modifier.height(48.dp)
+                            Surface(
+                                modifier = Modifier
+                                    .height(46.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (testDomainInput.isNotBlank() && !isQuerying) IosBlue else LoonTextMuted)
+                                    .clickable(enabled = testDomainInput.isNotBlank() && !isQuerying) {
+                                        executeDnsLookup(testDomainInput)
+                                    },
+                                color = if (testDomainInput.isNotBlank() && !isQuerying) IosBlue else LoonTextMuted
                             ) {
-                                if (isQuerying) {
-                                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                } else {
-                                    Text("解析", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Box(
+                                    modifier = Modifier.padding(horizontal = 16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isQuerying) {
+                                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        Text("解析", fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
                                 }
                             }
                         }
@@ -298,7 +325,7 @@ fun DnsScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -348,7 +375,7 @@ fun DnsScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -375,7 +402,7 @@ fun DnsScreen(
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = LoonBg,
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder)
+                                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder)
                                 ) {
                                     Text(
                                         text = domain,

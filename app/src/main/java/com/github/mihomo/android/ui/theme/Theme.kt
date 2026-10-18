@@ -3,7 +3,6 @@ package com.github.mihomo.android.ui.theme
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -28,36 +27,50 @@ data class LoonThemeColors(
     val textMuted: Color,
     val bottomBarBg: Color,
     val bottomBarBorder: Color,
-    val isDark: Boolean
+    val isDark: Boolean,
+    val separator: Color = if (isDark) Color(0x38545458) else Color(0x263C3C43),
+    val secondaryBg: Color = if (isDark) Color(0xFF1C1C1E) else Color(0xFFFFFFFF),
+    val tertiaryBg: Color = if (isDark) Color(0xFF2C2C2E) else Color(0xFFE5E5EA),
+    val chevronTint: Color = if (isDark) Color(0xFF636366) else Color(0xFFC7C7CC),
+    val switchUncheckedTrack: Color = if (isDark) Color(0xFF39393D) else Color(0xFFE9E9EA)
 )
 
 val LightLoonThemeColors = LoonThemeColors(
-    bg = Color(0xFFF6F7FB),
-    card = Color(0xFFFFFFFF),
-    cardBorder = Color(0xFFECEEF5),
-    textPrimary = Color(0xFF191C24),
-    textSecondary = Color(0xFF8E95A5),
-    textMuted = Color(0xFFB0B6C3),
-    bottomBarBg = Color.White.copy(alpha = 0.95f),
-    bottomBarBorder = Color(0xFFEBEFF5),
-    isDark = false
+    bg = Color(0xFFF2F2F7), // Apple System Grouped Background
+    card = Color(0xFFFFFFFF), // Apple Secondary System Grouped Background
+    cardBorder = Color(0x1A000000), // Clean iOS hairline border
+    textPrimary = Color(0xFF000000), // iOS Primary Text
+    textSecondary = Color(0xFF8E8E93), // iOS Secondary Label
+    textMuted = Color(0xFFC7C7CC), // iOS Tertiary Label
+    bottomBarBg = Color.White.copy(alpha = 0.88f),
+    bottomBarBorder = Color(0x1F000000),
+    isDark = false,
+    separator = Color(0x263C3C43),
+    secondaryBg = Color(0xFFFFFFFF),
+    tertiaryBg = Color(0xFFE5E5EA),
+    chevronTint = Color(0xFFC7C7CC),
+    switchUncheckedTrack = Color(0xFFE9E9EA)
 )
 
 val DarkLoonThemeColors = LoonThemeColors(
-    bg = Color(0xFF13161F),
-    card = Color(0xFF1E2330),
-    cardBorder = Color(0xFF2B3244),
-    textPrimary = Color(0xFFF1F5F9),
-    textSecondary = Color(0xFF94A3B8),
-    textMuted = Color(0xFF64748B),
-    bottomBarBg = Color(0xFF1E2330).copy(alpha = 0.95f),
-    bottomBarBorder = Color(0xFF2B3244),
-    isDark = true
+    bg = Color(0xFF000000), // True OLED Pure Black
+    card = Color(0xFF1C1C1E), // Apple Secondary System Grouped Background
+    cardBorder = Color(0x2EFFFFFF), // Clean iOS dark hairline border
+    textPrimary = Color(0xFFFFFFFF), // iOS White Text
+    textSecondary = Color(0xFF8E8E93), // iOS Secondary Label
+    textMuted = Color(0xFF636366), // iOS Tertiary Label
+    bottomBarBg = Color(0xFF1C1C1E).copy(alpha = 0.90f),
+    bottomBarBorder = Color(0x26FFFFFF),
+    isDark = true,
+    separator = Color(0x38545458),
+    secondaryBg = Color(0xFF1C1C1E),
+    tertiaryBg = Color(0xFF2C2C2E),
+    chevronTint = Color(0xFF636366),
+    switchUncheckedTrack = Color(0xFF39393D)
 )
 
 val LocalLoonColors = staticCompositionLocalOf { LightLoonThemeColors }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MihomoTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -113,9 +126,10 @@ fun MihomoTheme(
         }
     }
 
+    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     CompositionLocalProvider(
         LocalLoonColors provides loonColors,
-        LocalOverscrollConfiguration provides null
+        androidx.compose.foundation.LocalOverscrollConfiguration provides null
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

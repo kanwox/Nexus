@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -20,6 +21,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.github.mihomo.android.ui.theme.LocalAppLanguage
@@ -517,6 +523,15 @@ class MainActivity : ComponentActivity() {
                 return
             }
 
+            val targetGroup = if (!groupName.isNullOrBlank()) groupName else {
+                parsedProfile.groups.entries.firstOrNull { (_, g) -> g.proxies.any { it.name == nodeName } }?.key
+            }
+
+            if (targetGroup.isNullOrBlank()) {
+                Log.w("MainActivity", "Cannot resolve group for node $nodeName")
+                return
+            }
+
             testingNodes = testingNodes + nodeName
 
             lifecycleScope.launch(Dispatchers.IO) {
@@ -524,17 +539,37 @@ class MainActivity : ComponentActivity() {
                     if (!ClashCore.isCoreLoaded) {
                         ClashCore.ensureCoreLoaded(this@MainActivity)
                     }
-                    val delay = ClashCore.testProxyDelayNative(nodeName, groupName)
                     val curTime = System.currentTimeMillis()
+                    val delays = ClashCore.healthCheckGroupNative(targetGroup) { pName, d ->
+                        lifecycleScope.launch(Dispatchers.Main) {
+                            if (d > 0 || d == -2) {
+                                delayCache[pName] = d
+                                delayCache["$targetGroup:$pName"] = d
+                                if (d > 0) {
+                                    nodeLastTestedTimes[pName] = curTime
+                                }
+                            }
+                            if (pName == nodeName) {
+                                testingNodes = testingNodes - nodeName
+                            }
+                        }
+                    }
+                    val singleDelay = delays[nodeName] ?: -2
                     withContext(Dispatchers.Main) {
-                        if (delay > 0 || delay == -2) {
-                            delayCache[nodeName] = delay
-                            if (delay > 0) {
+                        if (singleDelay > 0 || singleDelay == -2) {
+                            delayCache[nodeName] = singleDelay
+                            delayCache["$targetGroup:$nodeName"] = singleDelay
+                            if (singleDelay > 0) {
                                 nodeLastTestedTimes[nodeName] = curTime
                             }
                         }
                     }
-                } catch (_: Throwable) {
+                } catch (e: Throwable) {
+                    Log.e("MainActivity", "Speed test failed for node $nodeName: ${e.message}", e)
+                    withContext(Dispatchers.Main) {
+                        delayCache[nodeName] = -2
+                        delayCache["$targetGroup:$nodeName"] = -2
+                    }
                 } finally {
                     withContext(Dispatchers.Main) {
                         testingNodes = testingNodes - nodeName
@@ -644,8 +679,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Handle Android system back button
-        BackHandler(enabled = currentSubScreen != null) {
+        val handleSubScreenBack: () -> Unit = {
             when (currentSubScreen) {
                 SubScreen.SCRIPTS -> {
                     if (overrideTargetProfile != null) {
@@ -661,6 +695,11 @@ class MainActivity : ComponentActivity() {
                     currentSubScreen = null
                 }
             }
+        }
+
+        // Handle Android system back button
+        BackHandler(enabled = currentSubScreen != null) {
+            handleSubScreenBack()
         }
 
         CompositionLocalProvider(LocalAppLanguage provides appLanguage) {
@@ -859,7 +898,17 @@ class MainActivity : ComponentActivity() {
             }
             val displayedSubScreen = currentSubScreen ?: lastActiveSubScreen
 
-            // 2. Sub-screens overlay (smooth slide in / out over the main tabs)
+            val edgeSwipeOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
+            var isEdgeDragging by remember { mutableStateOf(false) }
+            val density = LocalDensity.current
+            val edgeZonePx = with(density) { 32.dp.toPx() }
+
+            LaunchedEffect(currentSubScreen) {
+                edgeSwipeOffsetX.snapTo(0f)
+                isEdgeDragging = false
+            }
+
+            // 2. Sub-screens overlay (smooth slide in / out over the main tabs with iOS edge swipe back)
             AnimatedVisibility(
                 visible = currentSubScreen != null,
                 enter = slideInHorizontally(
@@ -870,7 +919,59 @@ class MainActivity : ComponentActivity() {
                     targetOffsetX = { it },
                     animationSpec = tween(260, easing = FastOutSlowInEasing)
                 ) + fadeOut(animationSpec = tween(200)),
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(20f)
+                    .pointerInput(currentSubScreen) {
+                        if (currentSubScreen == null) return@pointerInput
+                        detectHorizontalDragGestures(
+                            onDragStart = { startOffset ->
+                                isEdgeDragging = startOffset.x <= edgeZonePx
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                if (isEdgeDragging && (dragAmount > 0f || edgeSwipeOffsetX.value > 0f)) {
+                                    change.consume()
+                                    val next = (edgeSwipeOffsetX.value + dragAmount).coerceAtLeast(0f)
+                                    coroutineScope.launch { edgeSwipeOffsetX.snapTo(next) }
+                                }
+                            },
+                            onDragEnd = {
+                                if (isEdgeDragging) {
+                                    isEdgeDragging = false
+                                    val screenWidth = size.width.toFloat()
+                                    if (edgeSwipeOffsetX.value > screenWidth * 0.30f) {
+                                        coroutineScope.launch {
+                                            edgeSwipeOffsetX.animateTo(
+                                                targetValue = screenWidth,
+                                                animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                                            )
+                                            handleSubScreenBack()
+                                            edgeSwipeOffsetX.snapTo(0f)
+                                        }
+                                    } else {
+                                        coroutineScope.launch {
+                                            edgeSwipeOffsetX.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = androidx.compose.animation.core.spring(
+                                                    dampingRatio = 0.82f,
+                                                    stiffness = 500f
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                if (isEdgeDragging) {
+                                    isEdgeDragging = false
+                                    coroutineScope.launch { edgeSwipeOffsetX.animateTo(0f) }
+                                }
+                            }
+                        )
+                    }
+                    .graphicsLayer {
+                        translationX = edgeSwipeOffsetX.value
+                    }
             ) {
                 AnimatedContent(
                     targetState = displayedSubScreen,
@@ -1099,47 +1200,33 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-            // 3. Floating Bottom Bar (animated in/out when navigating to sub-screens)
-            AnimatedVisibility(
-                visible = currentSubScreen == null,
-                enter = fadeIn(animationSpec = tween(240)) + slideInVertically(
-                    initialOffsetY = { it },
-                    animationSpec = tween(240, easing = FastOutSlowInEasing)
-                ),
-                exit = fadeOut(animationSpec = tween(200)) + slideOutVertically(
-                    targetOffsetY = { it },
-                    animationSpec = tween(200, easing = FastOutSlowInEasing)
-                ),
+            // 3. Floating Bottom Bar (stays stable underneath sliding sub-screens)
+            Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .wrapContentSize(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .wrapContentSize(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(bottom = 16.dp)
-                ) {
-                    LoonFloatingBottomBar(
-                        selectedTab = pagerState.targetPage,
-                        onTabSelected = { tabIndex ->
-                            currentTab = tabIndex
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(
-                                    page = tabIndex,
-                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                                )
-                            }
-                            if (tabIndex == 1) {
-                                if (vpnState.status == VpnState.Status.RUNNING) {
-                                    refreshProxiesOnline()
-                                } else if (parsedProfile.groups.isEmpty()) {
-                                    parseActiveProfile()
-                                }
+                LoonFloatingBottomBar(
+                    selectedTab = pagerState.targetPage,
+                    onTabSelected = { tabIndex ->
+                        currentTab = tabIndex
+                        coroutineScope.launch {
+                            pagerState.animateScrollToPage(
+                                page = tabIndex,
+                                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                            )
+                        }
+                        if (tabIndex == 1) {
+                            if (vpnState.status == VpnState.Status.RUNNING) {
+                                refreshProxiesOnline()
+                            } else if (parsedProfile.groups.isEmpty()) {
+                                parseActiveProfile()
                             }
                         }
-                    )
-                }
+                    }
+                )
             }
         }
         } // end CompositionLocalProvider

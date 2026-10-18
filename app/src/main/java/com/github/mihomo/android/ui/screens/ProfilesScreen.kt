@@ -1,51 +1,44 @@
 package com.github.mihomo.android.ui.screens
 
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.zIndex
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
-import com.github.mihomo.android.data.ScriptManager
+import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.github.mihomo.android.ui.components.bounceOverscroll
-import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
 
 private fun formatRelativeTime(timestamp: Long): String {
     val diff = System.currentTimeMillis() - timestamp
@@ -96,469 +89,664 @@ fun ProfilesScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var showAddDialog by remember { mutableStateOf(false) }
-    var subName by remember { mutableStateOf("") }
-    var subUrl by remember { mutableStateOf("") }
+    val haptic = rememberIosHaptic()
+    val lang = LocalAppLanguage.current
 
-    val lazyListState = rememberLazyListState()
-    var localProfiles by remember(profiles) { mutableStateOf(profiles) }
-    LaunchedEffect(profiles) {
-        localProfiles = profiles
-    }
-    var draggedProfileId by remember { mutableStateOf<String?>(null) }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
-
-    // Dialog States
-    var overrideDialogProfile by remember { mutableStateOf<ProfileItem?>(null) }
-    var fullEditDialogProfile by remember { mutableStateOf<ProfileItem?>(null) }
-    var onlineEditorProfile by remember { mutableStateOf<ProfileItem?>(null) }
+    // Sheets & Dialog States
+    var showAddSheet by remember { mutableStateOf(false) }
+    var actionSheetProfile by remember { mutableStateOf<ProfileItem?>(null) }
+    var editSheetProfile by remember { mutableStateOf<ProfileItem?>(null) }
+    var yamlEditorProfile by remember { mutableStateOf<ProfileItem?>(null) }
     var deleteConfirmProfile by remember { mutableStateOf<ProfileItem?>(null) }
+    var refreshingProfileId by remember { mutableStateOf<String?>(null) }
 
     // File Picker for replacing profile
+    var targetReplacingProfile by remember { mutableStateOf<ProfileItem?>(null) }
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        if (uri != null && fullEditDialogProfile != null) {
+        val target = targetReplacingProfile
+        if (uri != null && target != null) {
             runCatching {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val content = stream.bufferedReader().readText()
-                    ConfigManager.saveProfileContent(context, fullEditDialogProfile!!.id, content)
+                    ConfigManager.saveProfileContent(context, target.id, content)
                     Toast.makeText(context, "已成功替换配置文件内容", Toast.LENGTH_SHORT).show()
-                    val updated = fullEditDialogProfile!!.copy(lastUpdated = System.currentTimeMillis())
+                    val updated = target.copy(lastUpdated = System.currentTimeMillis())
                     onUpdateProfile(updated)
-                    if (fullEditDialogProfile!!.id == selectedProfileId) {
+                    if (target.id == selectedProfileId) {
                         onSelectProfile(updated)
                     }
-                    fullEditDialogProfile = updated
                 }
             }.onFailure {
                 Toast.makeText(context, "读取本地文件失败: ${it.message}", Toast.LENGTH_SHORT).show()
             }
         }
+        targetReplacingProfile = null
     }
-
-    val lang = LocalAppLanguage.current
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp)
-            .padding(top = 16.dp, bottom = 100.dp)
     ) {
-        // Top Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onBack != null) {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier.padding(end = 8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回",
-                            tint = LoonTextPrimary
-                        )
-                    }
+        // Cupertino Navigation Bar
+        CupertinoNavBar(
+            title = AppStrings.get("profiles_title", lang),
+            showBackButton = onBack != null,
+            onBack = onBack,
+            actions = {
+                IconButton(
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = true
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = AppStrings.get("profiles_add", lang),
+                        tint = IosBlue,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
-                Text(
-                    text = AppStrings.get("profiles_title", lang),
-                    color = LoonTextPrimary,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
-                )
             }
-
-            // Top action button (Apple-style pure black plus icon)
-            IconButton(
-                onClick = { showAddDialog = true },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = AppStrings.get("profiles_add", lang),
-                    tint = LoonTextPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
+        )
 
         if (profiles.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .bounceOverscroll(),
                 contentAlignment = Alignment.Center
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.CloudDownload,
-                        contentDescription = null,
-                        tint = LoonTextMuted,
-                        modifier = Modifier.size(56.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(LoonTertiaryBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDownload,
+                            contentDescription = null,
+                            tint = IosBlue,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "暂无配置文件",
+                        color = LoonTextPrimary,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(AppStrings.get("profiles_empty", lang), color = LoonTextSecondary, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "点击右上角 + 按钮添加远程订阅链接或导入本地 YAML 配置文件",
+                        color = LoonTextSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
+                            .iosPressable { showAddSheet = true },
+                        color = LoonCard
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, tint = IosBlue, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("添加首个配置", color = IosBlue, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             }
         } else {
             LazyColumn(
-                state = lazyListState,
                 modifier = Modifier
-                    .weight(1f)
-                    .bounceOverscroll(),
+                    .fillMaxSize()
+                    .bounceOverscroll()
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(top = 10.dp, bottom = 120.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                itemsIndexed(localProfiles, key = { _, item -> item.id }) { index, item ->
+                items(profiles, key = { it.id }) { item ->
                     val isSelected = item.id == selectedProfileId
-                    val isBeingDragged = draggedProfileId == item.id
+                    val isRefreshing = refreshingProfileId == item.id
 
-                    val itemModifier = Modifier
-                        .fillMaxWidth()
-                        .offset {
-                            if (isBeingDragged) IntOffset(0, dragOffsetY.roundToInt())
-                            else IntOffset.Zero
-                        }
-                        .zIndex(if (isBeingDragged) 10f else 1f)
-                        .graphicsLayer {
-                            scaleX = if (isBeingDragged) 1.03f else 1f
-                            scaleY = if (isBeingDragged) 1.03f else 1f
-                            shadowElevation = if (isBeingDragged) 12f else 0f
-                        }
-                        .pointerInput(item.id, localProfiles.size) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    draggedProfileId = item.id
-                                    dragOffsetY = 0f
-                                },
-                                onDragEnd = {
-                                    onReorderProfiles?.invoke(localProfiles)
-                                    draggedProfileId = null
-                                    dragOffsetY = 0f
-                                },
-                                onDragCancel = {
-                                    localProfiles = profiles
-                                    draggedProfileId = null
-                                    dragOffsetY = 0f
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragOffsetY += dragAmount.y
-
-                                    val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
-                                    val draggedItem = visibleItems.firstOrNull { it.key == item.id }
-                                    if (draggedItem != null) {
-                                        val currentCenter = draggedItem.offset + dragOffsetY + draggedItem.size / 2f
-                                        val targetItem = visibleItems.firstOrNull { info ->
-                                            info.key != item.id &&
-                                            currentCenter >= info.offset &&
-                                            currentCenter <= (info.offset + info.size)
-                                        }
-                                        if (targetItem != null) {
-                                            val fromIdx = localProfiles.indexOfFirst { it.id == item.id }
-                                            val toIdx = localProfiles.indexOfFirst { it.id == targetItem.key }
-                                            if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
-                                                val mutable = localProfiles.toMutableList()
-                                                val moved = mutable.removeAt(fromIdx)
-                                                mutable.add(toIdx, moved)
-                                                localProfiles = mutable
-                                                dragOffsetY += (draggedItem.offset - targetItem.offset)
-                                            }
-                                        }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .border(
+                                width = if (isSelected) 1.5.dp else 0.5.dp,
+                                color = if (isSelected) IosBlue else LoonCardBorder,
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                            .iosPressable {
+                                haptic.selection()
+                                onSelectProfile(item)
+                            },
+                        color = LoonCard
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            // Top Row: Active Radio, Title, Tag & Actions
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Checkmark / Select Circle
+                                Box(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isSelected) IosBlue else Color.Transparent)
+                                        .border(
+                                            width = if (isSelected) 0.dp else 1.5.dp,
+                                            color = if (isSelected) Color.Transparent else LoonTextMuted,
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
                                     }
                                 }
-                            )
-                        }
 
-                    LoonProfileCard(
-                        modifier = itemModifier,
-                        item = item,
-                        isSelected = isSelected,
-                        onClick = { onSelectProfile(item) },
-                        onOverride = {
-                            if (onNavigateToOverride != null) {
-                                onNavigateToOverride(item)
-                            } else {
-                                overrideDialogProfile = item
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = item.name,
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) IosBlue else LoonTextPrimary,
+                                            maxLines = 1,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (item.url != null) "订阅" else "本地",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (item.url != null) IosBlue else LoonTextSecondary
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "更新于 ${formatRelativeTime(item.lastUpdated)}" +
+                                                if (item.autoUpdate) " · 自动更新开启" else "",
+                                        fontSize = 11.5.sp,
+                                        color = LoonTextSecondary
+                                    )
+                                }
+
+                                // Quick Refresh Button (for remote subscriptions)
+                                if (item.url != null) {
+                                    val rotation by rememberInfiniteTransition().animateFloat(
+                                        initialValue = 0f,
+                                        targetValue = 360f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(1000, easing = LinearEasing),
+                                            repeatMode = RepeatMode.Restart
+                                        )
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            if (refreshingProfileId == null) {
+                                                haptic.impact()
+                                                refreshingProfileId = item.id
+                                                scope.launch {
+                                                    runCatching { onRefreshSubscription(item) }
+                                                    refreshingProfileId = null
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "刷新",
+                                            tint = if (isRefreshing) IosBlue else LoonTextSecondary,
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .rotate(if (isRefreshing) rotation else 0f)
+                                        )
+                                    }
+                                }
+
+                                // More Actions Button
+                                IconButton(
+                                    onClick = {
+                                        haptic.selection()
+                                        actionSheetProfile = item
+                                    },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreHoriz,
+                                        contentDescription = "更多",
+                                        tint = LoonTextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
-                        },
-                        onEdit = { fullEditDialogProfile = item },
-                        onUpdate = { onRefreshSubscription(item) },
-                        onDelete = { deleteConfirmProfile = item },
-                        onMoveUp = if (index > 0) {
-                            {
-                                val mutable = localProfiles.toMutableList()
-                                val moved = mutable.removeAt(index)
-                                mutable.add(index - 1, moved)
-                                localProfiles = mutable
-                                onReorderProfiles?.invoke(mutable)
+
+                            // Subscription Traffic & Expiration Pill (If available)
+                            if (item.totalBytes > 0) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                val usedBytes = item.uploadBytes + item.downloadBytes
+                                val fraction = (usedBytes.toDouble() / item.totalBytes).coerceIn(0.0, 1.0).toFloat()
+                                val progressColor = when {
+                                    fraction >= 0.9f -> IosRed
+                                    fraction >= 0.75f -> IosOrange
+                                    else -> IosBlue
+                                }
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(LoonBg)
+                                        .padding(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${formatTraffic(usedBytes)} / ${formatTraffic(item.totalBytes)}",
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = LoonTextPrimary
+                                        )
+                                        if (item.expireTimestamp > 0) {
+                                            val expireDateStr = remember(item.expireTimestamp) {
+                                                val sdf = SimpleDateFormat("yyyy-MM-dd 到期", Locale.getDefault())
+                                                sdf.format(Date(item.expireTimestamp * 1000))
+                                            }
+                                            Text(
+                                                text = expireDateStr,
+                                                fontSize = 11.sp,
+                                                color = LoonTextSecondary
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    // Smooth Progress Track
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(5.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(LoonCardBorder)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(fraction)
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(progressColor)
+                                        )
+                                    }
+                                }
                             }
-                        } else null,
-                        onMoveDown = if (index < localProfiles.size - 1) {
-                            {
-                                val mutable = localProfiles.toMutableList()
-                                val moved = mutable.removeAt(index)
-                                mutable.add(index + 1, moved)
-                                localProfiles = mutable
-                                onReorderProfiles?.invoke(mutable)
-                            }
-                        } else null
-                    )
+                        }
+                    }
                 }
             }
         }
     }
 
-    // 1. Add Subscription Dialog
-    if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text("添加 Clash / Mihomo 订阅", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // =========================================================================
+    // 1. Add Subscription Sheet (Cupertino Style)
+    // =========================================================================
+    if (showAddSheet) {
+        var subName by remember { mutableStateOf("") }
+        var subUrl by remember { mutableStateOf("") }
+        val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager }
+
+        LaunchedEffect(Unit) {
+            // Smart auto-detect URL from clipboard
+            if (clipboard?.hasPrimaryClip() == true) {
+                val clipData = clipboard.primaryClip
+                if (clipData != null && clipData.itemCount > 0) {
+                    val clipText = clipData.getItemAt(0).text?.toString()?.trim() ?: ""
+                    if (clipText.startsWith("http://") || clipText.startsWith("https://")) {
+                        subUrl = clipText
+                        if (subName.isBlank()) {
+                            subName = runCatching {
+                                java.net.URI(clipText).host?.substringBefore(".") ?: ""
+                            }.getOrDefault("")
+                        }
+                    }
+                }
+            }
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = { showAddSheet = false },
+            containerColor = LoonBg,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 36.dp)
+            ) {
+                Text(
+                    text = "添加配置",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary
+                )
+                Text(
+                    text = "支持通过远程订阅 URL 下载或导入本地 YAML 文件",
+                    fontSize = 12.5.sp,
+                    color = LoonTextSecondary,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                )
+
+                // Quick Import Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Local File Import
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonEditBlueBg,
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .weight(1f)
+                            .height(54.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                showAddDialog = false
+                            .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
+                            .iosPressable {
+                                showAddSheet = false
                                 onImportLocalFile?.invoke()
-                            }
+                            },
+                        color = LoonCard
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.FileUpload, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text("从本地文件导入配置", fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = LoonBlue)
-                                Text("支持选择 .yaml / .yml / .txt 配置文件", fontSize = 11.sp, color = LoonTextSecondary)
-                            }
+                            Icon(Icons.Default.UploadFile, contentDescription = null, tint = IosBlue, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("本地文件导入", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LoonTextPrimary)
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        HorizontalDivider(modifier = Modifier.weight(1f), color = LoonCardBorder)
-                        Text("  或添加订阅链接  ", color = LoonTextMuted, fontSize = 11.sp)
-                        HorizontalDivider(modifier = Modifier.weight(1f), color = LoonCardBorder)
-                    }
-
-                    OutlinedTextField(
-                        value = subName,
-                        onValueChange = { subName = it },
-                        label = { Text("订阅备注名称（选填）") },
-                        placeholder = { Text("留空将自动从订阅获取") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = subUrl,
-                        onValueChange = { subUrl = it },
-                        label = { Text("订阅链接 URL") },
-                        placeholder = { Text("https://...") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (subUrl.isNotBlank()) {
-                            onAddSubscription(subName.trim(), subUrl.trim())
-                            subName = ""
-                            subUrl = ""
-                            showAddDialog = false
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = LoonBlue, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("下载并保存", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) {
-                    Text("取消", color = LoonTextSecondary)
-                }
-            }
-        )
-    }
-
-    // 2. Dedicated Script Override Dialog (覆写独立二级弹窗)
-    if (overrideDialogProfile != null) {
-        val target = overrideDialogProfile!!
-        val availableScripts = remember { ScriptManager.getScripts(context) }
-        var selectedScriptIds by remember(target) { mutableStateOf(target.scriptIds.toSet()) }
-
-        AlertDialog(
-            onDismissRequest = { overrideDialogProfile = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text("JS 脚本覆写", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "配置: ${target.name}",
-                        color = LoonTextSecondary,
-                        fontSize = 13.sp
-                    )
-
-                    Text(
-                        text = "选择生效的脚本：",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
-                    if (availableScripts.isEmpty()) {
-                        Text(
-                            text = "脚本库暂无可用脚本，请前往 [设置 - JS 脚本复写] 导入或创建脚本",
-                            fontSize = 12.sp,
-                            color = LoonTextSecondary,
-                            lineHeight = 18.sp
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            availableScripts.forEach { script ->
-                                val isChecked = selectedScriptIds.contains(script.id)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = if (isChecked) LoonEditBlueBg else LoonBg,
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        width = 1.dp,
-                                        color = if (isChecked) LoonBlue else LoonCardBorder
-                                    ),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            selectedScriptIds = if (isChecked) {
-                                                selectedScriptIds - script.id
-                                            } else {
-                                                selectedScriptIds + script.id
-                                            }
-                                        }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Checkbox(
-                                            checked = isChecked,
-                                            onCheckedChange = { checked ->
-                                                selectedScriptIds = if (checked) {
-                                                    selectedScriptIds + script.id
-                                                } else {
-                                                    selectedScriptIds - script.id
-                                                }
-                                            },
-                                            colors = CheckboxDefaults.colors(checkedColor = LoonBlue)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Column {
-                                            Text(
-                                                text = script.name,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                color = LoonTextPrimary
-                                            )
-                                            if (script.url.isNotBlank()) {
-                                                Text(
-                                                    text = "远程: ${script.url}",
-                                                    fontSize = 10.sp,
-                                                    color = LoonTextMuted,
-                                                    maxLines = 1
-                                                )
-                                            }
-                                        }
+                    // Clipboard Paste
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(54.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
+                            .iosPressable {
+                                if (clipboard?.hasPrimaryClip() == true) {
+                                    val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                                    if (text.isNotBlank()) {
+                                        subUrl = text
+                                        Toast.makeText(context, "已粘贴剪贴板内容", Toast.LENGTH_SHORT).show()
                                     }
                                 }
-                            }
+                            },
+                        color = LoonCard
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, tint = IosGreen, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("从剪贴板粘贴", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = LoonTextPrimary)
                         }
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val updated = target.copy(
-                            scriptEnabled = selectedScriptIds.isNotEmpty(),
-                            scriptIds = selectedScriptIds.toList()
-                        )
-                        ConfigManager.updateProfile(context, updated)
-                        if (target.id == selectedProfileId) {
-                            onSelectProfile(updated)
-                        }
-                        onUpdateProfile(updated)
-                        scope.launch(Dispatchers.IO) {
-                            if (target.id == selectedProfileId && com.github.mihomo.android.core.ClashCore.isCoreLoaded) {
-                                runCatching {
-                                    val configFile = ConfigManager.prepareConfig(context, updated.file)
-                                    com.github.mihomo.android.core.ClashCore.load(configFile)
-                                }
-                            }
-                        }
-                        overrideDialogProfile = null
-                        Toast.makeText(context, "覆写设置已保存", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = LoonBlue, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Grouped Input Fields
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = LoonCard,
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("保存覆写", fontWeight = FontWeight.Bold)
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TextField(
+                            value = subName,
+                            onValueChange = { subName = it },
+                            placeholder = { Text("订阅备注名称（选填）", fontSize = 13.5.sp, color = LoonTextMuted) },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = LoonBg,
+                                unfocusedContainerColor = LoonBg,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = LoonTextPrimary,
+                                unfocusedTextColor = LoonTextPrimary
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        TextField(
+                            value = subUrl,
+                            onValueChange = { subUrl = it },
+                            placeholder = { Text("订阅链接 URL (https://...)", fontSize = 13.5.sp, color = LoonTextMuted) },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = LoonBg,
+                                unfocusedContainerColor = LoonBg,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                focusedTextColor = LoonTextPrimary,
+                                unfocusedTextColor = LoonTextPrimary
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { overrideDialogProfile = null }) {
-                    Text("取消", color = LoonTextSecondary)
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Primary Download & Save Button
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (subUrl.isNotBlank()) IosBlue else LoonTextMuted)
+                        .clickable(enabled = subUrl.isNotBlank()) {
+                            haptic.impact()
+                            onAddSubscription(subName.trim(), subUrl.trim())
+                            showAddSheet = false
+                        },
+                    color = if (subUrl.isNotBlank()) IosBlue else LoonTextMuted
+                ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "下载并保存配置",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
-        )
+        }
     }
 
-    // 3. Expanded Full Edit Dialog (重命名、自动更新、修改订阅链接、在线修改 YAML、替换文件)
-    if (fullEditDialogProfile != null) {
-        val target = fullEditDialogProfile!!
+    // =========================================================================
+    // 2. Action Sheet (Profile Operations)
+    // =========================================================================
+    if (actionSheetProfile != null) {
+        val target = actionSheetProfile!!
+        val isSelected = target.id == selectedProfileId
+
+        ModalBottomSheet(
+            onDismissRequest = { actionSheetProfile = null },
+            containerColor = LoonBg,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = target.name,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary,
+                    modifier = Modifier.padding(start = 6.dp, top = 4.dp, bottom = 14.dp)
+                )
+
+                CupertinoGroupedSection {
+                    if (!isSelected) {
+                        CupertinoCell(
+                            title = "设为活跃配置",
+                            icon = Icons.Default.CheckCircle,
+                            iconBg = IosBlue,
+                            onClick = {
+                                actionSheetProfile = null
+                                onSelectProfile(target)
+                            }
+                        )
+                        CupertinoDivider()
+                    }
+
+                    if (target.url != null) {
+                        CupertinoCell(
+                            title = "立即更新订阅",
+                            icon = Icons.Default.CloudSync,
+                            iconBg = IosGreen,
+                            onClick = {
+                                actionSheetProfile = null
+                                onRefreshSubscription(target)
+                            }
+                        )
+                        CupertinoDivider()
+                    }
+
+                    CupertinoCell(
+                        title = "编辑配置参数",
+                        icon = Icons.Default.Tune,
+                        iconBg = Color(0xFFFF9500),
+                        onClick = {
+                            actionSheetProfile = null
+                            editSheetProfile = target
+                        }
+                    )
+                    CupertinoDivider()
+
+                    CupertinoCell(
+                        title = "在线查看 / 编辑 YAML",
+                        icon = Icons.Default.Code,
+                        iconBg = Color(0xFF5856D6),
+                        onClick = {
+                            actionSheetProfile = null
+                            yamlEditorProfile = target
+                        }
+                    )
+                    CupertinoDivider()
+
+                    CupertinoCell(
+                        title = "JS 脚本覆写",
+                        icon = Icons.Default.Javascript,
+                        iconBg = Color(0xFFAF52DE),
+                        onClick = {
+                            actionSheetProfile = null
+                            onNavigateToOverride?.invoke(target)
+                        }
+                    )
+                    CupertinoDivider()
+
+                    CupertinoCell(
+                        title = "替换为本地文件",
+                        icon = Icons.Default.FileUpload,
+                        iconBg = Color(0xFF32ADE6),
+                        onClick = {
+                            actionSheetProfile = null
+                            targetReplacingProfile = target
+                            filePickerLauncher.launch("*/*")
+                        }
+                    )
+                    CupertinoDivider()
+
+                    CupertinoCell(
+                        title = "删除配置",
+                        icon = Icons.Default.DeleteOutline,
+                        iconBg = IosRed,
+                        onClick = {
+                            actionSheetProfile = null
+                            deleteConfirmProfile = target
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .border(0.5.dp, LoonCardBorder, RoundedCornerShape(14.dp))
+                        .iosPressable { actionSheetProfile = null },
+                    color = LoonCard
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "取消", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = IosBlue)
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // 3. Edit Profile Sheet
+    // =========================================================================
+    if (editSheetProfile != null) {
+        val target = editSheetProfile!!
         var editName by remember(target) { mutableStateOf(target.name) }
         var editUrl by remember(target) { mutableStateOf(target.url ?: "") }
         var editAutoUpdate by remember(target) { mutableStateOf(target.autoUpdate) }
@@ -566,307 +754,191 @@ fun ProfilesScreen(
             mutableStateOf(((target.autoUpdateInterval / 60).coerceAtLeast(1)).toString())
         }
 
-        AlertDialog(
-            onDismissRequest = { fullEditDialogProfile = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text("编辑配置详情", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 440.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Name
-                    OutlinedTextField(
-                        value = editName,
-                        onValueChange = { editName = it },
-                        label = { Text("配置备注名称") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = LoonTextPrimary,
-                            unfocusedTextColor = LoonTextPrimary,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        ModalBottomSheet(
+            onDismissRequest = { editSheetProfile = null },
+            containerColor = LoonBg,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 36.dp)
+            ) {
+                Text(
+                    text = "配置参数设置",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
 
-                    // URL if remote
-                    if (target.url != null) {
-                        OutlinedTextField(
-                            value = editUrl,
-                            onValueChange = { editUrl = it },
-                            label = { Text("订阅链接 URL") },
-                            colors = OutlinedTextFieldDefaults.colors(
+                CupertinoGroupedSection {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("配置备注名称", fontSize = 12.sp, color = LoonTextSecondary)
+                        TextField(
+                            value = editName,
+                            onValueChange = { editName = it },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = LoonBg,
+                                unfocusedContainerColor = LoonBg,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
                                 focusedTextColor = LoonTextPrimary,
-                                unfocusedTextColor = LoonTextPrimary,
-                                focusedBorderColor = LoonBlue,
-                                unfocusedBorderColor = LoonCardBorder
+                                unfocusedTextColor = LoonTextPrimary
                             ),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
-                    }
 
-                    // Auto-update section
-                    if (target.url != null) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = LoonBg,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("自动更新", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = LoonTextPrimary)
-                                        Text("在后台定时拉取最新订阅", fontSize = 11.sp, color = LoonTextMuted)
-                                    }
-                                    Switch(checked = editAutoUpdate, onCheckedChange = { editAutoUpdate = it })
-                                }
-
-                                if (editAutoUpdate) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    OutlinedTextField(
-                                        value = intervalHoursText,
-                                        onValueChange = { input ->
-                                            if (input.all { it.isDigit() }) {
-                                                intervalHoursText = input
-                                            }
-                                        },
-                                        label = { Text("更新间隔 (小时)") },
-                                        placeholder = { Text("例如: 24") },
-                                        trailingIcon = {
-                                            Text(
-                                                text = "小时",
-                                                color = LoonTextSecondary,
-                                                fontSize = 12.sp,
-                                                modifier = Modifier.padding(end = 12.dp)
-                                            )
-                                        },
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedTextColor = LoonTextPrimary,
-                                            unfocusedTextColor = LoonTextPrimary,
-                                            focusedBorderColor = LoonBlue,
-                                            unfocusedBorderColor = LoonCardBorder
-                                        ),
-                                        shape = RoundedCornerShape(10.dp),
-                                        singleLine = true,
-                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                                        ),
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            }
+                        if (target.url != null) {
+                            Text("订阅链接 URL", fontSize = 12.sp, color = LoonTextSecondary)
+                            TextField(
+                                value = editUrl,
+                                onValueChange = { editUrl = it },
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = LoonBg,
+                                    unfocusedContainerColor = LoonBg,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    focusedTextColor = LoonTextPrimary,
+                                    unfocusedTextColor = LoonTextPrimary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
+                }
 
-                    // JS Script override button
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonEditBlueBg,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                fullEditDialogProfile = null
-                                if (onNavigateToOverride != null) {
-                                    onNavigateToOverride(target)
-                                } else {
-                                    overrideDialogProfile = target
-                                }
-                            }
-                    ) {
+                if (target.url != null) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    CupertinoGroupedSection {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Javascript, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
                             Column {
-                                val count = if (target.scriptEnabled) target.scriptIds.size else 0
-                                Text(
-                                    text = if (count > 0) "JS 脚本覆写 (已生效 $count 个)" else "JS 脚本覆写 (未生效)",
-                                    fontSize = 13.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = LoonTextPrimary
+                                Text("定时自动更新", fontSize = 15.sp, color = LoonTextPrimary)
+                                Text("后台静默拉取最新节点与规则", fontSize = 11.5.sp, color = LoonTextSecondary)
+                            }
+                            CupertinoSwitch(
+                                checked = editAutoUpdate,
+                                onCheckedChange = { editAutoUpdate = it }
+                            )
+                        }
+
+                        if (editAutoUpdate) {
+                            CupertinoDivider()
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("更新间隔 (小时)", fontSize = 14.5.sp, color = LoonTextPrimary)
+                                TextField(
+                                    value = intervalHoursText,
+                                    onValueChange = { if (it.all { ch -> ch.isDigit() }) intervalHoursText = it },
+                                    colors = TextFieldDefaults.colors(
+                                        focusedContainerColor = LoonBg,
+                                        unfocusedContainerColor = LoonBg,
+                                        focusedIndicatorColor = Color.Transparent,
+                                        unfocusedIndicatorColor = Color.Transparent,
+                                        focusedTextColor = LoonTextPrimary,
+                                        unfocusedTextColor = LoonTextPrimary
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    singleLine = true,
+                                    modifier = Modifier.width(80.dp)
                                 )
-                                Text("为该配置勾选并生效导入的脚本", fontSize = 11.sp, color = LoonTextSecondary)
-                            }
-                        }
-                    }
-
-                    // Online YAML editor button
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonEditBlueBg,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                onlineEditorProfile = target
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Code, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text("在线编辑 YAML 配置", fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
-                                Text("直接查看与修改配置文件内容", fontSize = 11.sp, color = LoonTextSecondary)
-                            }
-                        }
-                    }
-
-                    // Replace / Upload local config button
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = LoonEditBlueBg,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                filePickerLauncher.launch("*/*")
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.FileUpload, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text("替换 / 上传本地配置文件", fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
-                                Text("选择本地 .yaml / .yml 文件替换当前配置", fontSize = 11.sp, color = LoonTextMuted)
                             }
                         }
                     }
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val intervalHours = (intervalHoursText.toIntOrNull() ?: 24).coerceAtLeast(1)
-                        val updated = target.copy(
-                            name = editName.ifBlank { target.name },
-                            url = if (target.url != null) editUrl.ifBlank { target.url } else null,
-                            autoUpdate = editAutoUpdate,
-                            autoUpdateInterval = intervalHours * 60
-                        )
-                        ConfigManager.updateProfile(context, updated)
-                        if (target.id == selectedProfileId) {
-                            onSelectProfile(updated)
-                        }
-                        onUpdateProfile(updated)
-                        fullEditDialogProfile = null
-                        Toast.makeText(context, "配置修改已保存", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = LoonBlue, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(IosBlue)
+                        .clickable {
+                            val intervalHours = (intervalHoursText.toIntOrNull() ?: 24).coerceAtLeast(1)
+                            val updated = target.copy(
+                                name = editName.ifBlank { target.name },
+                                url = if (target.url != null) editUrl.ifBlank { target.url } else null,
+                                autoUpdate = editAutoUpdate,
+                                autoUpdateInterval = intervalHours * 60
+                            )
+                            ConfigManager.updateProfile(context, updated)
+                            if (target.id == selectedProfileId) {
+                                onSelectProfile(updated)
+                            }
+                            onUpdateProfile(updated)
+                            editSheetProfile = null
+                            Toast.makeText(context, "配置修改已保存", Toast.LENGTH_SHORT).show()
+                        },
+                    color = IosBlue
                 ) {
-                    Text("保存设置", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { fullEditDialogProfile = null }) {
-                    Text("取消", color = LoonTextSecondary)
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("保存设置", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-        )
+        }
     }
 
-    // 4. Online YAML Editor Dialog
-    if (onlineEditorProfile != null) {
-        val target = onlineEditorProfile!!
+    // =========================================================================
+    // 4. Online YAML Editor Sheet
+    // =========================================================================
+    if (yamlEditorProfile != null) {
+        val target = yamlEditorProfile!!
         var yamlText by remember(target) { mutableStateOf("") }
 
-        // The profile file can be large; never read it synchronously during composition.
         LaunchedEffect(target) {
             yamlText = withContext(Dispatchers.IO) {
                 runCatching { target.file.readText() }.getOrDefault("")
             }
         }
 
-        Dialog(onDismissRequest = { onlineEditorProfile = null }) {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = LoonCard,
+        ModalBottomSheet(
+            onDismissRequest = { yamlEditorProfile = null },
+            containerColor = LoonBg,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() },
+            modifier = Modifier.fillMaxHeight(0.92f)
+        ) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.88f),
-                shadowElevation = 8.dp
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "在线编辑 YAML",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp,
-                            color = LoonTextPrimary
-                        )
-                        IconButton(onClick = { onlineEditorProfile = null }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "关闭", tint = LoonTextSecondary)
-                        }
+                    Column {
+                        Text("编辑 YAML 配置", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
+                        Text(target.name, fontSize = 12.sp, color = LoonTextSecondary)
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedTextField(
-                        value = yamlText,
-                        onValueChange = { yamlText = it },
+                    Surface(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            color = LoonTextPrimary,
-                            lineHeight = 17.sp
-                        ),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = LoonBg,
-                            unfocusedContainerColor = LoonBg,
-                            focusedBorderColor = LoonBlue,
-                            unfocusedBorderColor = LoonCardBorder
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(onClick = { onlineEditorProfile = null }) {
-                            Text("取消", color = LoonTextSecondary)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(IosBlue)
+                            .clickable {
                                 val ok = ConfigManager.saveProfileContent(context, target.id, yamlText)
                                 if (ok) {
                                     Toast.makeText(context, "配置内容已保存", Toast.LENGTH_SHORT).show()
@@ -875,307 +947,119 @@ fun ProfilesScreen(
                                     if (target.id == selectedProfileId) {
                                         onSelectProfile(updated)
                                     }
-                                    onlineEditorProfile = null
+                                    yamlEditorProfile = null
                                 } else {
                                     Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = LoonBlue),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("保存并应用", color = Color.White, fontWeight = FontWeight.Bold)
-                        }
+                        color = IosBlue
+                    ) {
+                        Text(
+                            text = "保存并应用",
+                            color = Color.White,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                        )
                     }
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                TextField(
+                    value = yamlText,
+                    onValueChange = { yamlText = it },
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = LoonTextPrimary,
+                        lineHeight = 17.sp
+                    ),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = LoonCard,
+                        unfocusedContainerColor = LoonCard,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
             }
         }
     }
 
-    // 5. Delete Confirmation Dialog
+    // =========================================================================
+    // 5. Delete Confirmation Sheet
+    // =========================================================================
     if (deleteConfirmProfile != null) {
         val target = deleteConfirmProfile!!
-        AlertDialog(
+
+        ModalBottomSheet(
             onDismissRequest = { deleteConfirmProfile = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text("删除配置", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Text("确定要删除配置 [${target.name}] 吗？此操作无法撤销", color = LoonTextSecondary, fontSize = 14.sp)
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteProfile(target)
-                        deleteConfirmProfile = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = RedDanger, contentColor = Color.White),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("确认删除", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteConfirmProfile = null }) {
-                    Text("取消", color = LoonTextSecondary)
-                }
-            }
-        )
-    }
-}
-
-@Composable
-private fun LoonProfileCard(
-    modifier: Modifier = Modifier,
-    item: ProfileItem,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    onOverride: () -> Unit,
-    onEdit: () -> Unit,
-    onUpdate: () -> Unit,
-    onDelete: () -> Unit,
-    onMoveUp: (() -> Unit)? = null,
-    onMoveDown: (() -> Unit)? = null
-) {
-    var menuExpanded by remember { mutableStateOf(false) }
-    val lang = LocalAppLanguage.current
-
-    Surface(
-        modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
-            .border(
-                width = if (isSelected) 1.5.dp else 1.dp,
-                color = if (isSelected) LoonBlue else LoonCardBorder,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .shadow(2.dp, RoundedCornerShape(18.dp), spotColor = Color(0x08000000))
-            .clickable { onClick() },
-        color = LoonCard
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+            containerColor = LoonBg,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            dragHandle = { BottomSheetDefaults.DragHandle() }
         ) {
-            // Header Row: Name & Subtitle on left, 3-dots Menu on right
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = item.name,
-                        color = if (isSelected) LoonBlue else LoonTextPrimary,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
-
-                // 3-Dots Menu (...)
-                Box {
-                    IconButton(
-                        onClick = { menuExpanded = true },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "更多操作",
-                            tint = LoonTextSecondary
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false },
-                        shape = RoundedCornerShape(18.dp),
-                        containerColor = LoonCard,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder)
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(AppStrings.get("profile_override", lang), color = LoonTextPrimary, fontSize = 14.sp) },
-                            leadingIcon = {
-                                Icon(Icons.Default.Code, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onOverride()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(AppStrings.get("profile_edit", lang), color = LoonTextPrimary, fontSize = 14.sp) },
-                            leadingIcon = {
-                                Icon(Icons.Default.Edit, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
-                            }
-                        )
-                        if (item.url != null) {
-                            DropdownMenuItem(
-                                text = { Text(AppStrings.get("profile_update", lang), color = LoonTextPrimary, fontSize = 14.sp) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onUpdate()
-                                }
-                            )
-                        }
-                        if (onMoveUp != null) {
-                            DropdownMenuItem(
-                                text = { Text("上移配置", color = LoonTextPrimary, fontSize = 14.sp) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onMoveUp()
-                                }
-                            )
-                        }
-                        if (onMoveDown != null) {
-                            DropdownMenuItem(
-                                text = { Text("下移配置", color = LoonTextPrimary, fontSize = 14.sp) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    onMoveDown()
-                                }
-                            )
-                        }
-                        HorizontalDivider(color = LoonCardBorder)
-                        DropdownMenuItem(
-                            text = { Text(AppStrings.get("profile_delete", lang), color = RedDanger, fontSize = 14.sp) },
-                            leadingIcon = {
-                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = RedDanger, modifier = Modifier.size(18.dp))
-                            },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Traffic & Expiry info (if subscription data exists)
-            if (item.totalBytes > 0L) {
-                Spacer(modifier = Modifier.height(10.dp))
-                val usedBytes = (item.uploadBytes + item.downloadBytes).coerceAtLeast(0L)
-                val remainingBytes = (item.totalBytes - usedBytes).coerceAtLeast(0L)
-                val progress = if (item.totalBytes > 0L) (usedBytes.toFloat() / item.totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
-
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${formatTraffic(remainingBytes)} / ${formatTraffic(item.totalBytes)}",
-                            fontSize = 12.sp,
-                            color = LoonTextSecondary
-                        )
-                        if (item.expireTimestamp > 0L) {
-                            val expireMs = if (item.expireTimestamp < 10000000000L) item.expireTimestamp * 1000L else item.expireTimestamp
-                            val isExpired = System.currentTimeMillis() > expireMs
-                            val expireDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(expireMs))
-                            Text(
-                                text = expireDateStr,
-                                color = if (isExpired) RedDanger else LoonTextMuted,
-                                fontSize = 11.5.sp
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(5.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(LoonEditBlueBg)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(fraction = progress)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(if (progress > 0.9f) RedDanger else LoonBlue)
-                        )
-                    }
-                }
-            } else if (item.expireTimestamp > 0L) {
-                Spacer(modifier = Modifier.height(6.dp))
-                val expireMs = if (item.expireTimestamp < 10000000000L) item.expireTimestamp * 1000L else item.expireTimestamp
-                val isExpired = System.currentTimeMillis() > expireMs
-                val expireDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(expireMs))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = expireDateStr,
-                        color = if (isExpired) RedDanger else LoonTextMuted,
-                        fontSize = 11.5.sp
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Bottom Row: update time & script badge
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 36.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = formatRelativeTime(item.lastUpdated),
-                    color = LoonTextMuted,
-                    fontSize = 11.5.sp
+                    text = "删除配置文件",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = LoonTextPrimary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "确定要删除配置 [${target.name}] 吗？此操作将彻底移除该配置文件及其缓存。",
+                    fontSize = 13.sp,
+                    color = LoonTextSecondary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    lineHeight = 18.sp
                 )
 
+                Spacer(modifier = Modifier.height(20.dp))
+
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (item.scriptEnabled && item.scriptIds.isNotEmpty()) LoonEditBlueBg else LoonBg,
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        if (item.scriptEnabled && item.scriptIds.isNotEmpty()) LoonBlue.copy(alpha = 0.5f) else LoonCardBorder
-                    ),
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onOverride() }
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(IosRed)
+                        .clickable {
+                            haptic.impact()
+                            onDeleteProfile(target)
+                            deleteConfirmProfile = null
+                        },
+                    color = IosRed
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Code,
-                            contentDescription = null,
-                            tint = if (item.scriptEnabled && item.scriptIds.isNotEmpty()) LoonBlue else LoonTextMuted,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (item.scriptEnabled && item.scriptIds.isNotEmpty()) "已生效 ${item.scriptIds.size} 个脚本" else "未勾选脚本",
-                            color = if (item.scriptEnabled && item.scriptIds.isNotEmpty()) LoonBlue else LoonTextMuted,
-                            fontSize = 11.sp,
-                            fontWeight = if (item.scriptEnabled && item.scriptIds.isNotEmpty()) FontWeight.Bold else FontWeight.Normal
-                        )
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("确认删除", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
+                        .iosPressable { deleteConfirmProfile = null },
+                    color = LoonCard
+                ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("取消", color = LoonTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
             }
         }
     }
 }
-
-
-
-

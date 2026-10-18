@@ -6,6 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -302,17 +303,21 @@ fun LoonShortcutCard(
     onDelete: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
+    val haptic = rememberIosHaptic()
     Surface(
         modifier = modifier
             .height(118.dp)
+            .shadow(1.5.dp, RoundedCornerShape(18.dp), spotColor = Color(0x0A000000))
             .clip(RoundedCornerShape(18.dp))
             .border(
-                width = 1.dp,
+                width = 0.5.dp,
                 color = LoonCardBorder,
                 shape = RoundedCornerShape(18.dp)
             )
-            .shadow(2.dp, RoundedCornerShape(18.dp), spotColor = Color(0x0A000000))
-            .clickable(enabled = !isEditing) { onClick() },
+            .iosPressable(enabled = !isEditing, pressedScale = 0.982f) {
+                haptic.lightTick()
+                onClick()
+            },
         color = LoonCard
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -390,7 +395,7 @@ fun LoonShortcutCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "−",
+                        text = "\u2212",
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.ExtraBold
@@ -863,7 +868,7 @@ fun LoonFloatingBottomBar(
     Surface(
         modifier = modifier
             .shadow(16.dp, RoundedCornerShape(32.dp), spotColor = Color(0x1F000000))
-            .border(1.dp, LocalLoonColors.current.bottomBarBorder, RoundedCornerShape(32.dp)),
+            .border(0.5.dp, LocalLoonColors.current.bottomBarBorder, RoundedCornerShape(32.dp)),
         shape = RoundedCornerShape(32.dp),
         color = LocalLoonColors.current.bottomBarBg
     ) {
@@ -957,16 +962,17 @@ private fun BottomNavItem(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val haptic = rememberIosHaptic()
     val tint by animateColorAsState(
-        targetValue = if (isSelected) LoonBlue else Color(0xFF9AA1B0),
+        targetValue = if (isSelected) IosBlue else Color(0xFF8E8E93),
         animationSpec = tween(durationMillis = 200),
         label = "nav_tint"
     )
     val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.05f else 1.0f,
+        targetValue = if (isSelected) 1.08f else 1.0f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
+            dampingRatio = 0.7f,
+            stiffness = 400f
         ),
         label = "nav_scale"
     )
@@ -978,9 +984,12 @@ private fun BottomNavItem(
                 scaleY = scale
             }
             .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                interactionSource = remember { MutableInteractionSource() },
                 indication = null
-            ) { onClick() }
+            ) {
+                haptic.selection()
+                onClick()
+            }
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -999,7 +1008,7 @@ private fun BottomNavItem(
             text = label,
             color = tint,
             fontSize = 10.5.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
         )
     }
 }
@@ -1064,7 +1073,7 @@ fun rememberBounceOverscrollConnection(
                     overscrollOffset.animateTo(
                         targetValue = 0f,
                         animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            dampingRatio = 0.82f,
                             stiffness = Spring.StiffnessMediumLow
                         )
                     )
@@ -1078,7 +1087,7 @@ fun rememberBounceOverscrollConnection(
                     overscrollOffset.animateTo(
                         targetValue = 0f,
                         animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            dampingRatio = 0.82f,
                             stiffness = Spring.StiffnessMediumLow
                         )
                     )
@@ -1090,6 +1099,7 @@ fun rememberBounceOverscrollConnection(
     return Pair(connection, overscrollOffset.asState())
 }
 
+// iOS-style Rubber-Band Bounce Overscroll
 fun Modifier.bounceOverscroll(
     allowTop: Boolean = true,
     allowBottom: Boolean = true

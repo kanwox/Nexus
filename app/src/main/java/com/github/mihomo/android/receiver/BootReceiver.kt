@@ -15,10 +15,24 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         Log.i(TAG, "Received broadcast action: $action")
-        if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+        val isBoot = action == Intent.ACTION_BOOT_COMPLETED ||
+                action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+                action == "android.intent.action.QUICKBOOT_POWERON" ||
+                action == "com.htc.intent.action.QUICKBOOT_POWERON"
+
+        if (isBoot) {
             val settingsManager = SettingsManager(context)
             if (settingsManager.bootOnStartup) {
-                Log.i(TAG, "Boot on startup is enabled, launching MihomoVpnService")
+                if (android.net.VpnService.prepare(context) != null) {
+                    Log.w(TAG, "VPN permission not prepared; cannot start on boot")
+                    return
+                }
+                val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
+                if (profiles.isEmpty()) {
+                    Log.w(TAG, "No profiles available to start on boot")
+                    return
+                }
+                Log.i(TAG, "Boot on startup is enabled with valid profile, launching MihomoVpnService")
                 try {
                     MihomoVpnService.start(context)
                 } catch (e: Throwable) {
