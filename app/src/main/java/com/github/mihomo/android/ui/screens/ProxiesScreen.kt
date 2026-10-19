@@ -34,6 +34,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 
@@ -235,43 +236,14 @@ fun ProxiesScreen(
                             fontWeight = FontWeight.Medium,
                             color = LoonTextSecondary
                         )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            val modes = listOf(
-                                "TABS" to AppStrings.get("proxies_view_tabs", lang),
-                                "LIST" to AppStrings.get("proxies_view_list", lang)
-                            )
-                            modes.forEach { (mode, label) ->
-                                val isSel = currentViewMode == mode
-                                Surface(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .border(
-                                            1.dp,
-                                            if (isSel) LoonBlue else LoonCardBorder,
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable { onViewModeChanged(mode) },
-                                    color = if (isSel) LoonEditBlueBg else LoonCard,
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier.padding(vertical = 11.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = label,
-                                            fontSize = 13.5.sp,
-                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSel) LoonBlue else LoonTextPrimary
-                                        )
-                                    }
-                                }
+                        CupertinoSegmentedControl(
+                            items = listOf("TABS", "LIST"),
+                            selectedItem = currentViewMode,
+                            onItemSelected = { onViewModeChanged(it) },
+                            labelProvider = {
+                                if (it == "TABS") AppStrings.get("proxies_view_tabs", lang) else AppStrings.get("proxies_view_list", lang)
                             }
-                        }
+                        )
                     }
 
                     // 2. 节点排版 (单列 / 双列 / 三列)
@@ -282,40 +254,12 @@ fun ProxiesScreen(
                             fontWeight = FontWeight.Medium,
                             color = LoonTextSecondary
                         )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val cols = listOf(1 to "单列", 2 to "双列", 3 to "三列")
-                            cols.forEach { (colCount, label) ->
-                                val isSel = nodeColumns == colCount
-                                Surface(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .border(
-                                            1.dp,
-                                            if (isSel) LoonBlue else LoonCardBorder,
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable { onNodeColumnsChanged(colCount) },
-                                    color = if (isSel) LoonEditBlueBg else LoonCard,
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier.padding(vertical = 10.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = label,
-                                            fontSize = 13.sp,
-                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSel) LoonBlue else LoonTextPrimary
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        CupertinoSegmentedControl(
+                            items = listOf(1, 2, 3),
+                            selectedItem = nodeColumns,
+                            onItemSelected = { onNodeColumnsChanged(it) },
+                            labelProvider = { "${it}列" }
+                        )
                     }
 
                     // 3. 策略组远程图标开关
@@ -1033,5 +977,41 @@ private fun LoonProxyItemCard(
                 }
             }
         }
+    }
+}
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun ProxiesScreenPreview() {
+    val sampleProxies = listOf(
+        Proxy(name = "HK - 01 (BGP)", type = "SS", delay = 52),
+        Proxy(name = "JP - Tokyo HighSpeed", type = "Vmess", delay = 89),
+        Proxy(name = "SG - Singapore Premium", type = "Trojan", delay = 74),
+        Proxy(name = "US - Silicon Valley", type = "Shadowsocks", delay = 185)
+    )
+    val groupProxy = ProxyGroup(
+        type = "Selector",
+        proxies = sampleProxies,
+        now = "HK - 01 (BGP)"
+    )
+    val groups = listOf("PROXY", "AUTO", "FALLBACK")
+    val groupMap = mapOf(
+        "PROXY" to groupProxy,
+        "AUTO" to ProxyGroup(type = "URLTest", proxies = sampleProxies, now = "HK - 01 (BGP)"),
+        "FALLBACK" to ProxyGroup(type = "Fallback", proxies = sampleProxies, now = "HK - 01 (BGP)")
+    )
+    MihomoTheme {
+        ProxiesScreen(
+            groups = groups,
+            groupMap = groupMap,
+            currentGroup = groupProxy,
+            selectedGroupName = "PROXY",
+            currentViewMode = "TABS",
+            onViewModeChanged = {},
+            onShowGroupIconsChanged = {},
+            onSelectGroup = {},
+            onSelectProxy = { _, _ -> },
+            onHealthCheck = {}
+        )
     }
 }

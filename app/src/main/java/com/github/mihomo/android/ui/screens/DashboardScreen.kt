@@ -41,6 +41,7 @@ import androidx.compose.ui.zIndex
 import com.github.kr328.clash.core.model.Proxy
 import com.github.mihomo.android.core.model.TunnelMode
 import com.github.mihomo.android.service.VpnState
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlin.math.roundToInt
@@ -598,22 +599,11 @@ fun DashboardScreen(
                         }
 
                         // Search bar
-                        OutlinedTextField(
+                        CupertinoSearchBar(
                             value = quickNodeSearchQuery,
                             onValueChange = { quickNodeSearchQuery = it },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 10.dp),
-                            placeholder = { Text(AppStrings.get("search_nodes", lang), color = LoonTextMuted, fontSize = 13.sp) },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = LoonTextSecondary, modifier = Modifier.size(17.dp)) },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedContainerColor = LoonBg,
-                                unfocusedContainerColor = LoonBg,
-                                focusedBorderColor = LoonBlue,
-                                unfocusedBorderColor = Color.Transparent
-                            ),
-                            shape = RoundedCornerShape(12.dp),
-                            singleLine = true
+                            placeholder = AppStrings.get("search_nodes", lang),
+                            modifier = Modifier.padding(bottom = 10.dp)
                         )
 
                         val filteredNodes = remember(mainGroupProxies, quickNodeSearchQuery) {
@@ -927,37 +917,60 @@ fun DashboardScreen(
 
             // Informational Dialog
             if (activeDialogTitle != null) {
-                AlertDialog(
-                    onDismissRequest = { activeDialogTitle = null },
-                    title = {
-                        Text(
-                            text = activeDialogTitle ?: "",
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary
-                        )
-                    },
-                    text = {
-                        Text(
-                            text = activeDialogContent ?: "",
-                            color = LoonTextSecondary,
-                            lineHeight = 20.sp,
-                            fontSize = 14.sp
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(onClick = { activeDialogTitle = null }) {
-                            Text("知道了", color = LoonBlue, fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    containerColor = LoonCard,
-                    shape = RoundedCornerShape(20.dp)
+                CupertinoAlertDialog(
+                    title = activeDialogTitle ?: "",
+                    message = activeDialogContent ?: "",
+                    confirmText = "知道了",
+                    dismissText = null,
+                    onConfirm = { activeDialogTitle = null },
+                    onDismissRequest = { activeDialogTitle = null }
                 )
             }
         }
     }
 }
-
-
-
-
 }
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun DashboardScreenPreview() {
+    val sampleProxies = listOf(
+        Proxy(name = "Hong Kong 01", type = "SS", delay = 68),
+        Proxy(name = "Tokyo 02", type = "Vmess", delay = 112),
+        Proxy(name = "Singapore 03", type = "Trojan", delay = 85)
+    )
+    MihomoTheme {
+        DashboardScreen(
+            vpnState = VpnState(
+                status = VpnState.Status.RUNNING,
+                upSpeed = "128 KB/s",
+                downSpeed = "2.4 MB/s",
+                totalUp = "1.2 GB",
+                totalDown = "18.5 GB"
+            ),
+            currentMode = TunnelMode.RULE,
+            activeProfileName = "Premium Auto Sub",
+            mainGroupName = "PROXY",
+            mainGroupProxies = sampleProxies,
+            activeNodeName = "Hong Kong 01",
+            totalNodes = 48,
+            totalRules = 3520,
+            visibleShortcuts = setOf("nodes", "profiles", "logs", "requests", "dns", "rules", "routing", "network_share"),
+            shortcutOrder = listOf("nodes", "profiles", "logs", "requests", "dns", "rules", "routing", "network_share"),
+            onToggleVpn = {},
+            onModeSelected = {},
+            onSelectProxy = { _, _ -> },
+            onHealthCheck = {},
+            onNavigateToProfiles = {},
+            onNavigateToAppRouting = {},
+            onNavigateToLogs = {},
+            onNavigateToRules = {},
+            onNavigateToDns = {},
+            onNavigateToRequests = {},
+            onNavigateToNetworkShare = {},
+            onUpdateVisibleShortcuts = {},
+            onUpdateShortcutOrder = {}
+        )
+    }
+}
+

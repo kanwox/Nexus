@@ -410,18 +410,6 @@ fun LoonShortcutCard(
 // iOS/Loon Style High-Fidelity Canvas Illustrations
 // -------------------------------------------------------------
 
-@Composable
-fun BlurOverlay(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
-    Box(
-        modifier = modifier
-            .size(22.dp)
-            .shadow(3.dp, CircleShape, spotColor = Color(0x33000000))
-            .clip(CircleShape)
-            .background(Color.White.copy(alpha = 0.92f)),
-        contentAlignment = Alignment.Center,
-        content = content
-    )
-}
 
 @Composable
 fun RequestLogsIllustration() {
@@ -642,90 +630,6 @@ fun NodesIllustration() {
     }
 }
 
-@Composable
-fun PacketCaptureIllustration() {
-    Box(modifier = Modifier.size(54.dp)) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            val gradient = Brush.linearGradient(
-                colors = listOf(Color(0xFFA78BFA), Color(0xFF7C3AED)),
-                start = Offset(0f, 0f),
-                end = Offset(w, h)
-            )
-            // Phone body
-            drawRoundRect(
-                brush = gradient,
-                topLeft = Offset(w * 0.20f, h * 0.10f),
-                size = Size(w * 0.35f, h * 0.60f),
-                cornerRadius = CornerRadius(5.dp.toPx())
-            )
-            // Phone screen
-            drawRoundRect(
-                color = Color.White.copy(alpha = 0.25f),
-                topLeft = Offset(w * 0.24f, h * 0.16f),
-                size = Size(w * 0.27f, h * 0.42f),
-                cornerRadius = CornerRadius(3.dp.toPx())
-            )
-            // Branching arrows from phone right side
-            val midY = h * 0.40f
-            // Horizontal stem
-            drawLine(
-                color = Color.White.copy(alpha = 0.9f),
-                start = Offset(w * 0.56f, midY),
-                end = Offset(w * 0.68f, midY),
-                strokeWidth = 2.5.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            // Upper branch
-            drawLine(
-                color = Color.White.copy(alpha = 0.9f),
-                start = Offset(w * 0.68f, midY),
-                end = Offset(w * 0.68f, h * 0.26f),
-                strokeWidth = 2.5.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = Color.White.copy(alpha = 0.9f),
-                start = Offset(w * 0.68f, h * 0.26f),
-                end = Offset(w * 0.84f, h * 0.26f),
-                strokeWidth = 2.5.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            // Lower branch
-            drawLine(
-                color = Color.White.copy(alpha = 0.9f),
-                start = Offset(w * 0.68f, midY),
-                end = Offset(w * 0.68f, h * 0.54f),
-                strokeWidth = 2.5.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = Color.White.copy(alpha = 0.9f),
-                start = Offset(w * 0.68f, h * 0.54f),
-                end = Offset(w * 0.84f, h * 0.54f),
-                strokeWidth = 2.5.dp.toPx(),
-                cap = StrokeCap.Round
-            )
-            // Arrow heads
-            val arrSize = 4.dp.toPx()
-            // Upper arrowhead
-            drawPath(Path().apply {
-                moveTo(w * 0.84f, h * 0.26f - arrSize)
-                lineTo(w * 0.84f + arrSize, h * 0.26f)
-                lineTo(w * 0.84f, h * 0.26f + arrSize)
-                close()
-            }, color = Color.White.copy(alpha = 0.9f))
-            // Lower arrowhead
-            drawPath(Path().apply {
-                moveTo(w * 0.84f, h * 0.54f - arrSize)
-                lineTo(w * 0.84f + arrSize, h * 0.54f)
-                lineTo(w * 0.84f, h * 0.54f + arrSize)
-                close()
-            }, color = Color.White.copy(alpha = 0.9f))
-        }
-    }
-}
 
 @Composable
 fun NetworkShareIllustration() {

@@ -1,29 +1,30 @@
 package com.github.mihomo.android.ui.screens
 
+import android.content.Context
+import android.net.ConnectivityManager
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.service.VpnState
@@ -31,7 +32,9 @@ import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.util.*
 
+@Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
 fun NetworkShareScreen(
     allowLan: Boolean,
@@ -39,51 +42,18 @@ fun NetworkShareScreen(
     vpnState: VpnState,
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     val lang = LocalAppLanguage.current
+    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val isRunning = vpnState.status == VpnState.Status.RUNNING
+    val haptic = rememberIosHaptic()
 
-    val localIps = remember {
-        val ips = mutableListOf<String>()
-        val wifiIps = mutableListOf<String>()
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
-            for (iface in interfaces) {
-                val ifName = iface.name.lowercase()
-                if (iface.isLoopback || !iface.isUp) continue
-                val ignoredPrefixes = listOf("tun", "tap", "dummy", "rmnet", "sit", "p2p")
-                if (ignoredPrefixes.any { ifName.contains(it) }) continue
-
-                val wifiKeywords = listOf("wlan", "eth", "wifi", "ap", "en")
-                val isWifi = wifiKeywords.any { ifName.contains(it) }
-
-                for (addr in iface.inetAddresses) {
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        val host = addr.hostAddress ?: continue
-                        if (host.startsWith("127.") || host.startsWith("198.18.") || host.startsWith("172.19.")) continue
-                        if (isWifi) {
-                            wifiIps.add(host)
-                        } else {
-                            ips.add(host)
-                        }
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-        }
-        val combined = (wifiIps + ips).distinct()
-        if (combined.isEmpty()) listOf("192.168.1.X") else combined
+    val localIp = remember(allowLan, vpnState.status) {
+        getLocalIpAddress(context)
     }
 
-    val primaryIp = localIps.firstOrNull() ?: "127.0.0.1"
-    val port = "7890"
-
-    var selectedPlatform by remember { mutableStateOf("WINDOWS") }
-
-    fun copyToClipboard(label: String, text: String) {
-        clipboardManager.setText(AnnotatedString(text))
-        Toast.makeText(context, "已复制 $label 到剪贴板", Toast.LENGTH_SHORT).show()
+    val proxyPort = 7890
+    val fullProxyAddress = remember(localIp) {
+        if (!localIp.isNullOrBlank()) "$localIp:$proxyPort" else "127.0.0.1:$proxyPort"
     }
 
     Column(
@@ -92,315 +62,342 @@ fun NetworkShareScreen(
             .background(LoonBg)
             .statusBarsPadding()
     ) {
-        // Cupertino Navigation Bar
+        // Navigation Bar: Centered title, back button
         CupertinoNavBar(
             title = AppStrings.get("network_share_screen_title", lang),
             showBackButton = true,
             onBack = onBack
         )
 
+        // Scroll Container
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .bounceOverscroll()
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)
         ) {
-            // Card 1: Switch & Status
-            item(key = "lan_switch") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier.fillMaxWidth()
+            // Main Switch Card (iOS Inset Grouped Section)
+            item {
+                CupertinoGroupedSection(
+                    header = "共享设置",
+                    footer = "开启后，同一局域网内的其他设备（如电脑、Switch/PS5 游戏主机、平板等）可通过填入本机 IP 与端口接入代理网络。"
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "允许局域网连接",
-                                    fontSize = 15.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = LoonTextPrimary
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = if (allowLan) "已允许同 Wi-Fi 下的其他设备通过本机代理上网" else "未开启，仅限本机应用通过核心代理",
-                                    fontSize = 11.5.sp,
-                                    color = LoonTextMuted
-                                )
-                            }
-                            CupertinoSwitch(
-                                checked = allowLan,
-                                onCheckedChange = { onAllowLanChanged(it) }
-                            )
-                        }
-
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = LoonCardBorder, thickness = 0.5.dp)
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            val statusColor = if (allowLan && isRunning) LoonGreen else RedDanger
-                            val statusText = if (allowLan && isRunning) "服务运行中" else if (!isRunning) "核心未启动" else "共享未开启"
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(statusColor)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = statusText,
-                                    color = statusColor,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(end = 10.dp)
-                                )
-                                Text("混合代理端口: 7890", fontSize = 12.sp, color = LoonTextSecondary, fontWeight = FontWeight.Medium)
-                            }
-
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "HTTP + SOCKS5",
-                                fontSize = 11.sp,
-                                color = LoonTextMuted,
-                                fontFamily = FontFamily.Monospace
+                                text = "允许局域网连接",
+                                color = LoonTextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
-                        }
-                    }
-                }
-            }
-
-            // Card 2: Detected LAN IP Addresses
-            item(key = "lan_ips") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "本机局域网 IP 与代理地址",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = LoonTextPrimary
-                            )
-                            Icon(Icons.Default.Lan, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(18.dp))
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        localIps.forEach { ip ->
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = LoonBg,
-                                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "$ip:$port",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = LoonTextPrimary,
-                                            fontFamily = FontFamily.Monospace
-                                        )
-                                        Text("局域网代理主机与端口", fontSize = 10.5.sp, color = LoonTextMuted)
-                                    }
-
-                                    IconButton(
-                                        onClick = { copyToClipboard("代理地址", "$ip:$port") },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(Icons.Default.ContentCopy, contentDescription = "复制", tint = LoonBlue, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Card 3: One-Tap Terminal Proxy Commands
-            item(key = "terminal_commands") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "终端一键配置代理命令",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "在电脑终端中执行下列命令即可将网络请求转至本机：",
-                            fontSize = 11.5.sp,
-                            color = LoonTextMuted
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        val commands = listOf(
-                            Triple(
-                                "Windows PowerShell",
-                                "\$env:http_proxy=\"http://$primaryIp:$port\"; \$env:https_proxy=\"http://$primaryIp:$port\"",
-                                "PowerShell 命令"
-                            ),
-                            Triple(
-                                "macOS / Linux Shell",
-                                "export http_proxy=http://$primaryIp:$port https_proxy=http://$primaryIp:$port",
-                                "Shell 命令"
-                            ),
-                            Triple(
-                                "Windows CMD",
-                                "set http_proxy=http://$primaryIp:$port & set https_proxy=http://$primaryIp:$port",
-                                "CMD 命令"
-                            )
-                        )
-
-                        commands.forEach { (title, cmd, label) ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = LoonBg,
-                                border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(title, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = LoonBlue)
-                                        IconButton(
-                                            onClick = { copyToClipboard(label, cmd) },
-                                            modifier = Modifier.size(24.dp)
-                                        ) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = "复制", tint = LoonTextSecondary, modifier = Modifier.size(14.dp))
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = cmd,
-                                        fontSize = 11.sp,
-                                        color = LoonTextSecondary,
-                                        fontFamily = FontFamily.Monospace,
-                                        lineHeight = 16.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Card 4: Device Configuration Guide
-            item(key = "device_guide") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "设备 Wi-Fi 代理设置指南",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Platform Selector Segmented Control
-                        val platforms = listOf("WINDOWS", "MACOS", "IOS", "ANDROID")
-                        CupertinoSegmentedControl(
-                            items = platforms,
-                            selectedItem = selectedPlatform,
-                            onItemSelected = { selectedPlatform = it },
-                            labelProvider = { key ->
-                                when (key) {
-                                    "WINDOWS" -> "Windows"
-                                    "MACOS" -> "macOS"
-                                    "IOS" -> "iOS"
-                                    else -> "Android"
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        val instructions = when (selectedPlatform) {
-                            "WINDOWS" -> listOf(
-                                "1. 确保电脑连接到与本手机相同的 Wi-Fi 或手机热点网络",
-                                "2. 打开系统 [设置] -> [网络和 Internet] -> [代理]",
-                                "3. 在手动设置代理中开启 [使用代理服务器]",
-                                "4. 代理 IP 地址填写: $primaryIp",
-                                "5. 端口填写: $port ，保存生效"
-                            )
-                            "MACOS" -> listOf(
-                                "1. 确保 Mac 连接到与本手机相同的 Wi-Fi 或热点",
-                                "2. 打开 [系统设置] -> [网络] -> 选择当前连接的 Wi-Fi -> [详细信息]",
-                                "3. 点击左侧 [代理] 标签页，勾选 [网页代理 (HTTP)] 与 [安全网页代理 (HTTPS)]",
-                                "4. 服务器地址填写: $primaryIp ，端口填写: $port",
-                                "5. 点击 [好] 保存后即可生效"
-                            )
-                            "IOS" -> listOf(
-                                "1. iPhone / iPad 连接与本手机相同的 Wi-Fi",
-                                "2. 打开 [设置] -> [无线局域网] -> 点击当前 Wi-Fi 右侧的 ⓘ 图标",
-                                "3. 滑动至底部找到 [配置代理]，选择 [手动]",
-                                "4. 服务器填写: $primaryIp ，端口填写: $port",
-                                "5. 点击右上角 [存储] 即可生效"
-                            )
-                            else -> listOf(
-                                "1. 另一台安卓手机连接相同 Wi-Fi",
-                                "2. 在 Wi-Fi 详情中找到 [高级选项] -> [代理] 改为 [手动]",
-                                "3. 代理主机名填写: $primaryIp ，代理端口填写: $port",
-                                "4. 保存即可连接"
-                            )
-                        }
-
-                        instructions.forEach { line ->
-                            Text(
-                                text = line,
-                                fontSize = 12.sp,
+                                text = "监听 0.0.0.0 开放混合代理端口",
                                 color = LoonTextSecondary,
-                                lineHeight = 18.sp,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                                fontSize = 12.5.sp
                             )
                         }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        CupertinoSwitch(
+                            checked = allowLan,
+                            onCheckedChange = { checked ->
+                                haptic.selection()
+                                onAllowLanChanged(checked)
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Contextual Status Alert
+            if (allowLan) {
+                item {
+                    val isRunning = vpnState.status == VpnState.Status.RUNNING
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isRunning) IosGreen.copy(alpha = 0.12f)
+                                else IosOrange.copy(alpha = 0.12f)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isRunning) Icons.Default.Wifi else Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = if (isRunning) IosGreen else IosOrange,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isRunning) "共享服务运行中 · 端口 $proxyPort 已对外监听" else "VPN 核心未运行",
+                                color = if (isRunning) IosGreen else IosOrange,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isRunning) {
+                                    "局域网设备按下方参数配置即可正常走代理"
+                                } else {
+                                    "共享开关已开启，但需启动 VPN 外部设备方可正常访问互联网"
+                                },
+                                color = if (isRunning) IosGreen.copy(alpha = 0.85f) else IosOrange.copy(alpha = 0.85f),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+
+                // Connection Parameters Section
+                item {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    CupertinoGroupedSection(
+                        header = "连接参数",
+                        footer = "请确保被共享的终端设备与此手机处于同一个 Wi-Fi 局域网或连接了此手机的热点。"
+                    ) {
+                        ShareParamRow(
+                            label = "本机局域网 IP",
+                            value = localIp ?: "未能获取 (请确认已连接 Wi-Fi)",
+                            onCopy = if (localIp != null) {
+                                {
+                                    haptic.lightTick()
+                                    clipboardManager.setText(AnnotatedString(localIp))
+                                    Toast.makeText(context, "已复制本机 IP: $localIp", Toast.LENGTH_SHORT).show()
+                                }
+                            } else null
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        ShareParamRow(
+                            label = "代理混合端口",
+                            value = "$proxyPort",
+                            onCopy = {
+                                haptic.lightTick()
+                                clipboardManager.setText(AnnotatedString("$proxyPort"))
+                                Toast.makeText(context, "已复制端口: $proxyPort", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        ShareParamRow(
+                            label = "完整代理地址",
+                            value = fullProxyAddress,
+                            onCopy = {
+                                haptic.lightTick()
+                                clipboardManager.setText(AnnotatedString(fullProxyAddress))
+                                Toast.makeText(context, "已复制完整代理地址: $fullProxyAddress", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        ShareParamRow(
+                            label = "支持协议",
+                            value = "HTTP / HTTPS / SOCKS5",
+                            onCopy = null
+                        )
+                    }
+                }
+
+                // Setup Guides Section
+                item {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    CupertinoGroupedSection(
+                        header = "终端接入指南"
+                    ) {
+                        GuideRow(
+                            title = "Windows / macOS 电脑",
+                            steps = "系统设置 ➔ 网络 ➔ 代理 ➔ 开启手动代理 ➔ 地址填入上方本机 IP ➔ 端口填入 $proxyPort"
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        GuideRow(
+                            title = "Nintendo Switch / 游戏主机",
+                            steps = "设置 ➔ 互联网设置 ➔ 选择当前 Wi-Fi ➔ 更改设置 ➔ 代理服务器设为【使用】➔ 输入上方 IP 与 $proxyPort"
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        val curlCmd = "export http_proxy=\"http://$fullProxyAddress\" && export https_proxy=\"http://$fullProxyAddress\""
+                        GuideRow(
+                            title = "命令行终端代理 (Terminal)",
+                            steps = curlCmd,
+                            isCommand = true,
+                            onCopy = {
+                                haptic.lightTick()
+                                clipboardManager.setText(AnnotatedString(curlCmd))
+                                Toast.makeText(context, "已复制终端代理命令", Toast.LENGTH_SHORT).show()
+                            }
+                        )
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Clean Parameter Row with optional Copy action.
+ */
+@Composable
+private fun ShareParamRow(
+    label: String,
+    value: String,
+    onCopy: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onCopy != null) {
+                    Modifier.clickable(onClick = onCopy)
+                } else Modifier
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            fontSize = 14.5.sp,
+            color = LoonTextSecondary
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f, fill = false)
+        ) {
+            Text(
+                text = value,
+                fontSize = 14.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = LoonTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            if (onCopy != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "复制",
+                    tint = IosBlue,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Clean Guide Row explaining steps for other devices.
+ */
+@Composable
+private fun GuideRow(
+    title: String,
+    steps: String,
+    isCommand: Boolean = false,
+    onCopy: (() -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onCopy != null) {
+                    Modifier.clickable(onClick = onCopy)
+                } else Modifier
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = title,
+                fontSize = 14.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = LoonTextPrimary
+            )
+
+            if (onCopy != null) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "复制",
+                    tint = IosBlue,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = steps,
+            fontSize = 12.5.sp,
+            color = if (isCommand) IosBlue else LoonTextSecondary,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+/**
+ * Retrieve the active Wi-Fi or LAN IPv4 address.
+ */
+private fun getLocalIpAddress(context: Context): String? {
+    runCatching {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        val linkProps = cm?.getLinkProperties(activeNet)
+        val ip = linkProps?.linkAddresses?.mapNotNull { it.address }
+            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+            ?.hostAddress
+        if (!ip.isNullOrBlank()) return ip
+    }
+
+    runCatching {
+        val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+        for (intf in interfaces) {
+            val addrs = Collections.list(intf.inetAddresses)
+            for (addr in addrs) {
+                if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                    val host = addr.hostAddress ?: ""
+                    if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
+                        return host
+                    }
+                }
+            }
+        }
+    }
+    return null
+}
+
+@Preview(showBackground = true)
+@Composable
+fun NetworkShareScreenPreview() {
+    NetworkShareScreen(
+        allowLan = true,
+        onAllowLanChanged = {},
+        vpnState = VpnState(VpnState.Status.RUNNING),
+        onBack = {}
+    )
 }

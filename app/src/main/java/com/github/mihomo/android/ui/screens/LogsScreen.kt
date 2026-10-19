@@ -1,73 +1,83 @@
 package com.github.mihomo.android.ui.screens
 
-import android.content.Intent
 import android.widget.Toast
-import androidx.compose.animation.*
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.LogEntry
 import com.github.mihomo.android.data.LogRepository
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
+private enum class LogFilter(val label: String) {
+    ALL("全部"),
+    ISSUES("异常"),
+    INFO("信息"),
+    DEBUG("调试")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
+@Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
 fun LogsScreen(
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     val lang = LocalAppLanguage.current
+    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val logs by LogRepository.logsFlow.collectAsState()
-    val scope = rememberCoroutineScope()
     val haptic = rememberIosHaptic()
+    val logs by LogRepository.logsFlow.collectAsState()
 
-    var selectedLevel by remember { mutableStateOf("ALL") }
     var searchQuery by remember { mutableStateOf("") }
-    var isSearchVisible by remember { mutableStateOf(false) }
-    var isStreamingPaused by remember { mutableStateOf(false) }
-    var activeDetailEntry by remember { mutableStateOf<LogEntry?>(null) }
-    var showClearConfirmDialog by remember { mutableStateOf(false) }
+    var selectedFilter by remember { mutableStateOf(LogFilter.ALL) }
+    var showFilterSheet by remember { mutableStateOf(false) }
+    var showActionSheet by remember { mutableStateOf(false) }
+    var activeDetailLog by remember { mutableStateOf<LogEntry?>(null) }
 
-    val listState = rememberLazyListState()
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
+    val fullTimeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()) }
 
-    val filteredLogs = remember(logs, selectedLevel, searchQuery) {
+    // Filter logs based on filter and search query
+    val filteredLogs = remember(logs, searchQuery, selectedFilter) {
+        val query = searchQuery.trim().lowercase()
         logs.filter { entry ->
-            val matchLevel = if (selectedLevel == "ALL") true else entry.level.equals(selectedLevel, ignoreCase = true)
-            val matchSearch = if (searchQuery.isBlank()) true else entry.message.contains(searchQuery, ignoreCase = true)
-            matchLevel && matchSearch
-        }
-    }
+            // Level filter
+            val levelMatch = when (selectedFilter) {
+                LogFilter.ALL -> true
+                LogFilter.ISSUES -> entry.level.equals("error", ignoreCase = true) || entry.level.equals("warning", ignoreCase = true)
+                LogFilter.INFO -> entry.level.equals("info", ignoreCase = true)
+                LogFilter.DEBUG -> entry.level.equals("debug", ignoreCase = true)
+            }
+            if (!levelMatch) return@filter false
 
-    LaunchedEffect(filteredLogs.size, isStreamingPaused) {
-        if (!isStreamingPaused && filteredLogs.isNotEmpty()) {
-            listState.animateScrollToItem(filteredLogs.size - 1)
+            // Search query match
+            if (query.isEmpty()) return@filter true
+            entry.message.lowercase().contains(query) || entry.level.lowercase().contains(query)
         }
     }
 
@@ -77,352 +87,171 @@ fun LogsScreen(
             .background(LoonBg)
             .statusBarsPadding()
     ) {
-        // Cupertino Navigation Bar
+        // Navigation Bar: iOS centered title, back button, trailing filter and action buttons
         CupertinoNavBar(
-            title = AppStrings.get("logs_title", lang),
-            subtitle = "${filteredLogs.size} 条记录",
+            title = AppStrings.get("shortcut_logs", lang),
             showBackButton = true,
             onBack = onBack,
             actions = {
-                // Play / Pause stream toggle
-                IconButton(
-                    onClick = {
-                        haptic.selection()
-                        isStreamingPaused = !isStreamingPaused
-                    },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = if (isStreamingPaused) Icons.Default.PlayCircle else Icons.Default.PauseCircle,
-                        contentDescription = if (isStreamingPaused) "恢复流式输出" else "暂停流式输出",
-                        tint = if (isStreamingPaused) IosOrange else IosBlue,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // Search toggle
-                IconButton(
-                    onClick = {
-                        haptic.selection()
-                        isSearchVisible = !isSearchVisible
-                    },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "搜索",
-                        tint = if (isSearchVisible) IosBlue else LoonTextPrimary,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-
-                // Share / Export
-                IconButton(
-                    onClick = {
-                        haptic.selection()
-                        if (filteredLogs.isNotEmpty()) {
-                            val allText = filteredLogs.joinToString("\n") {
-                                "[${timeFormat.format(Date(it.timestamp))}] [${it.level.uppercase()}] ${it.message}"
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Level Filter Button
+                    Box(
+                        modifier = Modifier
+                            .height(44.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .iosPressable {
+                                haptic.selection()
+                                showFilterSheet = true
                             }
-                            val sendIntent = Intent().apply {
-                                action = Intent.ACTION_SEND
-                                putExtra(Intent.EXTRA_TEXT, allText)
-                                type = "text/plain"
-                            }
-                            context.startActivity(Intent.createChooser(sendIntent, "导出日志"))
-                        } else {
-                            Toast.makeText(context, "当前无日志可导出", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = "导出",
-                        tint = LoonTextPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Clear logs
-                IconButton(
-                    onClick = {
-                        haptic.selection()
-                        showClearConfirmDialog = true
-                    },
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = "清空",
-                        tint = LoonTextPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        )
-
-        // Expandable search bar
-        AnimatedVisibility(
-            visible = isSearchVisible,
-            enter = expandVertically(animationSpec = tween(200)) + fadeIn(),
-            exit = shrinkVertically(animationSpec = tween(180)) + fadeOut()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-            ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("搜索日志关键字...", fontSize = 13.5.sp, color = LoonTextSecondary) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = LoonCard,
-                        unfocusedContainerColor = LoonCard,
-                        focusedBorderColor = IosBlue,
-                        unfocusedBorderColor = LoonCardBorder
-                    ),
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Clear, contentDescription = "清除", tint = LoonTextSecondary, modifier = Modifier.size(16.dp))
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = "日志过滤",
+                                tint = if (selectedFilter != LogFilter.ALL) IosBlue else LoonTextSecondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            if (selectedFilter != LogFilter.ALL) {
+                                Text(
+                                    text = selectedFilter.label,
+                                    color = IosBlue,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         }
                     }
-                )
-            }
-        }
 
-        // Cupertino Filter Segment Chips Bar
-        val levels = listOf(
-            "ALL" to "全部",
-            "INFO" to "信息",
-            "WARNING" to "警告",
-            "ERROR" to "错误",
-            "DEBUG" to "调试"
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            levels.forEach { (lvlKey, label) ->
-                val isSelected = selectedLevel == lvlKey
-                val chipColor = when (lvlKey) {
-                    "INFO" -> IosBlue
-                    "WARNING" -> IosOrange
-                    "ERROR" -> IosRed
-                    "DEBUG" -> LoonTextSecondary
-                    else -> IosBlue
-                }
-
-                Surface(
-                    shape = CircleShape,
-                    color = if (isSelected) chipColor else LoonCard,
-                    border = if (isSelected) null else androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable {
-                            haptic.selection()
-                            selectedLevel = lvlKey
+                    if (logs.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .height(44.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .iosPressable {
+                                    haptic.selection()
+                                    showActionSheet = true
+                                }
+                                .padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "操作",
+                                color = IosBlue,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Normal
+                            )
                         }
+                    }
+                }
+            }
+        )
+
+        // Main Scroll Area: Fluid search & Grouped logs
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp)
+        ) {
+            // Fluid Search Bar (scrolls smoothly out of screen when browsing down)
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
                 ) {
-                    Text(
-                        text = label,
-                        color = if (isSelected) Color.White else LoonTextPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    CupertinoSearchBar(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = "搜索日志内容、级别或报错"
                     )
                 }
             }
-        }
 
-        // Main Console Area
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 16.dp)
-        ) {
+            // List Content or Empty State
             if (filteredLogs.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(LoonCard),
-                            contentAlignment = Alignment.Center
-                        ) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 80.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(
-                                imageVector = Icons.Default.Terminal,
+                                imageVector = Icons.AutoMirrored.Filled.Article,
                                 contentDescription = null,
-                                tint = LoonTextSecondary,
-                                modifier = Modifier.size(32.dp)
+                                tint = LoonTextMuted.copy(alpha = 0.5f),
+                                modifier = Modifier.size(44.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = if (searchQuery.isNotBlank()) "未找到匹配日志" else "暂无核心日志",
+                                color = LoonTextSecondary,
+                                fontSize = 14.sp
                             )
                         }
-                        Spacer(modifier = Modifier.height(14.dp))
-                        Text(
-                            text = if (logs.isEmpty()) "暂无核心日志" else "无匹配日志",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (logs.isEmpty()) "启动 VPN 后，底层核心输出将实时记录在此" else "请尝试调整筛选级别或搜索关键词",
-                            fontSize = 12.5.sp,
-                            color = LoonTextSecondary
-                        )
                     }
                 }
             } else {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(16.dp)),
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    color = LoonCard,
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .bounceOverscroll()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                item {
+                    val sectionHeader = when {
+                        searchQuery.isNotBlank() -> "搜索结果 (${filteredLogs.size})"
+                        selectedFilter == LogFilter.ISSUES -> "异常日志 (${filteredLogs.size})"
+                        selectedFilter == LogFilter.INFO -> "信息日志 (${filteredLogs.size})"
+                        selectedFilter == LogFilter.DEBUG -> "调试日志 (${filteredLogs.size})"
+                        else -> "运行日志 (${filteredLogs.size})"
+                    }
+
+                    CupertinoGroupedSection(
+                        header = sectionHeader
                     ) {
-                        items(
-                            items = filteredLogs,
-                            key = { it.id }
-                        ) { entry ->
-                            val levelColor = when (entry.level.lowercase()) {
-                                "warning", "warn" -> IosOrange
-                                "error" -> IosRed
-                                "debug" -> LoonTextSecondary
-                                else -> IosBlue
+                        val displayLogs = remember(filteredLogs) { filteredLogs.asReversed() }
+                        displayLogs.forEachIndexed { index, entry ->
+                            val formattedTime = remember(entry.timestamp) {
+                                timeFormat.format(Date(entry.timestamp))
                             }
-                            val formattedTime = timeFormat.format(Date(entry.timestamp))
 
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        haptic.selection()
-                                        activeDetailEntry = entry
-                                    }
-                                    .padding(vertical = 4.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Text(
-                                    text = formattedTime,
-                                    fontSize = 10.5.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = LoonTextMuted,
-                                    modifier = Modifier.width(76.dp)
-                                )
+                            LogEntryCell(
+                                entry = entry,
+                                formattedTime = formattedTime,
+                                onClick = {
+                                    haptic.lightTick()
+                                    activeDetailLog = entry
+                                }
+                            )
 
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                // Clean typography for log level - NO square box!
-                                Text(
-                                    text = entry.level.uppercase().take(4),
-                                    color = levelColor,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.width(36.dp)
-                                )
-
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                Text(
-                                    text = entry.message,
-                                    fontSize = 11.5.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = 16.sp,
-                                    color = LoonTextPrimary,
-                                    modifier = Modifier.weight(1f)
-                                )
+                            if (index < displayLogs.lastIndex) {
+                                CupertinoIndentedDivider(startIndent = 16.dp)
                             }
                         }
-                    }
-                }
-            }
-
-            // Floating stream pause indicator
-            if (isStreamingPaused) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp)
-                        .clip(CircleShape)
-                        .clickable {
-                            haptic.selection()
-                            isStreamingPaused = false
-                            scope.launch {
-                                if (filteredLogs.isNotEmpty()) {
-                                    listState.animateScrollToItem(filteredLogs.size - 1)
-                                }
-                            }
-                        },
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, IosBlue),
-                    shape = CircleShape,
-                    shadowElevation = 6.dp
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = IosBlue,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text(
-                            text = "已暂停 • 滚动到底部并继续",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = IosBlue
-                        )
                     }
                 }
             }
         }
     }
 
-    // Detail BottomSheet for tapped entry
-    if (activeDetailEntry != null) {
-        val entry = activeDetailEntry!!
-        val formattedTime = timeFormat.format(Date(entry.timestamp))
-        val levelColor = when (entry.level.lowercase()) {
-            "warning", "warn" -> IosOrange
-            "error" -> IosRed
-            "debug" -> LoonTextSecondary
-            else -> IosBlue
+    // Detail Inspector: Pure iOS ModalBottomSheet (Half-modal with drag handle)
+    if (activeDetailLog != null) {
+        val entry = activeDetailLog!!
+        val fullTimeStr = remember(entry.timestamp) {
+            fullTimeFormat.format(Date(entry.timestamp))
         }
 
         ModalBottomSheet(
-            onDismissRequest = { activeDetailEntry = null },
+            onDismissRequest = { activeDetailLog = null },
             containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(
+                    color = LoonTextMuted.copy(alpha = 0.4f)
+                )
+            }
         ) {
             Column(
                 modifier = Modifier
@@ -430,95 +259,228 @@ fun LogsScreen(
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 36.dp)
             ) {
+                // Header with level tag
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = entry.level.uppercase(),
-                            color = levelColor,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = formattedTime,
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = LoonTextSecondary
-                        )
+                    Text(
+                        text = "日志详情",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LoonTextPrimary
+                    )
+
+                    val (lvlColor, lvlText) = when (entry.level.lowercase()) {
+                        "error" -> Pair(RedDanger, "ERROR")
+                        "warning", "warn" -> Pair(IosOrange, "WARNING")
+                        "debug" -> Pair(LoonTextMuted, "DEBUG")
+                        else -> Pair(IosBlue, "INFO")
                     }
 
-                    IconButton(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(entry.message))
-                            Toast.makeText(context, "已复制单条日志", Toast.LENGTH_SHORT).show()
-                            activeDetailEntry = null
-                        }
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "复制", tint = IosBlue, modifier = Modifier.size(18.dp))
-                    }
+                    Text(
+                        text = lvlText,
+                        color = lvlColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Card 1: 发生时间
+                Text(
+                    text = "发生时间",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LoonTextSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LoonBg)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = fullTimeStr,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = LoonTextPrimary
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = LoonBg,
-                    modifier = Modifier.fillMaxWidth()
+                // Card 2: 完整内容 (带一键复制)
+                Text(
+                    text = "完整内容",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LoonTextSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LoonBg)
+                        .clickable {
+                            haptic.lightTick()
+                            clipboardManager.setText(AnnotatedString(entry.message))
+                            Toast.makeText(context, "已复制单条日志内容", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "轻点复制全文",
+                            fontSize = 12.sp,
+                            color = IosBlue
+                        )
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "复制",
+                            tint = IosBlue,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = entry.message,
-                        fontSize = 12.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 18.sp,
-                        color = LoonTextPrimary,
-                        modifier = Modifier.padding(14.dp)
+                        fontSize = 13.5.sp,
+                        lineHeight = 19.sp,
+                        color = LoonTextPrimary
                     )
                 }
             }
         }
     }
 
-    // Clear logs confirmation dialog
-    if (showClearConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirmDialog = false },
-            title = {
-                Text(
-                    text = "清空核心日志",
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
-            },
-            text = {
-                Text(
-                    text = "确定要清空当前所有运行日志记录吗？",
-                    color = LoonTextSecondary,
-                    fontSize = 14.sp
-                )
-            },
-            confirmButton = {
-                TextButton(
+    // iOS Cupertino Action Sheet for Log Operations
+    if (showActionSheet) {
+        CupertinoActionSheet(
+            onDismissRequest = { showActionSheet = false },
+            title = "核心日志操作",
+            message = "当前已产生 ${logs.size} 条日志记录",
+            actions = listOf(
+                CupertinoActionSheetItem(
+                    text = "复制当前筛选日志 (${filteredLogs.size} 条)",
                     onClick = {
-                        LogRepository.clear()
-                        showClearConfirmDialog = false
-                        Toast.makeText(context, "日志已清空", Toast.LENGTH_SHORT).show()
+                        haptic.lightTick()
+                        showActionSheet = false
+                        val exportText = filteredLogs.joinToString("\n") { log ->
+                            "[${timeFormat.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}"
+                        }
+                        clipboardManager.setText(AnnotatedString(exportText))
+                        Toast.makeText(context, "已复制 ${filteredLogs.size} 条日志到剪贴板", Toast.LENGTH_SHORT).show()
                     }
-                ) {
-                    Text("清空", color = IosRed, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirmDialog = false }) {
-                    Text("取消", color = LoonTextSecondary)
-                }
-            },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp)
+                ),
+                CupertinoActionSheetItem(
+                    text = "清空所有日志",
+                    isDestructive = true,
+                    onClick = {
+                        haptic.impact()
+                        showActionSheet = false
+                        LogRepository.clear()
+                        Toast.makeText(context, "已清空核心日志", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            ),
+            cancelText = "取消"
         )
     }
+
+    // iOS Cupertino Action Sheet for Log Level Filtering
+    if (showFilterSheet) {
+        CupertinoActionSheet(
+            onDismissRequest = { showFilterSheet = false },
+            title = "日志级别过滤",
+            message = "当前匹配 ${filteredLogs.size} / ${logs.size} 条日志记录",
+            actions = LogFilter.entries.map { filter ->
+                CupertinoActionSheetItem(
+                    text = if (filter == selectedFilter) "${filter.label}  ✓" else filter.label,
+                    onClick = {
+                        haptic.selection()
+                        selectedFilter = filter
+                        showFilterSheet = false
+                    }
+                )
+            },
+            cancelText = "取消"
+        )
+    }
+}
+
+/**
+ * Pure, high signal-to-noise ratio Log Row Cell.
+ * Preserves clean typography, distinct level indicator, zero monospace black-box terminal noise.
+ */
+@Composable
+private fun LogEntryCell(
+    entry: LogEntry,
+    formattedTime: String,
+    onClick: () -> Unit
+) {
+    val (lvlColor, lvlText) = when (entry.level.lowercase()) {
+        "error" -> Pair(RedDanger, "ERROR")
+        "warning", "warn" -> Pair(IosOrange, "WARN")
+        "debug" -> Pair(LoonTextMuted, "DEBUG")
+        else -> Pair(IosBlue, "INFO")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .iosPressable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp)
+    ) {
+        // Line 1: Timestamp + Level Indicator
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formattedTime,
+                color = LoonTextMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Normal
+            )
+
+            Text(
+                text = lvlText,
+                color = lvlColor,
+                fontSize = 12.sp,
+                fontWeight = if (lvlColor == RedDanger) FontWeight.Bold else FontWeight.SemiBold
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Line 2: Message Content (up to 4 lines, truncated gracefully with ellipsis)
+        Text(
+            text = entry.message,
+            color = LoonTextPrimary,
+            fontSize = 13.5.sp,
+            lineHeight = 19.sp,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun LogsScreenPreview() {
+    LogsScreen(
+        onBack = {}
+    )
 }

@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 
@@ -24,10 +25,6 @@ fun AppearanceScreen(
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onLanguageChanged: (String) -> Unit,
-    showGroupIcons: Boolean,
-    onShowGroupIconsChanged: (Boolean) -> Unit,
-    nodeColumns: Int,
-    onNodeColumnsChanged: (Int) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -139,50 +136,19 @@ fun AppearanceScreen(
                     }
                 }
             }
-
-            // Section 3: 策略与节点排版
-            CupertinoGroupedSection(
-                title = "策略与节点排版"
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                ) {
-                    Text(
-                        text = "默认每行节点数",
-                        fontSize = 15.5.sp,
-                        color = LoonTextPrimary
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    CupertinoSegmentedControl(
-                        items = listOf(1, 2, 3),
-                        selectedItem = nodeColumns,
-                        onItemSelected = onNodeColumnsChanged,
-                        labelProvider = { col ->
-                            when (col) {
-                                1 -> "单列"
-                                2 -> "双列"
-                                else -> "三列"
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                CupertinoIndentedDivider(startIndent = 16.dp)
-
-                CupertinoCell(
-                    title = "显示策略组远程图标",
-                    subtitle = "在节点列表中展示代理协议或服务商的专用图标",
-                    trailing = {
-                        CupertinoSwitch(
-                            checked = showGroupIcons,
-                            onCheckedChange = onShowGroupIconsChanged
-                        )
-                    }
-                )
-            }
         }
+    }
+}
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun AppearanceScreenPreview() {
+    MihomoTheme {
+        AppearanceScreen(
+            themeMode = ThemeMode.LIGHT,
+            onThemeModeChanged = {},
+            onLanguageChanged = {},
+            onBack = {}
+        )
     }
 }

@@ -16,6 +16,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -23,6 +26,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -42,6 +48,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -497,6 +504,134 @@ fun CupertinoNavBar(
 // Cupertino Action Sheet & Single-Selection Dialog (Replacing Android RadioButtons)
 // =============================================================================
 
+data class CupertinoActionSheetItem(
+    val text: String,
+    val isDestructive: Boolean = false,
+    val onClick: () -> Unit
+)
+
+@Composable
+fun CupertinoActionSheet(
+    onDismissRequest: () -> Unit,
+    title: String? = null,
+    message: String? = null,
+    actions: List<CupertinoActionSheetItem>,
+    cancelText: String = "取消"
+) {
+    val haptic = rememberIosHaptic()
+
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Actions container
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = LoonCard,
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (!title.isNullOrBlank() || !message.isNullOrBlank()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                if (!title.isNullOrBlank()) {
+                                    Text(
+                                        text = title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = LoonTextSecondary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                                if (!message.isNullOrBlank()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = message,
+                                        fontSize = 12.sp,
+                                        color = LoonTextMuted,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+                        }
+
+                        actions.forEachIndexed { index, action ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp)
+                                    .clickable {
+                                        haptic.selection()
+                                        onDismissRequest()
+                                        action.onClick()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = action.text,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    color = if (action.isDestructive) RedDanger else IosBlue,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                            if (index < actions.size - 1) {
+                                HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+                            }
+                        }
+                    }
+                }
+
+                // Standalone Cancel button
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = LoonCard,
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .clickable {
+                            haptic.lightTick()
+                            onDismissRequest()
+                        }
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = cancelText,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = IosBlue,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun <T> CupertinoSelectDialog(
     title: String,
@@ -592,143 +727,460 @@ fun <T> CupertinoSegmentedControl(
     labelProvider: (T) -> String,
     modifier: Modifier = Modifier
 ) {
+    if (items.isEmpty()) return
+    val haptic = rememberIosHaptic()
+    val selectedIndex = remember(items, selectedItem) {
+        items.indexOf(selectedItem).coerceAtLeast(0)
+    }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(32.dp)
+            .clip(RoundedCornerShape(8.5.dp))
+            .background(LoonTertiaryBg)
+            .padding(2.dp)
+    ) {
+        val totalWidth = maxWidth
+        val segmentWidth = totalWidth / items.size
+
+        // iOS spring sliding indicator (Single physical Thumb)
+        val thumbOffset by animateDpAsState(
+            targetValue = segmentWidth * selectedIndex,
+            animationSpec = spring(
+                dampingRatio = 0.84f,
+                stiffness = 380f
+            ),
+            label = "segmented_thumb_offset"
+        )
+
+        // The Sliding White Pill Thumb with subtle iOS shadow & border
+        Box(
+            modifier = Modifier
+                .offset(x = thumbOffset)
+                .width(segmentWidth)
+                .fillMaxHeight()
+                .shadow(elevation = 2.dp, shape = RoundedCornerShape(7.dp), spotColor = Color(0x28000000))
+                .clip(RoundedCornerShape(7.dp))
+                .background(LoonCard)
+                .border(0.5.dp, LoonCardBorder.copy(alpha = 0.6f), RoundedCornerShape(7.dp))
+        )
+
+        // Row of items & separators
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEachIndexed { index, item ->
+                val isSelected = index == selectedIndex
+                // Subtle separator divider between unselected adjacent items
+                val showDividerBefore = index > 0 && index != selectedIndex && (index - 1) != selectedIndex
+
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (showDividerBefore) {
+                        Box(
+                            modifier = Modifier
+                                .width(0.8.dp)
+                                .height(12.dp)
+                                .background(LoonTextMuted.copy(alpha = 0.35f))
+                        )
+                    } else if (index > 0) {
+                        Spacer(modifier = Modifier.width(0.8.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(7.dp))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                if (index != selectedIndex) {
+                                    haptic.selection()
+                                    onItemSelected(item)
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = labelProvider(item),
+                            color = if (isSelected) LoonTextPrimary else LoonTextSecondary,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Authentic Cupertino Alert & Confirm Dialog (270dp iOS Modal Alert)
+// =============================================================================
+
+@Composable
+fun CupertinoAlertDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    message: String? = null,
+    confirmText: String = "确定",
+    dismissText: String? = "取消",
+    isDestructive: Boolean = false,
+    onConfirm: () -> Unit,
+    onDismiss: (() -> Unit)? = onDismissRequest,
+    content: (@Composable ColumnScope.() -> Unit)? = null
+) {
+    val haptic = rememberIosHaptic()
+
+    Dialog(onDismissRequest = onDismissRequest) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = LoonCard,
+            border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+            modifier = Modifier
+                .widthIn(min = 270.dp, max = 310.dp)
+                .fillMaxWidth(0.85f)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Title and message
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = if (content != null) 12.dp else 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = title,
+                        color = LoonTextPrimary,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 22.sp
+                    )
+
+                    if (!message.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = message,
+                            color = LoonTextSecondary,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Normal,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 18.sp
+                        )
+                    }
+
+                    if (content != null) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        content()
+                    }
+                }
+
+                // Horizontal Hairline Divider
+                HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+
+                // Buttons
+                if (dismissText != null && onDismiss != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Dismiss button (Cancel)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable {
+                                    haptic.lightTick()
+                                    onDismiss()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = dismissText,
+                                color = IosBlue,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
+
+                        // Vertical Hairline Divider
+                        Box(
+                            modifier = Modifier
+                                .width(0.5.dp)
+                                .fillMaxHeight()
+                                .background(LoonSeparator)
+                        )
+
+                        // Confirm button
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable {
+                                    haptic.lightTick()
+                                    onConfirm()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = confirmText,
+                                color = if (isDestructive) RedDanger else IosBlue,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                } else {
+                    // Single Confirm / Acknowledge button
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .clickable {
+                                haptic.lightTick()
+                                onConfirm()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = confirmText,
+                            color = if (isDestructive) RedDanger else IosBlue,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Authentic Cupertino Search Bar (SF-styled 38dp pill input with quick clear)
+// =============================================================================
+
+@Composable
+fun CupertinoSearchBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "搜索",
+    leadingIcon: ImageVector = Icons.Default.Search
+) {
     val haptic = rememberIosHaptic()
 
     Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = LoonTertiaryBg,
         modifier = modifier
-            .height(34.dp)
-            .padding(2.dp)
+            .fillMaxWidth()
+            .height(38.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = LoonTertiaryBg
     ) {
         Row(
-            modifier = Modifier.fillMaxHeight(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items.forEach { item ->
-                val isSelected = item == selectedItem
+            Icon(
+                imageVector = leadingIcon,
+                contentDescription = null,
+                tint = LoonTextSecondary,
+                modifier = Modifier.size(17.dp)
+            )
+
+            Spacer(modifier = Modifier.width(7.dp))
+
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        color = LoonTextMuted,
+                        fontSize = 14.sp
+                    )
+                }
+
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = LoonTextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Normal
+                    ),
+                    cursorBrush = SolidColor(IosBlue),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (value.isNotEmpty()) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(8.dp))
-                        .then(
-                            if (isSelected) {
-                                Modifier
-                                    .shadow(2.dp, RoundedCornerShape(8.dp), spotColor = Color(0x1F000000))
-                                    .background(LoonCard)
-                            } else Modifier
-                        )
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(LoonTextSecondary.copy(alpha = 0.6f))
                         .clickable {
-                            if (!isSelected) {
-                                haptic.selection()
-                                onItemSelected(item)
-                            }
+                            haptic.lightTick()
+                            onValueChange("")
                         },
                     contentAlignment = Alignment.Center
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.Clear,
+                        contentDescription = "清除",
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Authentic Cupertino Text Field (iOS grouped form input)
+// =============================================================================
+
+@Composable
+fun CupertinoTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+    singleLine: Boolean = true,
+    maxLines: Int = 1,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = LoonTertiaryBg
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (leadingIcon != null) {
+                leadingIcon()
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (value.isEmpty() && placeholder.isNotBlank()) {
                     Text(
-                        text = labelProvider(item),
-                        color = if (isSelected) LoonTextPrimary else LoonTextSecondary,
-                        fontSize = 13.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1
+                        text = placeholder,
+                        color = LoonTextMuted,
+                        fontSize = 14.5.sp
                     )
                 }
+
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = singleLine,
+                    maxLines = maxLines,
+                    textStyle = TextStyle(
+                        color = LoonTextPrimary,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.Normal
+                    ),
+                    cursorBrush = SolidColor(IosBlue),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (trailingIcon != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                trailingIcon()
             }
         }
     }
 }
 
 // =============================================================================
-// Tuned iOS Rubber-Band Bounce Overscroll Modifier
+// Authentic Cupertino Button (Filled / Tinted / Plain / Destructive)
 // =============================================================================
 
+enum class CupertinoButtonStyle {
+    Filled,
+    Tinted,
+    Plain,
+    Destructive
+}
+
 @Composable
-fun rememberCupertinoBounceConnection(
-    allowTop: Boolean = true,
-    allowBottom: Boolean = true
-): Pair<NestedScrollConnection, State<Float>> {
-    val coroutineScope = rememberCoroutineScope()
-    val overscrollOffset = remember { Animatable(0f) }
+fun CupertinoButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    style: CupertinoButtonStyle = CupertinoButtonStyle.Filled,
+    icon: ImageVector? = null,
+    enabled: Boolean = true
+) {
+    val haptic = rememberIosHaptic()
 
-    val connection = remember(allowTop, allowBottom) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                val current = overscrollOffset.value
-                if (current > 0f && available.y < 0f) {
-                    val consumed = available.y.coerceAtLeast(-current)
-                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
-                    return Offset(0f, consumed)
-                } else if (current < 0f && available.y > 0f) {
-                    val consumed = available.y.coerceAtMost(-current)
-                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
-                    return Offset(0f, consumed)
-                }
-                return Offset.Zero
+    val (bg, contentColor) = when (style) {
+        CupertinoButtonStyle.Filled -> Pair(IosBlue, Color.White)
+        CupertinoButtonStyle.Tinted -> Pair(IosBlue.copy(alpha = 0.14f), IosBlue)
+        CupertinoButtonStyle.Plain -> Pair(Color.Transparent, IosBlue)
+        CupertinoButtonStyle.Destructive -> Pair(RedDanger.copy(alpha = 0.14f), RedDanger)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (enabled) bg else bg.copy(alpha = 0.4f),
+        modifier = modifier
+            .iosPressable(enabled = enabled, pressedScale = 0.97f) {
+                haptic.lightTick()
+                onClick()
             }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                    val isTop = available.y > 0f
-                    val isBottom = available.y < 0f
-                    if (isTop && !allowTop) return Offset.Zero
-                    if (isBottom && !allowBottom) return Offset.Zero
-
-                    val current = overscrollOffset.value
-                    // Standard iOS square-root resistance curve
-                    val resistance = (1f - (abs(current) / 450f).coerceIn(0f, 0.82f)) * 0.40f
-                    val delta = available.y * resistance
-                    coroutineScope.launch { overscrollOffset.snapTo(current + delta) }
-                    return Offset(0f, available.y)
-                }
-                return Offset.Zero
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
             }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                if (overscrollOffset.value != 0f) {
-                    overscrollOffset.animateTo(
-                        targetValue = 0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.82f,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    )
-                    return available
-                }
-                return Velocity.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (overscrollOffset.value != 0f) {
-                    overscrollOffset.animateTo(
-                        targetValue = 0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.82f,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    )
-                }
-                return Velocity.Zero
-            }
+            Text(
+                text = text,
+                color = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
-    return Pair(connection, overscrollOffset.asState())
 }
 
-@Composable
-fun Modifier.cupertinoBounceOverscroll(
-    allowTop: Boolean = true,
-    allowBottom: Boolean = true
-): Modifier {
-    val (connection, offsetState) = rememberCupertinoBounceConnection(allowTop, allowBottom)
-    return this
-        .nestedScroll(connection)
-        .graphicsLayer {
-            translationY = offsetState.value
-        }
-}

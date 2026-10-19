@@ -31,6 +31,7 @@ import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
 import com.github.mihomo.android.data.UpdateChecker
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -468,47 +469,42 @@ fun SettingsScreen(
 
     // Core Reset Confirmation
     if (showResetDialog) {
-        AlertDialog(
-            onDismissRequest = { showResetDialog = false },
-            title = { Text("重置核心状态", fontWeight = FontWeight.Bold, color = LoonTextPrimary) },
-            text = { Text("确定要重置底层核心状态吗？当前活动的网络连接将被断开并重新初始化。", color = LoonTextSecondary, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showResetDialog = false
-                    scope.launch {
-                        withContext(Dispatchers.IO) { ClashCore.reset() }
-                        Toast.makeText(context, "核心已重置", Toast.LENGTH_SHORT).show()
-                    }
-                }) {
-                    Text("重置", color = IosRed, fontWeight = FontWeight.Bold)
+        CupertinoAlertDialog(
+            title = "重置核心状态",
+            message = "确定要重置底层核心状态吗？当前活动的网络连接将被断开并重新初始化。",
+            confirmText = "重置",
+            dismissText = "取消",
+            isDestructive = true,
+            onConfirm = {
+                showResetDialog = false
+                scope.launch {
+                    withContext(Dispatchers.IO) { ClashCore.reset() }
+                    Toast.makeText(context, "核心已重置", Toast.LENGTH_SHORT).show()
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { showResetDialog = false }) {
-                    Text("取消", color = LoonTextSecondary)
-                }
-            },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp)
+            onDismissRequest = { showResetDialog = false }
         )
     }
 
     // Update Check Result Dialog
     if (showUpdateDialog && updateResult != null) {
         val result = updateResult!!
-        AlertDialog(
+        val isNewer = result is UpdateChecker.CheckResult.Success && result.info.isNewer
+        CupertinoAlertDialog(
+            title = "检查更新",
             onDismissRequest = { showUpdateDialog = false },
-            shape = RoundedCornerShape(20.dp),
-            containerColor = LoonCard,
-            title = {
-                Text(
-                    text = "检查更新",
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
+            confirmText = if (isNewer) "前往下载" else "好",
+            dismissText = if (isNewer) "稍后再说" else null,
+            onConfirm = {
+                showUpdateDialog = false
+                if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
+                    val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result.info.htmlUrl))
+                    runCatching { context.startActivity(browserIntent) }
+                }
             },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            onDismiss = { showUpdateDialog = false },
+            content = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     when (result) {
                         is UpdateChecker.CheckResult.Success -> {
                             val info = result.info
@@ -556,37 +552,37 @@ fun SettingsScreen(
                         is UpdateChecker.CheckResult.Error -> {
                             Text(
                                 text = "检查更新失败: ${result.message}",
-                                color = IosRed,
+                                color = RedDanger,
                                 fontSize = 13.5.sp
                             )
                         }
                     }
                 }
-            },
-            confirmButton = {
-                if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
-                    TextButton(
-                        onClick = {
-                            showUpdateDialog = false
-                            val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result.info.htmlUrl))
-                            runCatching { context.startActivity(browserIntent) }
-                        }
-                    ) {
-                        Text("前往下载", color = IosBlue, fontWeight = FontWeight.Bold)
-                    }
-                } else {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("好", color = IosBlue, fontWeight = FontWeight.Bold)
-                    }
-                }
-            },
-            dismissButton = {
-                if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("稍后再说", color = LoonTextSecondary)
-                    }
-                }
             }
+        )
+    }
+}
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun SettingsScreenPreview() {
+    MihomoTheme {
+        SettingsScreen(
+            scrollState = androidx.compose.foundation.rememberScrollState(),
+            tunStack = "mixed",
+            bootOnStartup = true,
+            allowLan = false,
+            fakeIpEnabled = true,
+            themeMode = ThemeMode.SYSTEM,
+            onTunStackChanged = {},
+            onBootOnStartupChanged = {},
+            onAllowLanChanged = {},
+            onNavigateToScripts = {},
+            onNavigateToProfiles = {},
+            onNavigateToAppRouting = {},
+            onNavigateToLogs = {},
+            onNavigateToAppearance = {},
+            onNavigateToDns = {}
         )
     }
 }

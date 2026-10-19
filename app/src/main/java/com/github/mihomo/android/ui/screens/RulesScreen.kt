@@ -2,26 +2,30 @@ package com.github.mihomo.android.ui.screens
 
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material.icons.automirrored.filled.Rule
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.core.model.TunnelMode
@@ -29,7 +33,20 @@ import com.github.mihomo.android.data.ParsedRule
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 
+private enum class RuleFilter(val label: String) {
+    ALL("全部"),
+    PROXY("代理"),
+    DIRECT("直连"),
+    REJECT("拦截")
+}
+
+private data class IndexedRule(
+    val index: Int,
+    val rule: ParsedRule
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
+@Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
 fun RulesScreen(
     rules: List<ParsedRule>,
@@ -37,30 +54,41 @@ fun RulesScreen(
     tunnelMode: TunnelMode,
     onBack: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val lang = LocalAppLanguage.current
     val haptic = rememberIosHaptic()
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedBehavior by remember { mutableStateOf("ALL") }
-    var inspectedRule by remember { mutableStateOf<Pair<Int, ParsedRule>?>(null) }
+    var selectedFilter by remember { mutableStateOf(RuleFilter.ALL) }
+    var showFilterActionSheet by remember { mutableStateOf(false) }
+    var activeDetailRule by remember { mutableStateOf<IndexedRule?>(null) }
 
-    val behaviorTabs = listOf("ALL", "PROXY", "DIRECT", "REJECT")
+    // Index original rules so rule priority order is accurately maintained
+    val indexedRules = remember(rules) {
+        rules.mapIndexed { idx, rule -> IndexedRule(idx, rule) }
+    }
 
-    val filteredRules = remember(rules, searchQuery, selectedBehavior) {
-        rules.filter { rule ->
-            val matchBehavior = when (selectedBehavior) {
-                "DIRECT" -> rule.target.equals("DIRECT", ignoreCase = true)
-                "REJECT" -> rule.target.contains("REJECT", ignoreCase = true)
-                "PROXY" -> !rule.target.equals("DIRECT", ignoreCase = true) && !rule.target.contains("REJECT", ignoreCase = true)
-                else -> true
+    // Filter rules by segment and search query
+    val filteredRules = remember(indexedRules, searchQuery, selectedFilter) {
+        val query = searchQuery.trim().lowercase()
+        indexedRules.filter { indexed ->
+            val rule = indexed.rule
+
+            // Filter match (traffic direction)
+            val filterMatch = when (selectedFilter) {
+                RuleFilter.ALL -> true
+                RuleFilter.PROXY -> !rule.target.equals("DIRECT", ignoreCase = true) && !rule.target.equals("REJECT", ignoreCase = true)
+                RuleFilter.DIRECT -> rule.target.equals("DIRECT", ignoreCase = true)
+                RuleFilter.REJECT -> rule.target.equals("REJECT", ignoreCase = true)
             }
-            val matchQuery = searchQuery.isBlank() ||
-                rule.payload.contains(searchQuery, ignoreCase = true) ||
-                rule.target.contains(searchQuery, ignoreCase = true) ||
-                rule.type.contains(searchQuery, ignoreCase = true)
-            matchBehavior && matchQuery
+            if (!filterMatch) return@filter false
+
+            // Search query match
+            if (query.isEmpty()) return@filter true
+            rule.payload.lowercase().contains(query) ||
+                rule.target.lowercase().contains(query) ||
+                rule.type.lowercase().contains(query)
         }
     }
 
@@ -70,206 +98,154 @@ fun RulesScreen(
             .background(LoonBg)
             .statusBarsPadding()
     ) {
-        // Cupertino Navigation Bar
+        // Navigation Bar: Centered title, back button, iOS style
         CupertinoNavBar(
             title = AppStrings.get("rules_screen_title", lang),
-            subtitle = "${tunnelMode.displayName} · 共 $totalRules 条规则",
             showBackButton = true,
-            onBack = onBack
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp)
-        ) {
-            // Cupertino Search Bar
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("搜索规则类型、域名、目标策略...", fontSize = 13.sp, color = LoonTextMuted) },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = null, tint = LoonTextMuted, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Clear, contentDescription = "清除", tint = LoonTextMuted, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = LoonCard,
-                    unfocusedContainerColor = LoonCard,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = LoonTextPrimary,
-                    unfocusedTextColor = LoonTextPrimary
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // iOS Segmented Behavior Filter
-            CupertinoSegmentedControl(
-                items = behaviorTabs,
-                selectedItem = selectedBehavior,
-                onItemSelected = { selectedBehavior = it },
-                labelProvider = { tab ->
-                    when (tab) {
-                        "ALL" -> "全部 (${rules.size})"
-                        "PROXY" -> "代理"
-                        "DIRECT" -> "直连"
-                        "REJECT" -> "拦截"
-                        else -> tab
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
-            )
-
-            // Rules List
-            if (filteredRules.isEmpty()) {
+            onBack = onBack,
+            actions = {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .bounceOverscroll(),
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable {
+                            haptic.selection()
+                            showFilterActionSheet = true
+                        }
+                        .padding(horizontal = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.FilterList,
-                            contentDescription = null,
-                            tint = LoonTextMuted,
-                            modifier = Modifier.size(48.dp)
+                            contentDescription = "分流过滤",
+                            tint = if (selectedFilter != RuleFilter.ALL) IosBlue else LoonTextSecondary,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.height(10.dp))
+                        if (selectedFilter != RuleFilter.ALL) {
+                            Text(
+                                text = selectedFilter.label,
+                                color = IosBlue,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        )
+
+        // Main Scroll Area: Fluid search & Grouped rules
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp)
+        ) {
+            // Mode Awareness Notice (Only shown if mode is not RULE)
+            if (tunnelMode != TunnelMode.RULE) {
+                item {
+                    val noticeText = if (tunnelMode == TunnelMode.GLOBAL) {
+                        "当前处于全局代理模式，所有请求均通过全局代理，分流规则暂未生效"
+                    } else {
+                        "当前处于全局直连模式，所有请求均直连，分流规则暂未生效"
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(IosOrange.copy(alpha = 0.12f))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = null,
+                            tint = IosOrange,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = if (rules.isEmpty()) "当前配置未配置任何分流规则\n所有流量将采用默认出站策略" else "未找到符合条件的规则",
-                            color = LoonTextSecondary,
+                            text = noticeText,
+                            color = IosOrange,
                             fontSize = 13.sp,
-                            lineHeight = 20.sp,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 18.sp
                         )
                     }
                 }
-            } else {
-                LazyColumn(
+            }
+
+            // Fluid Search Bar (scrolls smoothly out of screen when browsing down)
+            item {
+                Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .bounceOverscroll(),
-                    contentPadding = PaddingValues(top = 2.dp, bottom = 120.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
                 ) {
-                    itemsIndexed(filteredRules) { index, rule ->
-                        val isDirect = rule.target.equals("DIRECT", ignoreCase = true)
-                        val isReject = rule.target.contains("REJECT", ignoreCase = true)
-                        val targetColor = when {
-                            isDirect -> IosGreen
-                            isReject -> IosRed
-                            else -> IosBlue
+                    CupertinoSearchBar(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = "搜索域名、IP、类型或策略"
+                    )
+                }
+            }
+
+            // List Content or Empty State
+            if (filteredRules.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 80.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Rule,
+                                contentDescription = null,
+                                tint = LoonTextMuted.copy(alpha = 0.5f),
+                                modifier = Modifier.size(44.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = if (searchQuery.isNotBlank()) "未找到匹配规则" else "暂无分流规则",
+                                color = LoonTextSecondary,
+                                fontSize = 14.sp
+                            )
                         }
+                    }
+                }
+            } else {
+                item {
+                    val sectionHeader = when {
+                        searchQuery.isNotBlank() -> "搜索结果 (${filteredRules.size})"
+                        selectedFilter == RuleFilter.PROXY -> "代理规则 (${filteredRules.size})"
+                        selectedFilter == RuleFilter.DIRECT -> "直连规则 (${filteredRules.size})"
+                        selectedFilter == RuleFilter.REJECT -> "拦截规则 (${filteredRules.size})"
+                        totalRules > filteredRules.size -> "全部规则 (${filteredRules.size} / 共 $totalRules 条)"
+                        else -> "分流规则 (${filteredRules.size})"
+                    }
 
-                        val typeColor = when {
-                            rule.type.contains("DOMAIN", ignoreCase = true) -> IosBlue
-                            rule.type.contains("GEOIP", ignoreCase = true) -> IosOrange
-                            rule.type.contains("IP-CIDR", ignoreCase = true) -> Color(0xFF5856D6)
-                            rule.type.contains("RULE-SET", ignoreCase = true) -> IosGreen
-                            else -> LoonTextSecondary
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = LoonCard,
-                            border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .iosPressable {
-                                    haptic.selection()
-                                    inspectedRule = Pair(index + 1, rule)
+                    CupertinoGroupedSection(
+                        header = sectionHeader
+                    ) {
+                        filteredRules.forEachIndexed { listIndex, indexedRule ->
+                            RuleCell(
+                                indexedRule = indexedRule,
+                                onClick = {
+                                    haptic.lightTick()
+                                    activeDetailRule = indexedRule
                                 }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(
-                                        text = "#${index + 1}",
-                                        fontSize = 11.sp,
-                                        color = LoonTextMuted,
-                                        fontFamily = FontFamily.Monospace,
-                                        modifier = Modifier.width(34.dp)
-                                    )
+                            )
 
-                                    // Clean text typography for rule type - NO square box!
-                                    Text(
-                                        text = rule.type,
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = typeColor
-                                    )
-
-                                    Spacer(modifier = Modifier.width(10.dp))
-
-                                    if (rule.payload.isNotBlank()) {
-                                        Text(
-                                            text = rule.payload,
-                                            fontSize = 13.5.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = LoonTextPrimary,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    } else {
-                                        Text(
-                                            text = "MATCH ALL",
-                                            fontSize = 12.sp,
-                                            color = LoonTextMuted,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.width(10.dp))
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (rule.noResolve) {
-                                        Text(
-                                            text = "no-resolve",
-                                            fontSize = 10.sp,
-                                            color = LoonTextMuted,
-                                            modifier = Modifier.padding(end = 8.dp)
-                                        )
-                                    }
-
-                                    // Round pill badge strictly for highlight target
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = targetColor.copy(alpha = 0.12f)
-                                    ) {
-                                        Text(
-                                            text = rule.target.ifBlank { "DIRECT" },
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = targetColor,
-                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                }
+                            if (listIndex < filteredRules.lastIndex) {
+                                CupertinoIndentedDivider(startIndent = 16.dp)
                             }
                         }
                     }
@@ -278,112 +254,364 @@ fun RulesScreen(
         }
     }
 
-    // =========================================================================
-    // Rule Inspection Bottom Sheet (Flat iOS layout without nested boxes)
-    // =========================================================================
-    if (inspectedRule != null) {
-        val (idx, rule) = inspectedRule!!
-        val fullRuleText = if (rule.payload.isNotBlank()) {
-            if (rule.noResolve) "${rule.type},${rule.payload},${rule.target},no-resolve"
-            else "${rule.type},${rule.payload},${rule.target}"
-        } else {
-            "${rule.type},${rule.target}"
+    // Detail Inspector: Pure iOS ModalBottomSheet (Half-modal with drag handle)
+    if (activeDetailRule != null) {
+        val indexed = activeDetailRule!!
+        val rule = indexed.rule
+
+        val rawRuleText = remember(rule) {
+            buildString {
+                append(rule.type)
+                if (rule.payload.isNotBlank()) {
+                    append(",")
+                    append(rule.payload)
+                }
+                append(",")
+                append(rule.target)
+                if (rule.noResolve) {
+                    append(",no-resolve")
+                }
+            }
         }
 
         ModalBottomSheet(
-            onDismissRequest = { inspectedRule = null },
+            onDismissRequest = { activeDetailRule = null },
             containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            dragHandle = {
+                BottomSheetDefaults.DragHandle(
+                    color = LoonTextMuted.copy(alpha = 0.4f)
+                )
+            }
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .padding(bottom = 36.dp)
             ) {
+                // Header with priority badge
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "规则详情",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = LoonTextPrimary
+                    )
+
+                    Text(
+                        text = "#${indexed.index + 1} 优先级",
+                        color = IosBlue,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Card 1: 完整语法 (Raw Rule Syntax)
                 Text(
-                    text = "规则明细 (#$idx)",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
-                Text(
-                    text = "底层路由分流匹配链条",
+                    text = "配置语法",
                     fontSize = 12.sp,
-                    color = LoonTextSecondary,
-                    modifier = Modifier.padding(top = 2.dp, bottom = 14.dp)
+                    fontWeight = FontWeight.SemiBold,
+                    color = LoonTextSecondary
                 )
-
-                // Flat detail rows with dividers
-                val details = listOf(
-                    "匹配模式" to rule.type,
-                    "匹配载荷" to rule.payload.ifBlank { "MATCH (匹配全部)" },
-                    "出站策略" to rule.target,
-                    "跳过 DNS 解析" to if (rule.noResolve) "是 (no-resolve)" else "否"
-                )
-
-                details.forEachIndexed { i, (label, value) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(label, fontSize = 14.sp, color = LoonTextSecondary)
-                        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = LoonTextPrimary)
-                    }
-                    if (i < details.size - 1) {
-                        HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-                    }
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LoonBg)
+                        .clickable {
+                            haptic.lightTick()
+                            clipboardManager.setText(AnnotatedString(rawRuleText))
+                            Toast.makeText(context, "已复制规则语法", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = rawRuleText,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LoonTextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "复制规则",
+                        tint = IosBlue,
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                Text("规则表达式", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LoonTextSecondary)
-                Spacer(modifier = Modifier.height(6.dp))
+                // Card 2: 规则解析属性
                 Text(
-                    text = fullRuleText,
-                    fontSize = 12.5.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = LoonTextPrimary,
+                    text = "规则属性",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LoonTextSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(LoonBg)
-                        .padding(12.dp)
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    Button(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(fullRuleText))
-                            Toast.makeText(context, "已复制完整规则", Toast.LENGTH_SHORT).show()
-                            inspectedRule = null
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f).height(46.dp)
-                    ) {
-                        Text("复制规则", fontWeight = FontWeight.Bold)
-                    }
-
-                    OutlinedButton(
-                        onClick = { inspectedRule = null },
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                        modifier = Modifier.weight(1f).height(46.dp)
-                    ) {
-                        Text("关闭", color = LoonTextPrimary)
-                    }
+                    DetailRow(
+                        label = "规则类型",
+                        value = "${rule.type} (${getRuleTypeDescription(rule.type)})"
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    DetailRow(
+                        label = "匹配目标",
+                        value = rule.payload.ifBlank { "全部未匹配流量" },
+                        showCopy = rule.payload.isNotBlank(),
+                        onCopy = {
+                            clipboardManager.setText(AnnotatedString(rule.payload))
+                            Toast.makeText(context, "已复制匹配目标", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    DetailRow(
+                        label = "分流去向",
+                        value = rule.target,
+                        valueColor = when {
+                            rule.target.equals("REJECT", ignoreCase = true) -> RedDanger
+                            rule.target.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
+                            else -> IosBlue
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    DetailRow(
+                        label = "DNS 解析",
+                        value = if (rule.noResolve) "no-resolve (跳过解析)" else "标准解析"
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    DetailRow(
+                        label = "匹配顺序",
+                        value = "第 ${indexed.index + 1} 位 (自上而下匹配)"
+                    )
                 }
             }
         }
     }
+
+    // iOS Cupertino Action Sheet for Rule Filtering
+    if (showFilterActionSheet) {
+        CupertinoActionSheet(
+            onDismissRequest = { showFilterActionSheet = false },
+            title = "分流规则过滤",
+            message = "当前匹配 ${filteredRules.size} / ${indexedRules.size} 条规则",
+            actions = RuleFilter.entries.map { filter ->
+                CupertinoActionSheetItem(
+                    text = if (filter == selectedFilter) "${filter.label}  ✓" else filter.label,
+                    onClick = {
+                        haptic.selection()
+                        selectedFilter = filter
+                        showFilterActionSheet = false
+                    }
+                )
+            },
+            cancelText = "取消"
+        )
+    }
+}
+
+/**
+ * Pure, high signal-to-noise ratio Rule Row Cell.
+ * Preserves full width for domain / pattern expressions, linear metadata typography with middots.
+ */
+@Composable
+private fun RuleCell(
+    indexedRule: IndexedRule,
+    onClick: () -> Unit
+) {
+    val rule = indexedRule.rule
+
+    val (targetColor, targetText) = when {
+        rule.target.equals("REJECT", ignoreCase = true) -> Pair(RedDanger, "REJECT")
+        rule.target.equals("DIRECT", ignoreCase = true) -> Pair(LoonTextSecondary, "DIRECT")
+        else -> Pair(IosBlue, rule.target)
+    }
+
+    val displayPayload = when {
+        rule.type.equals("MATCH", ignoreCase = true) -> "MATCH (全部未匹配流量)"
+        rule.payload.isBlank() -> rule.type
+        else -> rule.payload
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .iosPressable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp)
+    ) {
+        // Line 1: Pattern / Domain Expression + Target Outbound Policy
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = displayPayload,
+                color = LoonTextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Text(
+                text = targetText,
+                color = targetColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Line 2: #Index · Rule Type · no-resolve
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "#${indexedRule.index + 1}",
+                color = LoonTextMuted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Normal
+            )
+
+            Text(
+                text = " · ",
+                color = LoonTextMuted,
+                fontSize = 12.sp
+            )
+
+            Text(
+                text = rule.type,
+                color = LoonTextSecondary,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            if (rule.noResolve) {
+                Text(
+                    text = " · ",
+                    color = LoonTextMuted,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "no-resolve",
+                    color = LoonTextMuted,
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Clean detail row for the iOS Inspector sheet.
+ */
+@Composable
+private fun DetailRow(
+    label: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color = LoonTextPrimary,
+    showCopy: Boolean = false,
+    onCopy: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            color = LoonTextSecondary
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(start = 12.dp)
+                .weight(1f, fill = false)
+        ) {
+            Text(
+                text = value,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = valueColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (showCopy && onCopy != null) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = "复制",
+                    tint = IosBlue,
+                    modifier = Modifier
+                        .size(15.dp)
+                        .clickable(onClick = onCopy)
+                )
+            }
+        }
+    }
+}
+
+private fun getRuleTypeDescription(type: String): String {
+    return when (type.uppercase()) {
+        "DOMAIN-SUFFIX" -> "域名后缀"
+        "DOMAIN-KEYWORD" -> "域名关键字"
+        "DOMAIN" -> "完整域名"
+        "IP-CIDR", "IP-CIDR6" -> "IP 网段"
+        "GEOIP" -> "地理位置"
+        "RULE-SET" -> "规则集"
+        "PROCESS-NAME" -> "进程名称"
+        "PORT" -> "目标端口"
+        "MATCH" -> "兜底匹配"
+        else -> "自定义"
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun RulesScreenPreview() {
+    val sampleRules = listOf(
+        ParsedRule("DOMAIN-SUFFIX", "google.com", "🔰 节点选择"),
+        ParsedRule("DOMAIN-SUFFIX", "github.com", "🇭🇰 香港 01"),
+        ParsedRule("DOMAIN-KEYWORD", "youtube", "🔰 节点选择"),
+        ParsedRule("RULE-SET", "advertising", "REJECT"),
+        ParsedRule("GEOIP", "CN", "DIRECT"),
+        ParsedRule("IP-CIDR", "192.168.0.0/16", "DIRECT", noResolve = true),
+        ParsedRule("MATCH", "", "🐟 漏网之鱼")
+    )
+    RulesScreen(
+        rules = sampleRules,
+        totalRules = sampleRules.size,
+        tunnelMode = TunnelMode.RULE,
+        onBack = {}
+    )
 }

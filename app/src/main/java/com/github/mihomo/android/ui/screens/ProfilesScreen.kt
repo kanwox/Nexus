@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -545,38 +546,16 @@ fun ProfilesScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        TextField(
+                        CupertinoTextField(
                             value = subName,
                             onValueChange = { subName = it },
-                            placeholder = { Text("订阅备注名称（选填）", fontSize = 13.5.sp, color = LoonTextMuted) },
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = LoonBg,
-                                unfocusedContainerColor = LoonBg,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                focusedTextColor = LoonTextPrimary,
-                                unfocusedTextColor = LoonTextPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                            placeholder = "订阅备注名称（选填）"
                         )
 
-                        TextField(
+                        CupertinoTextField(
                             value = subUrl,
                             onValueChange = { subUrl = it },
-                            placeholder = { Text("订阅链接 URL (https://...)", fontSize = 13.5.sp, color = LoonTextMuted) },
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = LoonBg,
-                                unfocusedContainerColor = LoonBg,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                focusedTextColor = LoonTextPrimary,
-                                unfocusedTextColor = LoonTextPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                            placeholder = "订阅链接 URL (https://...)"
                         )
                     }
                 }
@@ -584,28 +563,17 @@ fun ProfilesScreen(
                 Spacer(modifier = Modifier.height(20.dp))
 
                 // Primary Download & Save Button
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (subUrl.isNotBlank()) IosBlue else LoonTextMuted)
-                        .clickable(enabled = subUrl.isNotBlank()) {
-                            haptic.impact()
-                            onAddSubscription(subName.trim(), subUrl.trim())
-                            showAddSheet = false
-                        },
-                    color = if (subUrl.isNotBlank()) IosBlue else LoonTextMuted
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "下载并保存配置",
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
+                CupertinoButton(
+                    text = "下载并保存配置",
+                    onClick = {
+                        haptic.impact()
+                        onAddSubscription(subName.trim(), subUrl.trim())
+                        showAddSheet = false
+                    },
+                    enabled = subUrl.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    style = CupertinoButtonStyle.Filled
+                )
             }
         }
     }
@@ -778,38 +746,18 @@ fun ProfilesScreen(
                 CupertinoGroupedSection {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("配置备注名称", fontSize = 12.sp, color = LoonTextSecondary)
-                        TextField(
+                        CupertinoTextField(
                             value = editName,
                             onValueChange = { editName = it },
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = LoonBg,
-                                unfocusedContainerColor = LoonBg,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                focusedTextColor = LoonTextPrimary,
-                                unfocusedTextColor = LoonTextPrimary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                            placeholder = "配置备注名称"
                         )
 
                         if (target.url != null) {
                             Text("订阅链接 URL", fontSize = 12.sp, color = LoonTextSecondary)
-                            TextField(
+                            CupertinoTextField(
                                 value = editUrl,
                                 onValueChange = { editUrl = it },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = LoonBg,
-                                    unfocusedContainerColor = LoonBg,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    focusedTextColor = LoonTextPrimary,
-                                    unfocusedTextColor = LoonTextPrimary
-                                ),
-                                shape = RoundedCornerShape(10.dp),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                                placeholder = "https://..."
                             )
                         }
                     }
@@ -996,71 +944,50 @@ fun ProfilesScreen(
     // =========================================================================
     if (deleteConfirmProfile != null) {
         val target = deleteConfirmProfile!!
+        CupertinoAlertDialog(
+            title = "删除配置文件",
+            message = "确定要删除配置 [${target.name}] 吗？此操作将彻底移除该配置文件及其缓存。",
+            confirmText = "删除",
+            dismissText = "取消",
+            isDestructive = true,
+            onConfirm = {
+                onDeleteProfile(target)
+                deleteConfirmProfile = null
+            },
+            onDismissRequest = { deleteConfirmProfile = null }
+        )
+    }
+}
 
-        ModalBottomSheet(
-            onDismissRequest = { deleteConfirmProfile = null },
-            containerColor = LoonBg,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "删除配置文件",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "确定要删除配置 [${target.name}] 吗？此操作将彻底移除该配置文件及其缓存。",
-                    fontSize = 13.sp,
-                    color = LoonTextSecondary,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    lineHeight = 18.sp
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(IosRed)
-                        .clickable {
-                            haptic.impact()
-                            onDeleteProfile(target)
-                            deleteConfirmProfile = null
-                        },
-                    color = IosRed
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("确认删除", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
-                        .iosPressable { deleteConfirmProfile = null },
-                    color = LoonCard
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("取消", color = LoonTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
-        }
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun ProfilesScreenPreview() {
+    val sampleProfiles = listOf(
+        ProfileItem(
+            id = "p1",
+            name = "Main Subscription (VIP)",
+            url = "https://sub.example.com/api/v1/client/subscribe?token=xyz",
+            file = java.io.File("/dummy/p1.yaml"),
+            uploadBytes = 2147483648L,
+            downloadBytes = 42949672960L,
+            totalBytes = 107374182400L,
+            expireTimestamp = System.currentTimeMillis() + 86400000L * 30
+        ),
+        ProfileItem(
+            id = "p2",
+            name = "Backup Node Profile",
+            url = null,
+            file = java.io.File("/dummy/p2.yaml")
+        )
+    )
+    MihomoTheme {
+        ProfilesScreen(
+            profiles = sampleProfiles,
+            selectedProfileId = "p1",
+            onSelectProfile = {},
+            onAddSubscription = { _, _ -> },
+            onUpdateProfile = {},
+            onDeleteProfile = {}
+        )
     }
 }

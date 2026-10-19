@@ -93,35 +93,9 @@ val LoonSwitchUncheckedTrack: Color
     @ReadOnlyComposable
     get() = LocalLoonColors.current.switchUncheckedTrack
 
-// Legacy compatibility
-val CyanPrimary = LoonOrange
-val CyanVariant = LoonOrangeLight
-val CyanGlow = Color(0x33FF6B00)
-val OledBlack = Color(0xFF000000)
-val DarkSurface = Color(0xFF1C1C1E)
-val DarkSurfaceVariant = Color(0xFF1C1C1E)
-
-val DarkCard: Color
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalLoonColors.current.card
-
-val TextPrimary: Color
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalLoonColors.current.textPrimary
-
-val TextSecondary: Color
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalLoonColors.current.textSecondary
-
-val TextMuted: Color
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalLoonColors.current.textMuted
-
+// Semantic status colors
+val RedDanger = IosRed
 val GreenSuccess = IosGreen
 val YellowWarning = IosOrange
-val RedDanger = IosRed
+
 

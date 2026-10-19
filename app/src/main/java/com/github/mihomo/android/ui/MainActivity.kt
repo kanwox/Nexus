@@ -1105,6 +1105,10 @@ class MainActivity : ComponentActivity() {
                                         }
                                         selectedPackages = updated
                                         settingsManager.selectedPackages = updated
+                                    },
+                                    onUpdateSelectedPackages = { updated ->
+                                        selectedPackages = updated
+                                        settingsManager.selectedPackages = updated
                                     }
                                 )
                             }
@@ -1167,16 +1171,6 @@ class MainActivity : ComponentActivity() {
                                     themeMode = currentThemeMode,
                                     onThemeModeChanged = onThemeModeChanged,
                                     onLanguageChanged = { code -> appLanguage = code },
-                                    nodeColumns = nodeColumns,
-                                    onNodeColumnsChanged = { cols ->
-                                        nodeColumns = cols
-                                        settingsManager.nodeColumns = cols
-                                    },
-                                    showGroupIcons = showGroupIcons,
-                                    onShowGroupIconsChanged = { show ->
-                                        showGroupIcons = show
-                                        settingsManager.showGroupIcons = show
-                                    },
                                     onBack = { currentSubScreen = null }
                                 )
                             }

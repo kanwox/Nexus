@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -183,26 +184,22 @@ fun ScriptsScreen(
                     )
                     Spacer(modifier = Modifier.height(20.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
+                        CupertinoButton(
+                            text = "新建脚本",
                             onClick = {
                                 haptic.selection()
                                 showCreateDialog = true
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("新建脚本", fontWeight = FontWeight.Bold)
-                        }
-                        OutlinedButton(
+                            style = CupertinoButtonStyle.Filled
+                        )
+                        CupertinoButton(
+                            text = "模板创建",
                             onClick = {
                                 haptic.selection()
                                 showTemplateDialog = true
                             },
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LoonCardBorder)
-                        ) {
-                            Text("模板创建", color = LoonTextPrimary)
-                        }
+                            style = CupertinoButtonStyle.Tinted
+                        )
                     }
                 }
             }
@@ -407,17 +404,14 @@ fun ScriptsScreen(
             ) {
                 Text("新建脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
                 Spacer(modifier = Modifier.height(14.dp))
-                OutlinedTextField(
+                CupertinoTextField(
                     value = nameInput,
                     onValueChange = { nameInput = it },
-                    label = { Text("脚本名称") },
-                    placeholder = { Text("例如: RuleRewriter") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true
+                    placeholder = "脚本名称 (例如: RuleRewriter)"
                 )
                 Spacer(modifier = Modifier.height(18.dp))
-                Button(
+                CupertinoButton(
+                    text = "创建并保存",
                     onClick = {
                         val name = nameInput.ifBlank { "Untitled_Script" }
                         val defaultCode = """
@@ -432,12 +426,9 @@ fun ScriptsScreen(
                         showCreateDialog = false
                         Toast.makeText(context, "脚本创建成功", Toast.LENGTH_SHORT).show()
                     },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("创建并保存", fontWeight = FontWeight.Bold)
-                }
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    style = CupertinoButtonStyle.Filled
+                )
             }
         }
     }
@@ -461,27 +452,20 @@ fun ScriptsScreen(
             ) {
                 Text("从链接导入脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
                 Spacer(modifier = Modifier.height(14.dp))
-                OutlinedTextField(
+                CupertinoTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
-                    label = { Text("脚本 URL") },
-                    placeholder = { Text("https://raw.githubusercontent.com/...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true
+                    placeholder = "脚本 URL (https://...)"
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                OutlinedTextField(
+                CupertinoTextField(
                     value = nameInput,
                     onValueChange = { nameInput = it },
-                    label = { Text("脚本名称 (选填)") },
-                    placeholder = { Text("留空将自动提取文件名") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true
+                    placeholder = "脚本名称 (选填，留空将自动提取)"
                 )
                 Spacer(modifier = Modifier.height(18.dp))
-                Button(
+                CupertinoButton(
+                    text = if (isDownloading) "正在下载..." else "立即导入",
                     onClick = {
                         if (urlInput.isNotBlank()) {
                             isDownloading = true
@@ -499,16 +483,9 @@ fun ScriptsScreen(
                         }
                     },
                     enabled = urlInput.isNotBlank() && !isDownloading,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = IosBlue),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (isDownloading) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                    } else {
-                        Text("立即导入", fontWeight = FontWeight.Bold)
-                    }
-                }
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    style = CupertinoButtonStyle.Filled
+                )
             }
         }
     }
@@ -618,8 +595,13 @@ fun ScriptsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = { editingScript = null }) {
-                        Text("取消", color = LoonTextSecondary)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { editingScript = null }
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text("取消", color = LoonTextSecondary, fontSize = 15.sp)
                     }
 
                     Text(
@@ -629,16 +611,19 @@ fun ScriptsScreen(
                         color = LoonTextPrimary
                     )
 
-                    TextButton(
-                        onClick = {
-                            haptic.selection()
-                            ScriptManager.updateScriptCode(context, target, scriptCodeInput)
-                            refresh()
-                            editingScript = null
-                            Toast.makeText(context, "代码已保存", Toast.LENGTH_SHORT).show()
-                        }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                haptic.selection()
+                                ScriptManager.updateScriptCode(context, target, scriptCodeInput)
+                                refresh()
+                                editingScript = null
+                                Toast.makeText(context, "代码已保存", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
-                        Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 }
 
@@ -680,33 +665,30 @@ fun ScriptsScreen(
     // Delete Confirmation Dialog
     if (deleteConfirmScript != null) {
         val target = deleteConfirmScript!!
-        AlertDialog(
-            onDismissRequest = { deleteConfirmScript = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(20.dp),
-            title = {
-                Text("删除脚本", color = LoonTextPrimary, fontWeight = FontWeight.Bold)
+        CupertinoAlertDialog(
+            title = "删除脚本",
+            message = "确定要删除脚本 [${target.name}] 吗？相关的配置重写将失效。",
+            confirmText = "删除",
+            dismissText = "取消",
+            isDestructive = true,
+            onConfirm = {
+                ScriptManager.deleteScript(context, target.id)
+                refresh()
+                deleteConfirmScript = null
+                Toast.makeText(context, "脚本已删除", Toast.LENGTH_SHORT).show()
             },
-            text = {
-                Text("确定要删除脚本 [${target.name}] 吗？相关的配置重写将失效。", color = LoonTextSecondary, fontSize = 14.sp)
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        ScriptManager.deleteScript(context, target.id)
-                        refresh()
-                        deleteConfirmScript = null
-                        Toast.makeText(context, "脚本已删除", Toast.LENGTH_SHORT).show()
-                    }
-                ) {
-                    Text("删除", color = IosRed, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteConfirmScript = null }) {
-                    Text("取消", color = LoonTextSecondary)
-                }
-            }
+            onDismissRequest = { deleteConfirmScript = null }
+        )
+    }
+}
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun ScriptsScreenPreview() {
+    MihomoTheme {
+        ScriptsScreen(
+            onBack = {},
+            onScriptsChanged = {}
         )
     }
 }

@@ -27,6 +27,7 @@ import com.github.mihomo.android.data.ProfileParser
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.data.SettingsManager
+import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -62,31 +63,34 @@ fun ProfileOverrideScreen(
             showBackButton = true,
             onBack = onBack,
             actions = {
-                TextButton(
-                    onClick = {
-                        val updated = profile.copy(
-                            scriptEnabled = selectedScriptIds.isNotEmpty(),
-                            scriptIds = selectedScriptIds.toList()
-                        )
-                        ConfigManager.updateProfile(context, updated)
-                        ProfileParser.clearCache()
-                        onProfileUpdated(updated)
-                        scope.launch(Dispatchers.IO) {
-                            val settings = SettingsManager(context)
-                            val profiles = ConfigManager.getProfiles(context)
-                            val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
-                            if (activeProfile?.id == profile.id && ClashCore.isCoreLoaded) {
-                                runCatching {
-                                    val configFile = ConfigManager.prepareConfig(context, updated.file)
-                                    ClashCore.load(configFile)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            val updated = profile.copy(
+                                scriptEnabled = selectedScriptIds.isNotEmpty(),
+                                scriptIds = selectedScriptIds.toList()
+                            )
+                            ConfigManager.updateProfile(context, updated)
+                            ProfileParser.clearCache()
+                            onProfileUpdated(updated)
+                            scope.launch(Dispatchers.IO) {
+                                val settings = SettingsManager(context)
+                                val profiles = ConfigManager.getProfiles(context)
+                                val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
+                                if (activeProfile?.id == profile.id && ClashCore.isCoreLoaded) {
+                                    runCatching {
+                                        val configFile = ConfigManager.prepareConfig(context, updated.file)
+                                        ClashCore.load(configFile)
+                                    }
                                 }
                             }
+                            Toast.makeText(context, "覆写设置已保存", Toast.LENGTH_SHORT).show()
+                            onBack()
                         }
-                        Toast.makeText(context, "覆写设置已保存", Toast.LENGTH_SHORT).show()
-                        onBack()
-                    }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
-                    Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 15.5.sp)
                 }
             }
         )
@@ -178,5 +182,26 @@ fun ProfileOverrideScreen(
                 }
             }
         }
+    }
+}
+
+@Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
+@Composable
+fun ProfileOverrideScreenPreview() {
+    val sampleProfile = ProfileItem(
+        id = "sample_1",
+        name = "Sample Subscription",
+        url = "https://subscribe.example.com/clash",
+        file = java.io.File("/dummy/path.yaml"),
+        scriptEnabled = true,
+        scriptIds = listOf("script_1")
+    )
+    MihomoTheme {
+        ProfileOverrideScreen(
+            profile = sampleProfile,
+            onBack = {},
+            onNavigateToScripts = {},
+            onProfileUpdated = {}
+        )
     }
 }
