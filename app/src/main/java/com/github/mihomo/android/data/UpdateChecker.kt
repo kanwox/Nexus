@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 object UpdateChecker {
 
     // Current app version — must match versionName in build.gradle.kts
-    const val CURRENT_VERSION = "1.0.2"
+    const val CURRENT_VERSION = "1.0.3-Beta.2"
 
     private const val RELEASES_API =
         "https://api.github.com/repos/kanwox/Nexus/releases/latest"

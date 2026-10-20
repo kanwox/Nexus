@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.zIndex
@@ -90,16 +91,10 @@ fun DashboardScreen(
     // State for Quick Node Selector Modal
     var showQuickNodeSelector by remember { mutableStateOf(false) }
     var quickNodeSearchQuery by remember { mutableStateOf("") }
-    var isTestingQuickSheet by remember { mutableStateOf(false) }
+    var isTestingQuickNodes by remember { mutableStateOf(false) }
     val quickNodeSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val coroutineScope = rememberCoroutineScope()
-
-    // Automatically fully expand sheet when opened
-    LaunchedEffect(showQuickNodeSelector) {
-        if (showQuickNodeSelector) {
-            runCatching { quickNodeSheetState.expand() }
-        }
-    }
+    val haptic = rememberIosHaptic()
 
     // Visual In-Place Shortcuts Edit State
     var isEditingShortcuts by remember { mutableStateOf(false) }
@@ -539,186 +534,255 @@ fun DashboardScreen(
             }
 
             // =========================================================================
-            // In-Place Quick Node Selector BottomSheet (Full 92% height, smooth expansion)
+            // Quick Node Selector ModalBottomSheet (Authentic iOS Presentation)
             // =========================================================================
             if (showQuickNodeSelector) {
-                ModalBottomSheet(
-                    onDismissRequest = { showQuickNodeSelector = false },
+                CupertinoModalBottomSheet(
+                    onDismissRequest = {
+                        showQuickNodeSelector = false
+                        quickNodeSearchQuery = ""
+                    },
                     sheetState = quickNodeSheetState,
-                    containerColor = LoonCard,
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                    dragHandle = { BottomSheetDefaults.DragHandle() }
+                    modifier = Modifier.fillMaxHeight(0.88f),
+                    title = "选择节点",
+                    leadingAction = {
+                        IconButton(
+                            onClick = {
+                                if (mainGroupName.isNotBlank() && !isTestingQuickNodes) {
+                                    isTestingQuickNodes = true
+                                    coroutineScope.launch {
+                                        onHealthCheck(mainGroupName)
+                                        delay(1800)
+                                        isTestingQuickNodes = false
+                                    }
+                                }
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            AnimatedSpeedTestIcon(
+                                isTesting = isTestingQuickNodes,
+                                tint = IosBlue,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
                 ) {
-                    Column(
+                    // Search Bar
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .fillMaxHeight(0.92f)
-                            .padding(horizontal = 20.dp)
-                            .padding(bottom = 24.dp)
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = AppStrings.get("quick_node_title", lang),
-                                    fontSize = 19.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = LoonTextPrimary
-                                )
-                                Text(
-                                    text = "策略组: ${mainGroupName.ifBlank { "默认主组" }}",
-                                    fontSize = 12.sp,
-                                    color = LoonTextSecondary
-                                )
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    if (mainGroupName.isNotBlank() && !isTestingQuickSheet) {
-                                        isTestingQuickSheet = true
-                                        coroutineScope.launch {
-                                            onHealthCheck(mainGroupName)
-                                            kotlinx.coroutines.delay(1800)
-                                            isTestingQuickSheet = false
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                AnimatedSpeedTestIcon(
-                                    isTesting = isTestingQuickSheet,
-                                    tint = LoonTextPrimary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        // Search bar
                         CupertinoSearchBar(
                             value = quickNodeSearchQuery,
                             onValueChange = { quickNodeSearchQuery = it },
-                            placeholder = AppStrings.get("search_nodes", lang),
-                            modifier = Modifier.padding(bottom = 10.dp)
+                            placeholder = "搜索节点"
                         )
+                    }
 
-                        val filteredNodes = remember(mainGroupProxies, quickNodeSearchQuery) {
-                            if (quickNodeSearchQuery.isBlank()) mainGroupProxies
-                            else mainGroupProxies.filter { it.name.contains(quickNodeSearchQuery, ignoreCase = true) }
+                    val filteredNodes = remember(mainGroupProxies, quickNodeSearchQuery) {
+                        val q = quickNodeSearchQuery.trim().lowercase()
+                        if (q.isBlank()) mainGroupProxies
+                        else mainGroupProxies.filter { it.name.lowercase().contains(q) }
+                    }
+
+                    if (filteredNodes.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (mainGroupProxies.isEmpty()) "暂无可用节点" else "未找到匹配节点",
+                                color = LoonTextSecondary,
+                                fontSize = 13.5.sp
+                            )
                         }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .bounceOverscroll(),
+                            contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)
+                        ) {
+                            item {
+                                CupertinoGroupedSection {
+                                    filteredNodes.forEachIndexed { index, proxy ->
+                                        val isSelected = proxy.name == activeNodeName
+                                        val nodeEmoji = extractLeadingEmoji(proxy.name)
+                                        val displayName = if (nodeEmoji != null) {
+                                            proxy.name.removePrefix(nodeEmoji).trim()
+                                        } else {
+                                            proxy.name
+                                        }
 
-                        if (filteredNodes.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(160.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = if (mainGroupProxies.isEmpty()) AppStrings.get("no_nodes_available", lang) else AppStrings.get("no_nodes_matched", lang),
-                                    color = LoonTextSecondary,
-                                    fontSize = 13.sp
-                                )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .iosPressable {
+                                                    haptic.selection()
+                                                    onSelectProxy(mainGroupName, proxy)
+                                                    showQuickNodeSelector = false
+                                                    quickNodeSearchQuery = ""
+                                                }
+                                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                if (nodeEmoji != null) {
+                                                    Text(
+                                                        text = nodeEmoji,
+                                                        fontSize = 18.sp,
+                                                        modifier = Modifier.padding(end = 10.dp)
+                                                    )
+                                                }
+
+                                                Column {
+                                                    Text(
+                                                        text = displayName,
+                                                        color = LoonTextPrimary,
+                                                        fontSize = 15.sp,
+                                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text(
+                                                        text = proxy.type.uppercase(),
+                                                        color = LoonTextMuted,
+                                                        fontSize = 11.5.sp
+                                                    )
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.width(10.dp))
+
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                if (isTestingQuickNodes) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(13.dp),
+                                                        strokeWidth = 1.8.dp,
+                                                        color = IosBlue
+                                                    )
+                                                } else {
+                                                    val (delayColor, delayText) = when {
+                                                        proxy.delay == -2 -> Pair(RedDanger, "超时")
+                                                        proxy.delay in 1..250 -> Pair(IosGreen, "${proxy.delay} ms")
+                                                        proxy.delay in 251..600 -> Pair(IosOrange, "${proxy.delay} ms")
+                                                        proxy.delay > 600 -> Pair(RedDanger, "${proxy.delay} ms")
+                                                        else -> Pair(LoonTextMuted, "--")
+                                                    }
+                                                    Text(
+                                                        text = delayText,
+                                                        color = delayColor,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = if (proxy.delay > 0 || proxy.delay == -2) FontWeight.SemiBold else FontWeight.Normal
+                                                    )
+                                                }
+
+                                                if (isSelected) {
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = IosBlue,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        if (index < filteredNodes.lastIndex) {
+                                            CupertinoIndentedDivider(startIndent = if (nodeEmoji != null) 44.dp else 16.dp)
+                                        }
+                                    }
+                                }
                             }
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                            ) {
-                                itemsIndexed(
-                                    items = filteredNodes,
-                                    key = { index, proxy -> "${proxy.name}_$index" }
-                                ) { index, proxy ->
-                                    val isSelected = proxy.name == activeNodeName
-                                    val nodeEmoji = extractLeadingEmoji(proxy.name)
+                        }
+                    }
+                }
+            }
 
+            // =========================================================================
+            // Add Hidden Shortcut ModalBottomSheet
+            // =========================================================================
+            if (showAddShortcutSheet) {
+                val hiddenShortcuts = shortcutOrder
+                    .filter { !visibleShortcuts.contains(it) }
+                    .mapNotNull { allShortcutMap[it] }
+
+                CupertinoModalBottomSheet(
+                    onDismissRequest = { showAddShortcutSheet = false },
+                    sheetState = addShortcutSheetState,
+                    title = AppStrings.get("shortcuts_add", lang)
+                ) {
+                    if (hiddenShortcuts.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(120.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = AppStrings.get("shortcuts_all_added", lang),
+                                color = LoonTextSecondary,
+                                fontSize = 14.sp
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .bounceOverscroll(),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            itemsIndexed(hiddenShortcuts) { _, item ->
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .border(0.5.dp, LoonCardBorder, RoundedCornerShape(12.dp))
+                                        .iosPressable {
+                                            haptic.lightTick()
+                                            onUpdateVisibleShortcuts(visibleShortcuts + item.id)
+                                        },
+                                    color = LoonBg
+                                ) {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .clickable {
-                                                onSelectProxy(mainGroupName, proxy)
-                                                showQuickNodeSelector = false
-                                            }
-                                            .padding(horizontal = 8.dp, vertical = 11.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                            if (nodeEmoji != null) {
-                                                Text(
-                                                    text = nodeEmoji,
-                                                    fontSize = 17.sp,
-                                                    modifier = Modifier.padding(end = 10.dp)
-                                                )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                                                item.icon()
                                             }
+                                            Spacer(modifier = Modifier.width(12.dp))
                                             Column {
-                                                Text(
-                                                    text = proxy.name,
-                                                    color = if (isSelected) LoonOrange else LoonTextPrimary,
-                                                    fontSize = 14.5.sp,
-                                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                                    maxLines = 1
-                                                )
-                                                Spacer(modifier = Modifier.height(2.dp))
-                                                Text(
-                                                    text = proxy.type.uppercase(),
-                                                    color = LoonTextMuted,
-                                                    fontSize = 11.sp
-                                                )
+                                                Text(item.title, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, color = LoonTextPrimary)
+                                                Text(item.subtitle, fontSize = 11.5.sp, color = LoonTextSecondary)
                                             }
                                         }
 
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (isTestingQuickSheet) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(13.dp),
-                                                    strokeWidth = 1.8.dp,
-                                                    color = LoonOrange
-                                                )
-                                            } else {
-                                                val delayColor = when {
-                                                    proxy.delay == -2 -> RedDanger
-                                                    proxy.delay in 1..250 -> LoonGreen
-                                                    proxy.delay in 251..600 -> Color(0xFFF59E0B)
-                                                    proxy.delay > 600 -> RedDanger
-                                                    else -> LoonTextMuted
-                                                }
-                                                val delayText = when {
-                                                    proxy.delay == -2 -> "超时"
-                                                    proxy.delay > 0 -> "${proxy.delay} ms"
-                                                    else -> "--"
-                                                }
-                                                Text(
-                                                    text = delayText,
-                                                    color = delayColor,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = if (proxy.delay > 0 || proxy.delay == -2) FontWeight.SemiBold else FontWeight.Normal,
-                                                    modifier = Modifier.padding(end = 8.dp)
-                                                )
-                                            }
-
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    tint = LoonOrange,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    if (index < filteredNodes.size - 1) {
-                                        HorizontalDivider(
-                                            color = LoonCardBorder,
-                                            thickness = 0.5.dp,
-                                            modifier = Modifier.padding(horizontal = 8.dp)
+                                        CupertinoButton(
+                                            text = AppStrings.get("shortcuts_add", lang),
+                                            onClick = {
+                                                onUpdateVisibleShortcuts(visibleShortcuts + item.id)
+                                            },
+                                            style = CupertinoButtonStyle.Tinted,
+                                            icon = Icons.Default.Add
                                         )
                                     }
                                 }
@@ -729,186 +793,66 @@ fun DashboardScreen(
             }
 
             // =========================================================================
-            // Add Hidden Shortcut BottomSheet
-            // =========================================================================
-            if (showAddShortcutSheet) {
-                val hiddenShortcuts = shortcutOrder
-                    .filter { !visibleShortcuts.contains(it) }
-                    .mapNotNull { allShortcutMap[it] }
-
-                ModalBottomSheet(
-                    onDismissRequest = { showAddShortcutSheet = false },
-                    sheetState = addShortcutSheetState,
-                    containerColor = LoonCard,
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp)
-                            .padding(bottom = 32.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = AppStrings.get("shortcuts_add", lang),
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = LoonTextPrimary
-                            )
-                            IconButton(onClick = { showAddShortcutSheet = false }) {
-                                Icon(Icons.Default.Close, contentDescription = "关闭", tint = LoonTextSecondary)
-                            }
-                        }
-
-                        if (hiddenShortcuts.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(120.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = AppStrings.get("shortcuts_all_added", lang),
-                                    color = LoonTextSecondary,
-                                    fontSize = 14.sp
-                                )
-                            }
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                itemsIndexed(hiddenShortcuts) { _, item ->
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .border(1.dp, LoonCardBorder, RoundedCornerShape(12.dp))
-                                            .clickable {
-                                                onUpdateVisibleShortcuts(visibleShortcuts + item.id)
-                                            },
-                                        color = LoonCard
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                                                    item.icon()
-                                                }
-                                                Spacer(modifier = Modifier.width(12.dp))
-                                                Column {
-                                                    Text(item.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = LoonTextPrimary)
-                                                    Text(item.subtitle, fontSize = 11.sp, color = LoonTextSecondary)
-                                                }
-                                            }
-
-                                            Surface(
-                                                shape = RoundedCornerShape(8.dp),
-                                                color = LoonEditBlueBg
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Icon(Icons.Default.Add, contentDescription = null, tint = LoonBlue, modifier = Modifier.size(14.dp))
-                                                    Spacer(modifier = Modifier.width(2.dp))
-                                                    Text(AppStrings.get("shortcuts_add", lang), color = LoonBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // =========================================================================
-            // Mode Selector BottomSheet (Smooth 24dp rounded sheet)
+            // Mode Selector ModalBottomSheet (Pure iOS Inset Grouped presentation)
             // =========================================================================
             if (showModeBottomSheet) {
-                ModalBottomSheet(
+                CupertinoModalBottomSheet(
                     onDismissRequest = { showModeBottomSheet = false },
                     sheetState = modeSheetState,
-                    containerColor = LoonCard,
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                    dragHandle = { BottomSheetDefaults.DragHandle() }
+                    title = AppStrings.get("select_mode", lang)
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp)
-                            .padding(bottom = 36.dp)
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
                     ) {
-                        Text(
-                            text = AppStrings.get("select_mode", lang),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = LoonTextPrimary,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
+                        CupertinoGroupedSection {
+                            val modes = listOf(
+                                Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), "根据分流规则匹配分流策略"),
+                                Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), "强制转发至目标节点"),
+                                Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), "所有流量直接连接，不通过代理")
+                            )
 
-                        val modes = listOf(
-                            Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), "根据分流规则匹配分流策略"),
-                            Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), "强制转发至目标节点"),
-                            Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), "所有流量直接连接，不通过代理")
-                        )
-
-                        modes.forEachIndexed { index, (mode, title, desc) ->
-                            val isSelected = mode == currentMode
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        onModeSelected(mode)
-                                        showModeBottomSheet = false
+                            modes.forEachIndexed { index, (mode, title, desc) ->
+                                val isSelected = mode == currentMode
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .iosPressable {
+                                            haptic.selection()
+                                            onModeSelected(mode)
+                                            showModeBottomSheet = false
+                                        }
+                                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = title,
+                                            fontSize = 15.sp,
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = LoonTextPrimary
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = desc,
+                                            fontSize = 12.sp,
+                                            color = LoonTextSecondary
+                                        )
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 13.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = title,
-                                        fontSize = 15.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) LoonOrange else LoonTextPrimary
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = desc,
-                                        fontSize = 12.sp,
-                                        color = LoonTextSecondary
-                                    )
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = IosBlue,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
-                                if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = LoonOrange,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                if (index < modes.lastIndex) {
+                                    CupertinoIndentedDivider(startIndent = 16.dp)
                                 }
-                            }
-                            if (index < modes.size - 1) {
-                                HorizontalDivider(
-                                    color = LoonCardBorder,
-                                    thickness = 0.5.dp,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
                             }
                         }
                     }

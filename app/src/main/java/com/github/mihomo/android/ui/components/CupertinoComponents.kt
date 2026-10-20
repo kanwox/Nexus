@@ -19,10 +19,14 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1183,4 +1187,106 @@ fun CupertinoButton(
         }
     }
 }
+
+// =============================================================================
+// Authentic Cupertino Modal Bottom Sheet (16dp squircle, slim capsule grabber, modal nav bar)
+// =============================================================================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CupertinoModalBottomSheet(
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    title: String? = null,
+    doneText: String? = "完成",
+    leadingAction: (@Composable () -> Unit)? = null,
+    trailingAction: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        sheetState = sheetState,
+        containerColor = LoonCard,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 8.dp, bottom = 4.dp)
+                    .width(36.dp)
+                    .height(4.5.dp)
+                    .clip(CircleShape)
+                    .background(LoonTextMuted.copy(alpha = 0.28f))
+            )
+        }
+    ) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp)
+        ) {
+            val showNavBar = title != null || doneText != null
+            val hasActions = leadingAction != null || trailingAction != null
+            if (showNavBar || hasActions) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.widthIn(min = 44.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        leadingAction?.invoke()
+                    }
+
+                    if (title != null) {
+                        Text(
+                            text = title,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LoonTextPrimary,
+                            maxLines = 1
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier.widthIn(min = 44.dp),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        if (trailingAction != null) {
+                            trailingAction()
+                        } else if (doneText != null) {
+                            val haptic = rememberIosHaptic()
+                            Box(
+                                modifier = Modifier
+                                    .height(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .iosPressable {
+                                        haptic.lightTick()
+                                        onDismissRequest()
+                                    }
+                                    .padding(horizontal = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = doneText,
+                                    color = IosBlue,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            content()
+        }
+    }
+}
+
 
