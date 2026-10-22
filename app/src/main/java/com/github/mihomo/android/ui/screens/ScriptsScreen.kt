@@ -105,12 +105,12 @@ fun ScriptsScreen(
                         code = content
                     )
                     refresh()
-                    Toast.makeText(context, "已导入本地脚本: $scriptName", Toast.LENGTH_SHORT).show()
+                    CupertinoToast.show("已导入本地脚本: $scriptName")
                 } else {
-                    Toast.makeText(context, "脚本内容为空", Toast.LENGTH_SHORT).show()
+                    CupertinoToast.show("脚本内容为空", isDestructive = true)
                 }
             }.onFailure {
-                Toast.makeText(context, "读取脚本失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                CupertinoToast.show("读取脚本失败: ${it.message}", isDestructive = true)
             }
         }
     }
@@ -128,12 +128,15 @@ fun ScriptsScreen(
             showBackButton = true,
             onBack = onBack,
             actions = {
-                IconButton(
-                    onClick = {
-                        haptic.selection()
-                        showActionMenuSheet = true
-                    },
-                    modifier = Modifier.size(34.dp)
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .iosPressable {
+                            haptic.selection()
+                            showActionMenuSheet = true
+                        },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
@@ -256,9 +259,11 @@ fun ScriptsScreen(
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         if (isRemote) {
-                                            IconButton(
-                                                onClick = {
-                                                    if (!isUpdating) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(32.dp)
+                                                    .clip(CircleShape)
+                                                    .iosPressable(enabled = !isUpdating) {
                                                         haptic.selection()
                                                         updatingScriptIds = updatingScriptIds + script.id
                                                         scope.launch {
@@ -266,17 +271,16 @@ fun ScriptsScreen(
                                                             updatingScriptIds = updatingScriptIds - script.id
                                                             if (res.isSuccess) {
                                                                 refresh()
-                                                                Toast.makeText(context, "脚本更新成功", Toast.LENGTH_SHORT).show()
+                                                                CupertinoToast.show("脚本更新成功")
                                                             } else {
-                                                                Toast.makeText(context, "更新失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                                                CupertinoToast.show("更新失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
                                                             }
                                                         }
-                                                    }
-                                                },
-                                                modifier = Modifier.size(32.dp)
+                                                    },
+                                                contentAlignment = Alignment.Center
                                             ) {
                                                 if (isUpdating) {
-                                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 1.5.dp, color = IosBlue)
+                                                    CupertinoActivityIndicator(size = 14.dp, color = IosBlue)
                                                 } else {
                                                     Icon(Icons.Default.Refresh, contentDescription = "更新", tint = LoonTextSecondary, modifier = Modifier.size(16.dp))
                                                 }
@@ -292,12 +296,15 @@ fun ScriptsScreen(
                                             }
                                         )
 
-                                        IconButton(
-                                            onClick = {
-                                                haptic.selection()
-                                                deleteConfirmScript = script
-                                            },
-                                            modifier = Modifier.size(32.dp)
+                                        Box(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .clip(CircleShape)
+                                                .iosPressable {
+                                                    haptic.selection()
+                                                    deleteConfirmScript = script
+                                                },
+                                            contentAlignment = Alignment.Center
                                         ) {
                                             Icon(Icons.Default.DeleteOutline, contentDescription = "删除", tint = LoonTextSecondary, modifier = Modifier.size(16.dp))
                                         }
@@ -338,7 +345,8 @@ fun ScriptsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text(
                     text = "添加脚本",
@@ -400,7 +408,8 @@ fun ScriptsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text("新建脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
                 Spacer(modifier = Modifier.height(14.dp))
@@ -424,7 +433,7 @@ fun ScriptsScreen(
                         ScriptManager.saveLocalScript(context, name, "", "http-response", defaultCode)
                         refresh()
                         showCreateDialog = false
-                        Toast.makeText(context, "脚本创建成功", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("脚本创建成功")
                     },
                     modifier = Modifier.fillMaxWidth().height(44.dp),
                     style = CupertinoButtonStyle.Filled
@@ -448,7 +457,8 @@ fun ScriptsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text("从链接导入脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
                 Spacer(modifier = Modifier.height(14.dp))
@@ -475,9 +485,9 @@ fun ScriptsScreen(
                                 if (res.isSuccess) {
                                     refresh()
                                     showImportUrlDialog = false
-                                    Toast.makeText(context, "导入成功", Toast.LENGTH_SHORT).show()
+                                    CupertinoToast.show("导入成功")
                                 } else {
-                                    Toast.makeText(context, "下载失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                    CupertinoToast.show("下载失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
                                 }
                             }
                         }
@@ -529,7 +539,8 @@ fun ScriptsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text(
                     text = "选择预设模板",
@@ -549,7 +560,7 @@ fun ScriptsScreen(
                                 ScriptManager.saveLocalScript(context, tplName, "", "rule", tplCode)
                                 refresh()
                                 showTemplateDialog = false
-                                Toast.makeText(context, "已基于模板创建: $tplName", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("已基于模板创建: $tplName")
                             }
                             .padding(vertical = 12.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -588,7 +599,8 @@ fun ScriptsScreen(
                     .fillMaxWidth()
                     .fillMaxHeight(0.92f)
                     .padding(horizontal = 16.dp)
-                    .padding(bottom = 24.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -619,7 +631,7 @@ fun ScriptsScreen(
                                 ScriptManager.updateScriptCode(context, target, scriptCodeInput)
                                 refresh()
                                 editingScript = null
-                                Toast.makeText(context, "代码已保存", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("代码已保存")
                             }
                             .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
@@ -675,7 +687,7 @@ fun ScriptsScreen(
                 ScriptManager.deleteScript(context, target.id)
                 refresh()
                 deleteConfirmScript = null
-                Toast.makeText(context, "脚本已删除", Toast.LENGTH_SHORT).show()
+                CupertinoToast.show("脚本已删除")
             },
             onDismissRequest = { deleteConfirmScript = null }
         )

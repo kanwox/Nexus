@@ -109,9 +109,9 @@ fun ProfilesScreen(
             if (result.isSuccess) {
                 val imported = result.getOrThrow()
                 onUpdateProfile(imported)
-                Toast.makeText(context, "已导入 ${imported.name}", Toast.LENGTH_SHORT).show()
+                CupertinoToast.show("已导入 ${imported.name}")
             } else {
-                Toast.makeText(context, "导入失败: ${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                CupertinoToast.show("导入失败: ${result.exceptionOrNull()?.message}", isDestructive = true)
             }
         }
     }
@@ -333,7 +333,7 @@ fun ProfilesScreen(
                     val name = newSubName.trim().ifBlank { "订阅" }
                     onAddSubscription(name, url)
                 } else {
-                    Toast.makeText(context, "请输入链接", Toast.LENGTH_SHORT).show()
+                    CupertinoToast.show("请输入链接", isDestructive = true)
                 }
             },
             onDismiss = { showAddDialog = false },

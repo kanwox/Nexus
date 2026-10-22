@@ -12,18 +12,24 @@ object DnsRepository {
     private val _recordsFlow = MutableStateFlow<List<DnsRecord>>(emptyList())
     val recordsFlow: StateFlow<List<DnsRecord>> = _recordsFlow.asStateFlow()
 
-    init {
-        seedDemoDataIfEmpty()
-    }
-
     @Synchronized
     fun addRecord(domain: String, ip: String, isFakeIp: Boolean = false, latencyMs: Int = 0, type: String = "A") {
-        if (domain.isBlank() || ip.isBlank()) return
+        val cleanDomain = domain.trim()
+        val cleanIp = ip.trim().trim('[', ']')
+        if (cleanDomain.isBlank() || cleanIp.isBlank()) return
+
+        // Avoid spamming duplicate identical queries in consecutive succession
+        val first = recordList.firstOrNull()
+        if (first != null && first.domain.equals(cleanDomain, ignoreCase = true) && first.ip == cleanIp) {
+            val now = System.currentTimeMillis()
+            if (now - first.timestamp < 1500L) return
+        }
+
         val record = DnsRecord(
             id = nextId.getAndIncrement(),
-            domain = domain.trim(),
-            ip = ip.trim(),
-            isFakeIp = isFakeIp || ip.trim().startsWith("198.18."),
+            domain = cleanDomain,
+            ip = cleanIp,
+            isFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19."),
             latencyMs = latencyMs,
             timestamp = System.currentTimeMillis(),
             type = type
@@ -41,30 +47,32 @@ object DnsRepository {
         _recordsFlow.value = emptyList()
     }
 
-    private fun seedDemoDataIfEmpty() {
-        if (recordList.isNotEmpty()) return
-        val now = System.currentTimeMillis()
-        val samples = listOf(
-            DnsRecord(nextId.getAndIncrement(), "api.github.com", "198.18.0.24", isFakeIp = true, latencyMs = 28, timestamp = now - 4000),
-            DnsRecord(nextId.getAndIncrement(), "connectivitycheck.gstatic.com", "142.250.198.3", isFakeIp = false, latencyMs = 12, timestamp = now - 18000),
-            DnsRecord(nextId.getAndIncrement(), "gateway.icloud.com", "198.18.0.42", isFakeIp = true, latencyMs = 0, timestamp = now - 45000),
-            DnsRecord(nextId.getAndIncrement(), "doh.pub", "119.29.29.29", isFakeIp = false, latencyMs = 8, timestamp = now - 72000),
-            DnsRecord(nextId.getAndIncrement(), "v2ex.com", "198.18.0.88", isFakeIp = true, latencyMs = 45, timestamp = now - 130000),
-            DnsRecord(nextId.getAndIncrement(), "www.google.com", "198.18.0.103", isFakeIp = true, latencyMs = 32, timestamp = now - 210000),
-            DnsRecord(nextId.getAndIncrement(), "weixin.qq.com", "183.3.226.35", isFakeIp = false, latencyMs = 15, timestamp = now - 350000)
-        )
-        recordList.addAll(samples)
-        _recordsFlow.value = recordList.toList()
+    @Synchronized
+    fun findIpForDomain(domain: String): String? {
+        val clean = domain.trim()
+        return recordList.firstOrNull { it.domain.equals(clean, ignoreCase = true) }?.ip
     }
 
     fun parseFromLog(message: String) {
         try {
             if (!message.contains("[DNS]", ignoreCase = true) && !message.contains("resolve", ignoreCase = true)) return
-            val dnsRegex = Regex("""(?:\[DNS\]\s+)?(?:resolve\s+)?([a-zA-Z0-9.-]+)\s+(?:to|-->)\s+([0-9a-fA-F.:]+)""")
-            val match = dnsRegex.find(message)
-            if (match != null) {
-                val domain = match.groupValues[1]
-                val ip = match.groupValues[2]
+
+            // 1. Match: [DNS] (optional resolve/fake-ip/query/cache) domain -> ip or --> ip or to ip
+            val dnsRegex1 = Regex("""(?:\[DNS\]\s+)?(?:resolve:?\s+|fake-ip:?\s+|query:?\s+|cache:?\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:-->|->|to)\s*\[?([0-9a-fA-F.:]+)\]?""")
+            val match1 = dnsRegex1.find(message)
+            if (match1 != null) {
+                val domain = match1.groupValues[1]
+                val ip = match1.groupValues[2]
+                addRecord(domain, ip)
+                return
+            }
+
+            // 2. Match: [DNS] domain [ip] or [DNS] domain (ip)
+            val dnsRegex2 = Regex("""\[DNS\]\s+([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:\[|\()([0-9a-fA-F.:]+)(?:\]|\))""")
+            val match2 = dnsRegex2.find(message)
+            if (match2 != null) {
+                val domain = match2.groupValues[1]
+                val ip = match2.groupValues[2]
                 addRecord(domain, ip)
             }
         } catch (_: Exception) {}

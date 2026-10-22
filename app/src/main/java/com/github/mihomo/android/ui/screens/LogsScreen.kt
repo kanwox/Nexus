@@ -257,7 +257,8 @@ fun LogsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 // Header with level tag
                 Row(
@@ -328,10 +329,10 @@ fun LogsScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(LoonBg)
-                        .clickable {
+                        .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(entry.message))
-                            Toast.makeText(context, "已复制单条日志内容", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("已复制日志内容")
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
@@ -380,7 +381,7 @@ fun LogsScreen(
                             "[${timeFormat.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}"
                         }
                         clipboardManager.setText(AnnotatedString(exportText))
-                        Toast.makeText(context, "已复制 ${filteredLogs.size} 条日志到剪贴板", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已复制 ${filteredLogs.size} 条日志")
                     }
                 ),
                 CupertinoActionSheetItem(
@@ -390,7 +391,7 @@ fun LogsScreen(
                         haptic.impact()
                         showActionSheet = false
                         LogRepository.clear()
-                        Toast.makeText(context, "已清空核心日志", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已清空核心日志", isDestructive = true)
                     }
                 )
             ),

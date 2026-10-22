@@ -1,6 +1,7 @@
 package com.github.mihomo.android.ui.screens
 
 import android.widget.Toast
+import com.github.mihomo.android.ui.components.CupertinoToast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -116,11 +117,7 @@ fun AppearanceScreen(
                             currentLanguage = code
                             settingsManager.appLanguage = code
                             onLanguageChanged(code)
-                            Toast.makeText(
-                                context,
-                                "${AppStrings.get("language_updated", code)}: $label",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            CupertinoToast.show("${AppStrings.get("language_updated", code)}: $label")
                             @Suppress("DEPRECATION")
                             runCatching {
                                 val locale = if (code == "SYSTEM") java.util.Locale.getDefault() else java.util.Locale.forLanguageTag(code)

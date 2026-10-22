@@ -14,7 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material3.CircularProgressIndicator
+import com.github.mihomo.android.ui.components.CupertinoActivityIndicator
+import com.github.mihomo.android.ui.components.CupertinoToast
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -80,22 +81,24 @@ fun AppRoutingScreen(
             showBackButton = onBack != null,
             onBack = onBack,
             actions = {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .iosPressable {
-                            haptic.selection()
-                            showActionSheet = true
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.MoreHoriz,
-                        contentDescription = "更多操作",
-                        tint = IosBlue,
-                        modifier = Modifier.size(22.dp)
-                    )
+                if (currentMode != PerAppProxyMode.DISABLED) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .iosPressable {
+                                haptic.selection()
+                                showActionSheet = true
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreHoriz,
+                            contentDescription = "更多操作",
+                            tint = IosBlue,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         )
@@ -107,9 +110,13 @@ fun AppRoutingScreen(
                 .bounceOverscroll(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 32.dp)
         ) {
-            // Mode Selector: Clean, single-line iOS radio group (Zero essay fluff)
+            // Mode Selector: Clean, single-line iOS radio group
             item {
-                CupertinoGroupedSection {
+                CupertinoGroupedSection(
+                    footer = if (currentMode == PerAppProxyMode.DISABLED) {
+                        "当前模式下，设备上所有应用程序的网络流量均经由代理核心转发，无需单独选择应用。"
+                    } else null
+                ) {
                     ModeRow(
                         title = "全部代理",
                         isSelected = currentMode == PerAppProxyMode.DISABLED,
@@ -139,97 +146,96 @@ fun AppRoutingScreen(
                 }
             }
 
-            // Fluid Search Bar (scrolls smoothly out of screen when browsing down)
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                ) {
-                    CupertinoSearchBar(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = "搜索应用或包名"
-                    )
-                }
-            }
-
-            // Loading State or App List
-            if (isLoading && apps.isEmpty()) {
+            // Only show search bar and app list when in Whitelist or Blacklist mode
+            if (currentMode != PerAppProxyMode.DISABLED) {
+                // Fluid Search Bar (scrolls smoothly out of screen when browsing down)
                 item {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 60.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(
-                                color = IosBlue,
-                                strokeWidth = 2.5.dp,
-                                modifier = Modifier.size(32.dp)
-                            )
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Text(
-                                text = "正在读取已安装应用...",
-                                color = LoonTextSecondary,
-                                fontSize = 13.5.sp
-                            )
-                        }
+                        CupertinoSearchBar(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = "搜索应用或包名"
+                        )
                     }
                 }
-            } else if (displayApps.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 60.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.Apps,
-                                contentDescription = null,
-                                tint = LoonTextMuted.copy(alpha = 0.5f),
-                                modifier = Modifier.size(40.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = if (searchQuery.isNotBlank()) "未找到匹配应用" else "暂无应用",
-                                color = LoonTextSecondary,
-                                fontSize = 14.sp
-                            )
+
+                // Loading State or App List
+                if (isLoading && apps.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 60.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CupertinoActivityIndicator(
+                                    color = IosBlue,
+                                    size = 32.dp
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    text = "正在读取已安装应用...",
+                                    color = LoonTextSecondary,
+                                    fontSize = 13.5.sp
+                                )
+                            }
                         }
                     }
-                }
-            } else {
-                item {
-                    val headerText = if (searchQuery.isNotBlank()) {
-                        "搜索结果 (${displayApps.size})"
-                    } else {
-                        "应用列表 (${selectedPackages.size} / ${displayApps.size})"
+                } else if (displayApps.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 60.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Apps,
+                                    contentDescription = null,
+                                    tint = LoonTextMuted.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = if (searchQuery.isNotBlank()) "未找到匹配应用" else "暂无应用",
+                                    color = LoonTextSecondary,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
                     }
+                } else {
+                    item {
+                        val headerText = if (searchQuery.isNotBlank()) {
+                            "搜索结果 (${displayApps.size})"
+                        } else {
+                            "应用列表 (${selectedPackages.size} / ${displayApps.size})"
+                        }
 
-                    CupertinoGroupedSection(
-                        header = headerText
-                    ) {
-                        displayApps.forEachIndexed { index, app ->
-                            val isSelected = selectedPackages.contains(app.packageName)
+                        CupertinoGroupedSection(
+                            header = headerText
+                        ) {
+                            displayApps.forEachIndexed { index, app ->
+                                val isSelected = selectedPackages.contains(app.packageName)
 
-                            AppItemCell(
-                                app = app,
-                                isSelected = isSelected,
-                                onClick = {
-                                    haptic.lightTick()
-                                    if (currentMode == PerAppProxyMode.DISABLED) {
-                                        onModeChanged(PerAppProxyMode.WHITELIST)
+                                AppItemCell(
+                                    app = app,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        haptic.lightTick()
+                                        onTogglePackage(app.packageName)
                                     }
-                                    onTogglePackage(app.packageName)
-                                }
-                            )
+                                )
 
-                            if (index < displayApps.lastIndex) {
-                                CupertinoIndentedDivider(startIndent = 64.dp)
+                                if (index < displayApps.lastIndex) {
+                                    CupertinoIndentedDivider(startIndent = 64.dp)
+                                }
                             }
                         }
                     }
@@ -292,7 +298,7 @@ fun AppRoutingScreen(
                         } else {
                             selectedPackages.forEach { onTogglePackage(it) }
                         }
-                        Toast.makeText(context, "已清空已勾选应用", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已清空已勾选应用")
                     }
                 )
             ),

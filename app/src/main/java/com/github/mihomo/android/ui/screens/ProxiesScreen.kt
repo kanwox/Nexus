@@ -163,15 +163,18 @@ fun ProxiesScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Health check button (Pure Lightning Bolt with Animation, no text, no circle background)
-                IconButton(
-                    onClick = {
-                        if (selectedGroupName.isNotBlank()) {
-                            onHealthCheck(selectedGroupName)
-                        } else if (visibleGroups.isNotEmpty()) {
-                            onHealthCheck(visibleGroups.first())
-                        }
-                    },
-                    modifier = Modifier.size(36.dp)
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .iosPressable {
+                            if (selectedGroupName.isNotBlank()) {
+                                onHealthCheck(selectedGroupName)
+                            } else if (visibleGroups.isNotEmpty()) {
+                                onHealthCheck(visibleGroups.first())
+                            }
+                        },
+                    contentAlignment = Alignment.Center
                 ) {
                     AnimatedSpeedTestIcon(
                         isTesting = isAnyTesting,
@@ -183,12 +186,15 @@ fun ProxiesScreen(
                 Spacer(modifier = Modifier.width(6.dp))
 
                 // 3-Dots Settings Dialog Trigger (•••)
-                IconButton(
-                    onClick = { showOptionsMenu = true },
-                    modifier = Modifier.size(36.dp)
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .iosPressable { showOptionsMenu = true },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.MoreVert,
+                        imageVector = Icons.Default.MoreHoriz,
                         contentDescription = "更多设置",
                         tint = LoonTextPrimary
                     )
@@ -196,38 +202,18 @@ fun ProxiesScreen(
             }
         }
 
-        // Settings BottomSheet (Smooth, modern, non-cluttered bottom sheet)
+        // Settings BottomSheet (Pure iOS CupertinoModalBottomSheet)
         if (showOptionsMenu) {
-            ModalBottomSheet(
+            CupertinoModalBottomSheet(
                 onDismissRequest = { showOptionsMenu = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = LoonCard,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                dragHandle = {
-                    Box(
-                        modifier = Modifier
-                            .padding(vertical = 12.dp)
-                            .width(36.dp)
-                            .height(4.dp)
-                            .clip(CircleShape)
-                            .background(LoonTextMuted.copy(alpha = 0.3f))
-                    )
-                }
+                title = "策略设置"
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .padding(bottom = 36.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    Text(
-                        text = "策略设置",
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
                     // 1. 显示模式 (标签 / 列表)
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -643,10 +629,12 @@ private fun LoonGroupHeaderCard(
                     exit = fadeOut(animationSpec = tween(120)) + shrinkHorizontally(shrinkTowards = Alignment.End)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { if (!isTesting) onHealthCheck() },
-                            enabled = !isTesting,
-                            modifier = Modifier.size(30.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .iosPressable(enabled = !isTesting) { onHealthCheck() },
+                            contentAlignment = Alignment.Center
                         ) {
                             AnimatedSpeedTestIcon(
                                 isTesting = isTesting,
@@ -777,9 +765,8 @@ private fun LoonProxyItemCard(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isTesting) {
-                                CircularProgressIndicator(
+                                CupertinoActivityIndicator(
                                     modifier = Modifier.size(12.dp),
-                                    strokeWidth = 1.5.dp,
                                     color = IosBlue
                                 )
                             } else {
@@ -873,9 +860,8 @@ private fun LoonProxyItemCard(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isTesting) {
-                                CircularProgressIndicator(
+                                CupertinoActivityIndicator(
                                     modifier = Modifier.size(10.dp),
-                                    strokeWidth = 1.3.dp,
                                     color = IosBlue
                                 )
                             } else {
@@ -959,9 +945,8 @@ private fun LoonProxyItemCard(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isTesting) {
-                                CircularProgressIndicator(
+                                CupertinoActivityIndicator(
                                     modifier = Modifier.size(9.dp),
-                                    strokeWidth = 1.2.dp,
                                     color = IosBlue
                                 )
                             } else {

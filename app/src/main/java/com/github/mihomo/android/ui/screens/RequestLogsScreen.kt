@@ -267,7 +267,8 @@ fun RequestLogsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 // Header with status indicator
                 Row(
@@ -336,7 +337,7 @@ fun RequestLogsScreen(
                         showCopy = true,
                         onCopy = {
                             clipboardManager.setText(AnnotatedString(rec.host))
-                            Toast.makeText(context, "已复制域名", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("已复制域名")
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -346,7 +347,7 @@ fun RequestLogsScreen(
                         showCopy = true,
                         onCopy = {
                             clipboardManager.setText(AnnotatedString("${rec.destinationIp}:${rec.destinationPort}"))
-                            Toast.makeText(context, "已复制端点", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("已复制端点")
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -457,7 +458,7 @@ fun RequestLogsScreen(
                                 haptic.impact()
                                 RequestRepository.closeConnection(rec.id)
                                 activeDetailRecord = null
-                                Toast.makeText(context, "已断开连接", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("已断开连接", isDestructive = true)
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -486,7 +487,7 @@ fun RequestLogsScreen(
                         haptic.lightTick()
                         showClearActionSheet = false
                         RequestRepository.clearClosed()
-                        Toast.makeText(context, "已清理已完成记录", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已清理已完成记录")
                     }
                 ),
                 CupertinoActionSheetItem(
@@ -496,7 +497,7 @@ fun RequestLogsScreen(
                         haptic.impact()
                         showClearActionSheet = false
                         RequestRepository.clearAll()
-                        Toast.makeText(context, "已清空全部连接记录", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已清空全部连接记录", isDestructive = true)
                     }
                 )
             ),

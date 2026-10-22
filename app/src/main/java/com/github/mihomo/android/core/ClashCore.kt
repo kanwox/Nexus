@@ -6,6 +6,7 @@ import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import com.github.kr328.clash.core.bridge.Bridge
+import com.github.kr328.clash.core.bridge.LogcatInterface
 import com.github.kr328.clash.core.bridge.TunInterface
 import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.kr328.clash.core.model.ProxySort
@@ -65,6 +66,13 @@ object ClashCore {
         if (initialized) return
         Bridge.init(context)
         initialized = true
+        runCatching {
+            Bridge.nativeSubscribeLogcat(object : LogcatInterface {
+                override fun received(jsonPayload: String) {
+                    com.github.mihomo.android.data.LogRepository.addRawLogcat(jsonPayload)
+                }
+            })
+        }
         notifyNetworkChanged(context)
         Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
     }

@@ -44,6 +44,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import com.github.mihomo.android.ui.components.CupertinoToast
+import com.github.mihomo.android.ui.components.CupertinoToastHost
 import com.github.mihomo.android.ui.components.LoonFloatingBottomBar
 import com.github.mihomo.android.ui.screens.*
 import com.github.mihomo.android.ui.theme.LoonBg
@@ -90,7 +92,7 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == RESULT_OK) {
             MihomoVpnService.start(this)
         } else {
-            Toast.makeText(this, "需要授予 VPN 权限才能建立代理", Toast.LENGTH_SHORT).show()
+            CupertinoToast.show("需要授予 VPN 权限才能建立代理", isDestructive = true)
         }
     }
 
@@ -670,9 +672,9 @@ class MainActivity : ComponentActivity() {
                         if (res.isSuccess) {
                             val imported = res.getOrNull()
                             reloadProfiles()
-                            Toast.makeText(this@MainActivity, "成功导入配置: ${imported?.name}", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("成功导入配置: ${imported?.name}")
                         } else {
-                            Toast.makeText(this@MainActivity, "导入失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            CupertinoToast.show("导入失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
                         }
                     }
                 }
@@ -1004,16 +1006,16 @@ class MainActivity : ComponentActivity() {
                                         selectedProfileId = profile.id
                                         settingsManager.selectedProfileId = profile.id
                                         parseActiveProfile()
-                                        Toast.makeText(this@MainActivity, "已生效配置: ${profile.name}", Toast.LENGTH_SHORT).show()
+                                        CupertinoToast.show("已生效配置: ${profile.name}")
                                     },
                                     onAddSubscription = { name, url ->
                                         lifecycleScope.launch {
                                             val res = ConfigManager.downloadSubscription(this@MainActivity, url, name)
                                             if (res.isSuccess) {
                                                 reloadProfiles()
-                                                Toast.makeText(this@MainActivity, "订阅添加成功", Toast.LENGTH_SHORT).show()
+                                                CupertinoToast.show("订阅添加成功")
                                             } else {
-                                                Toast.makeText(this@MainActivity, "下载失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                                CupertinoToast.show("下载失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
                                             }
                                         }
                                     },
@@ -1029,9 +1031,9 @@ class MainActivity : ComponentActivity() {
                                                 val res = ConfigManager.updateSubscription(this@MainActivity, profile.id, profile.name, profile.url)
                                                 if (res.isSuccess) {
                                                     reloadProfiles()
-                                                    Toast.makeText(this@MainActivity, "订阅更新成功", Toast.LENGTH_SHORT).show()
+                                                    CupertinoToast.show("订阅更新成功")
                                                 } else {
-                                                    Toast.makeText(this@MainActivity, "更新失败: ${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                                    CupertinoToast.show("更新失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
                                                 }
                                             }
                                         }
@@ -1208,6 +1210,9 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
+
+            // Global iOS Dynamic Island / Pill HUD notification host
+            CupertinoToastHost()
         }
         } // end CompositionLocalProvider
     }

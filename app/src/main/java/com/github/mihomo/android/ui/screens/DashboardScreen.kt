@@ -546,18 +546,21 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxHeight(0.88f),
                     title = "选择节点",
                     leadingAction = {
-                        IconButton(
-                            onClick = {
-                                if (mainGroupName.isNotBlank() && !isTestingQuickNodes) {
-                                    isTestingQuickNodes = true
-                                    coroutineScope.launch {
-                                        onHealthCheck(mainGroupName)
-                                        delay(1800)
-                                        isTestingQuickNodes = false
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .iosPressable {
+                                    if (mainGroupName.isNotBlank() && !isTestingQuickNodes) {
+                                        isTestingQuickNodes = true
+                                        coroutineScope.launch {
+                                            onHealthCheck(mainGroupName)
+                                            delay(1800)
+                                            isTestingQuickNodes = false
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.size(36.dp)
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
                             AnimatedSpeedTestIcon(
                                 isTesting = isTestingQuickNodes,
@@ -665,9 +668,8 @@ fun DashboardScreen(
 
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 if (isTestingQuickNodes) {
-                                                    CircularProgressIndicator(
+                                                    CupertinoActivityIndicator(
                                                         modifier = Modifier.size(13.dp),
-                                                        strokeWidth = 1.8.dp,
                                                         color = IosBlue
                                                     )
                                                 } else {

@@ -1,8 +1,10 @@
 package com.github.mihomo.android.ui.components
 
+import android.content.Context
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,8 +12,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
 import androidx.compose.material.icons.filled.Check
@@ -38,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -53,7 +58,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import com.github.mihomo.android.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -127,6 +137,87 @@ fun Modifier.iosPressable(
                 )
             } else Modifier
         )
+}
+
+/**
+ * iOS Dialog / Action Sheet Button Press Feedback (Smooth translucent highlight, no ripples).
+ */
+fun Modifier.iosHighlightPressable(
+    enabled: Boolean = true,
+    highlightColor: Color? = null,
+    onClick: (() -> Unit)? = null
+): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val defaultHighlight = LocalLoonColors.current.tertiaryBg.copy(alpha = 0.65f)
+    val color = highlightColor ?: defaultHighlight
+
+    this
+        .background(if (enabled && isPressed) color else Color.Transparent)
+        .then(
+            if (onClick != null) {
+                Modifier.clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    enabled = enabled,
+                    onClick = onClick
+                )
+            } else Modifier
+        )
+}
+
+// =============================================================================
+// Authentic Cupertino Activity Indicator (iOS Radial Spoke Spinner)
+// =============================================================================
+
+@Composable
+fun CupertinoActivityIndicator(
+    modifier: Modifier = Modifier,
+    size: Dp = 20.dp,
+    color: Color = LoonTextSecondary,
+    spokeCount: Int = 8
+) {
+    val transition = rememberInfiniteTransition(label = "cupertino_spinner")
+    val step by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = spokeCount.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "cupertino_spinner_step"
+    )
+
+    Canvas(
+        modifier = modifier.size(size)
+    ) {
+        val center = Offset(this.size.width / 2f, this.size.height / 2f)
+        val outerRadius = this.size.minDimension / 2f
+        val innerRadius = outerRadius * 0.52f
+        val spokeWidth = (outerRadius - innerRadius) * 0.72f
+        val currentStep = step.toInt() % spokeCount
+
+        for (i in 0 until spokeCount) {
+            val angleDeg = (i * 360f / spokeCount)
+            val angleRad = Math.toRadians(angleDeg.toDouble())
+            val cos = Math.cos(angleRad).toFloat()
+            val sin = Math.sin(angleRad).toFloat()
+
+            val pStart = Offset(center.x + innerRadius * cos, center.y + innerRadius * sin)
+            val pEnd = Offset(center.x + outerRadius * cos, center.y + outerRadius * sin)
+
+            val distance = (currentStep - i + spokeCount) % spokeCount
+            val alphaFactor = (1f - (distance.toFloat() / spokeCount.toFloat())).coerceIn(0.2f, 1.0f)
+
+            drawLine(
+                color = color.copy(alpha = color.alpha * alphaFactor),
+                start = pStart,
+                end = pEnd,
+                strokeWidth = spokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+    }
 }
 
 // =============================================================================
@@ -435,7 +526,7 @@ fun CupertinoNavBar(
                         Row(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable {
+                                .iosPressable {
                                     haptic.lightTick()
                                     onBack()
                                 }
@@ -531,11 +622,21 @@ fun CupertinoActionSheet(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { onDismissRequest() }
+                .navigationBarsPadding()
                 .padding(horizontal = 10.dp, vertical = 10.dp),
             contentAlignment = Alignment.BottomCenter
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* prevent click-through */ },
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // Actions container
@@ -546,7 +647,10 @@ fun CupertinoActionSheet(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         if (!title.isNullOrBlank() || !message.isNullOrBlank()) {
@@ -583,7 +687,7 @@ fun CupertinoActionSheet(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(56.dp)
-                                    .clickable {
+                                    .iosHighlightPressable {
                                         haptic.selection()
                                         onDismissRequest()
                                         action.onClick()
@@ -613,7 +717,7 @@ fun CupertinoActionSheet(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp)
-                        .clickable {
+                        .iosHighlightPressable {
                             haptic.lightTick()
                             onDismissRequest()
                         }
@@ -680,7 +784,7 @@ fun <T> CupertinoSelectDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
+                            .iosHighlightPressable {
                                 haptic.selection()
                                 onSelect(key)
                                 onDismiss()
@@ -908,7 +1012,7 @@ fun CupertinoAlertDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .clickable {
+                                .iosHighlightPressable {
                                     haptic.lightTick()
                                     onDismiss()
                                 },
@@ -935,7 +1039,7 @@ fun CupertinoAlertDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .clickable {
+                                .iosHighlightPressable {
                                     haptic.lightTick()
                                     onConfirm()
                                 },
@@ -955,7 +1059,7 @@ fun CupertinoAlertDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(44.dp)
-                            .clickable {
+                            .iosHighlightPressable {
                                 haptic.lightTick()
                                 onConfirm()
                             },
@@ -1223,6 +1327,7 @@ fun CupertinoModalBottomSheet(
         Column(
             modifier = modifier
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(bottom = 16.dp)
         ) {
             val showNavBar = title != null || doneText != null
@@ -1288,5 +1393,130 @@ fun CupertinoModalBottomSheet(
         }
     }
 }
+
+// =============================================================================
+// iOS Dynamic Pill HUD / Toast (Top floating island capsule with haptics)
+// =============================================================================
+
+data class CupertinoToastData(
+    val id: Long = System.currentTimeMillis(),
+    val message: String,
+    val icon: ImageVector? = null,
+    val isDestructive: Boolean = false,
+    val durationMs: Long = 2000L
+)
+
+object CupertinoToast {
+    private val _currentToast = MutableStateFlow<CupertinoToastData?>(null)
+    val currentToast: StateFlow<CupertinoToastData?> = _currentToast.asStateFlow()
+
+    fun show(
+        message: String,
+        icon: ImageVector? = null,
+        isDestructive: Boolean = false,
+        durationMs: Long = 2000L
+    ) {
+        _currentToast.value = CupertinoToastData(
+            message = message,
+            icon = icon,
+            isDestructive = isDestructive,
+            durationMs = durationMs
+        )
+    }
+
+    fun dismiss() {
+        _currentToast.value = null
+    }
+}
+
+fun Context.showCupertinoToast(
+    message: String,
+    icon: ImageVector? = null,
+    isDestructive: Boolean = false
+) {
+    CupertinoToast.show(message = message, icon = icon, isDestructive = isDestructive)
+}
+
+/**
+ * Top floating pill HUD container adhering to iOS Dynamic Island / Capsule aesthetic.
+ */
+@Composable
+fun CupertinoToastHost(
+    modifier: Modifier = Modifier
+) {
+    val toastData by CupertinoToast.currentToast.collectAsState()
+    val haptic = rememberIosHaptic()
+
+    LaunchedEffect(toastData?.id) {
+        val current = toastData ?: return@LaunchedEffect
+        haptic.lightTick()
+        delay(current.durationMs)
+        CupertinoToast.dismiss()
+    }
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = toastData != null,
+        enter = androidx.compose.animation.fadeIn(animationSpec = tween(180)) +
+                androidx.compose.animation.slideInVertically(
+                    initialOffsetY = { -it },
+                    animationSpec = spring(
+                        dampingRatio = 0.82f,
+                        stiffness = 500f
+                    )
+                ),
+        exit = androidx.compose.animation.fadeOut(animationSpec = tween(150)) +
+                androidx.compose.animation.slideOutVertically(
+                    targetOffsetY = { -it },
+                    animationSpec = tween(150)
+                ),
+        modifier = modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(top = 10.dp)
+            .zIndex(9999f)
+    ) {
+        val data = toastData ?: return@AnimatedVisibility
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = LocalLoonColors.current.card.copy(alpha = 0.94f),
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, LocalLoonColors.current.cardBorder),
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .padding(horizontal = 24.dp)
+                    .widthIn(min = 120.dp, max = 340.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    val iconVector = data.icon ?: if (data.isDestructive) Icons.Default.Clear else Icons.Default.Check
+                    val iconTint = if (data.isDestructive) RedDanger else IosGreen
+                    Icon(
+                        imageVector = iconVector,
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = data.message,
+                        color = LocalLoonColors.current.textPrimary,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 

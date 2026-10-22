@@ -177,7 +177,7 @@ fun NetworkShareScreen(
                                 {
                                     haptic.lightTick()
                                     clipboardManager.setText(AnnotatedString(localIp))
-                                    Toast.makeText(context, "已复制本机 IP: $localIp", Toast.LENGTH_SHORT).show()
+                                    CupertinoToast.show("已复制本机 IP: $localIp")
                                 }
                             } else null
                         )
@@ -190,7 +190,7 @@ fun NetworkShareScreen(
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString("$proxyPort"))
-                                Toast.makeText(context, "已复制端口: $proxyPort", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("已复制端口: $proxyPort")
                             }
                         )
 
@@ -202,7 +202,7 @@ fun NetworkShareScreen(
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString(fullProxyAddress))
-                                Toast.makeText(context, "已复制完整代理地址: $fullProxyAddress", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("已复制完整代理地址: $fullProxyAddress")
                             }
                         )
 
@@ -244,7 +244,7 @@ fun NetworkShareScreen(
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString(curlCmd))
-                                Toast.makeText(context, "已复制终端代理命令", Toast.LENGTH_SHORT).show()
+                                CupertinoToast.show("已复制终端代理命令")
                             }
                         )
                     }

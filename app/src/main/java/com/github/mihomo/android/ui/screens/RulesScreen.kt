@@ -288,7 +288,8 @@ fun RulesScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 // Header with priority badge
                 Row(
@@ -326,10 +327,10 @@ fun RulesScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(LoonBg)
-                        .clickable {
+                        .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(rawRuleText))
-                            Toast.makeText(context, "已复制规则语法", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("已复制规则语法")
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -379,7 +380,7 @@ fun RulesScreen(
                         showCopy = rule.payload.isNotBlank(),
                         onCopy = {
                             clipboardManager.setText(AnnotatedString(rule.payload))
-                            Toast.makeText(context, "已复制匹配目标", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("已复制匹配目标")
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))

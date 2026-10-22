@@ -201,7 +201,8 @@ fun DnsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 36.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text(
                     text = "解析详情",
@@ -224,10 +225,10 @@ fun DnsScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
                         .background(LoonBg)
-                        .clickable {
+                        .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(rec.domain))
-                            Toast.makeText(context, AppStrings.get("dns_copied_domain", lang), Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -263,10 +264,10 @@ fun DnsScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
                         .background(LoonBg)
-                        .clickable {
+                        .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(rec.ip))
-                            Toast.makeText(context, AppStrings.get("dns_copied_ip", lang), Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show(AppStrings.get("dns_copied_ip", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -347,7 +348,7 @@ fun DnsScreen(
                     onClick = {
                         haptic.mediumImpact()
                         DnsRepository.clear()
-                        Toast.makeText(context, "已清空 DNS 记录", Toast.LENGTH_SHORT).show()
+                        CupertinoToast.show("已清空 DNS 记录", isDestructive = true)
                     }
                 )
             ),

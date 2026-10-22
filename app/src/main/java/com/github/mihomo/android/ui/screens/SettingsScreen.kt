@@ -266,9 +266,8 @@ fun SettingsScreen(
                     iconBg = Color(0xFF34C759),
                     trailing = {
                         if (isCheckingUpdate) {
-                            CircularProgressIndicator(
+                            CupertinoActivityIndicator(
                                 modifier = Modifier.size(16.dp),
-                                strokeWidth = 1.8.dp,
                                 color = IosBlue
                             )
                         } else {
@@ -330,7 +329,8 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text(
                     text = "TUN 协议栈",
@@ -407,7 +407,8 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .padding(bottom = 32.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 24.dp)
             ) {
                 Text(
                     text = "日志详细程度",
@@ -479,7 +480,7 @@ fun SettingsScreen(
                 showResetDialog = false
                 scope.launch {
                     withContext(Dispatchers.IO) { ClashCore.reset() }
-                    Toast.makeText(context, "核心已重置", Toast.LENGTH_SHORT).show()
+                    CupertinoToast.show("核心已重置")
                 }
             },
             onDismissRequest = { showResetDialog = false }

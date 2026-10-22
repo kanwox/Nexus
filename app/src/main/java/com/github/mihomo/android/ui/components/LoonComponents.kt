@@ -463,43 +463,50 @@ fun ProfilesIllustration() {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
-            // Three stacked card layers (from back to front)
-            // Back card (lightest)
+            val cardW = w * 0.62f
+            val cardH = h * 0.52f
+            val cornerRadius = CornerRadius(5.5.dp.toPx())
+
+            // Two stacked card layers (from back to front)
+            // 1. Back card (upper-right)
             drawRoundRect(
                 color = Color(0xFF93C5FD),
-                topLeft = Offset(w * 0.22f, h * 0.16f),
-                size = Size(w * 0.62f, h * 0.52f),
-                cornerRadius = CornerRadius(5.dp.toPx())
+                topLeft = Offset(w * 0.22f, h * 0.18f),
+                size = Size(cardW, cardH),
+                cornerRadius = cornerRadius
             )
-            // Middle card
+
+            // Subtle drop shadow under front card for depth separation
             drawRoundRect(
-                color = Color(0xFF3B82F6),
-                topLeft = Offset(w * 0.14f, h * 0.26f),
-                size = Size(w * 0.62f, h * 0.52f),
-                cornerRadius = CornerRadius(5.dp.toPx())
+                color = Color.Black.copy(alpha = 0.08f),
+                topLeft = Offset(w * 0.12f, h * 0.30f + 1.dp.toPx()),
+                size = Size(cardW, cardH),
+                cornerRadius = cornerRadius
             )
-            // Front card (darkest, blue gradient)
+
+            // 2. Front card (blue gradient)
             val frontGradient = Brush.linearGradient(
                 colors = listOf(Color(0xFF60A5FA), Color(0xFF1D4ED8)),
-                start = Offset(0f, h * 0.34f),
-                end = Offset(w, h)
+                start = Offset(w * 0.12f, h * 0.30f),
+                end = Offset(w * 0.12f + cardW, h * 0.30f + cardH)
             )
             drawRoundRect(
                 brush = frontGradient,
-                topLeft = Offset(w * 0.06f, h * 0.36f),
-                size = Size(w * 0.62f, h * 0.52f),
-                cornerRadius = CornerRadius(5.dp.toPx())
+                topLeft = Offset(w * 0.12f, h * 0.30f),
+                size = Size(cardW, cardH),
+                cornerRadius = cornerRadius
             )
+
             // White lines on front card
             drawRoundRect(
                 color = Color.White.copy(alpha = 0.9f),
-                topLeft = Offset(w * 0.14f, h * 0.50f),
+                topLeft = Offset(w * 0.20f, h * 0.45f),
                 size = Size(w * 0.38f, h * 0.07f),
                 cornerRadius = CornerRadius(2.dp.toPx())
             )
             drawRoundRect(
                 color = Color.White.copy(alpha = 0.6f),
-                topLeft = Offset(w * 0.14f, h * 0.64f),
+                topLeft = Offset(w * 0.20f, h * 0.59f),
                 size = Size(w * 0.28f, h * 0.07f),
                 cornerRadius = CornerRadius(2.dp.toPx())
             )

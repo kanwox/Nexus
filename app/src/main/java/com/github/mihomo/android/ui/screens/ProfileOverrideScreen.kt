@@ -85,7 +85,7 @@ fun ProfileOverrideScreen(
                                     }
                                 }
                             }
-                            Toast.makeText(context, "覆写设置已保存", Toast.LENGTH_SHORT).show()
+                            CupertinoToast.show("覆写设置已保存")
                             onBack()
                         }
                         .padding(horizontal = 8.dp, vertical = 6.dp)

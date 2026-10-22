@@ -71,6 +71,17 @@ val DarkLoonThemeColors = LoonThemeColors(
 
 val LocalLoonColors = staticCompositionLocalOf { LightLoonThemeColors }
 
+private object NoIndication : androidx.compose.foundation.IndicationNodeFactory {
+    override fun create(
+        interactionSource: androidx.compose.foundation.interaction.InteractionSource
+    ): androidx.compose.ui.Modifier.Node {
+        return object : androidx.compose.ui.Modifier.Node() {}
+    }
+
+    override fun equals(other: Any?): Boolean = other === this
+    override fun hashCode(): Int = -1
+}
+
 @Composable
 fun MihomoTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -129,7 +140,8 @@ fun MihomoTheme(
     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     CompositionLocalProvider(
         LocalLoonColors provides loonColors,
-        androidx.compose.foundation.LocalOverscrollConfiguration provides null
+        androidx.compose.foundation.LocalOverscrollConfiguration provides null,
+        androidx.compose.foundation.LocalIndication provides NoIndication
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
