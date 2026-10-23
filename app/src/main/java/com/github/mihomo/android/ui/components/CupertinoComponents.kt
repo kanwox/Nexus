@@ -681,6 +681,7 @@ data class CupertinoActionSheetItem(
     val onClick: () -> Unit
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CupertinoActionSheet(
     onDismissRequest: () -> Unit,
@@ -690,126 +691,119 @@ fun CupertinoActionSheet(
     cancelText: String = "取消"
 ) {
     val haptic = rememberIosHaptic()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    Dialog(
+    ModalBottomSheet(
         onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        sheetState = sheetState,
+        containerColor = Color.Transparent,
+        contentColor = LoonTextPrimary,
+        tonalElevation = 0.dp,
+        shape = RoundedCornerShape(14.dp),
+        dragHandle = null
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) { onDismissRequest() }
+                .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 10.dp),
-            contentAlignment = Alignment.BottomCenter
+                .padding(horizontal = 10.dp)
+                .padding(top = 8.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { /* prevent click-through */ },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            // Actions container
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = LoonCard,
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                // Actions container
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier.fillMaxWidth()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 380.dp)
-                            .verticalScroll(rememberScrollState()),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        if (!title.isNullOrBlank() || !message.isNullOrBlank()) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                if (!title.isNullOrBlank()) {
-                                    Text(
-                                        text = title,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = LoonTextSecondary,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                                if (!message.isNullOrBlank()) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = message,
-                                        fontSize = 12.sp,
-                                        color = LoonTextMuted,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-                        }
-
-                        actions.forEachIndexed { index, action ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(56.dp)
-                                    .iosHighlightPressable {
-                                        haptic.selection()
-                                        onDismissRequest()
-                                        action.onClick()
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
+                    if (!title.isNullOrBlank() || !message.isNullOrBlank()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (!title.isNullOrBlank()) {
                                 Text(
-                                    text = action.text,
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.Normal,
-                                    color = if (action.isDestructive) RedDanger else IosBlue,
+                                    text = title,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = LoonTextSecondary,
                                     textAlign = TextAlign.Center
                                 )
                             }
-                            if (index < actions.size - 1) {
-                                HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+                            if (!message.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = message,
+                                    fontSize = 12.sp,
+                                    color = LoonTextMuted,
+                                    textAlign = TextAlign.Center
+                                )
                             }
+                        }
+                        HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+                    }
+
+                    actions.forEachIndexed { index, action ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .iosHighlightPressable {
+                                    haptic.selection()
+                                    onDismissRequest()
+                                    action.onClick()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = action.text,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = if (action.isDestructive) RedDanger else IosBlue,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                        if (index < actions.size - 1) {
+                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
                         }
                     }
                 }
+            }
 
-                // Standalone Cancel button
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = LoonCard,
-                    border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .iosHighlightPressable {
-                            haptic.lightTick()
-                            onDismissRequest()
-                        }
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = cancelText,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = IosBlue,
-                            textAlign = TextAlign.Center
-                        )
+            // Standalone Cancel button
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = LoonCard,
+                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .iosHighlightPressable {
+                        haptic.lightTick()
+                        onDismissRequest()
                     }
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = cancelText,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = IosBlue,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
@@ -1404,6 +1398,7 @@ fun CupertinoModalBottomSheet(
             modifier = modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                .imePadding()
                 .padding(bottom = 16.dp)
         ) {
             val showNavBar = title != null || doneText != null
