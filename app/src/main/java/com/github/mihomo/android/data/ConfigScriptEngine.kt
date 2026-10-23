@@ -18,7 +18,7 @@ object ConfigScriptEngine {
     ): String {
         if (targetScriptIds.isNullOrEmpty()) return rawYaml
         val allScripts = ScriptManager.getScripts(context)
-        val scripts = allScripts.filter { targetScriptIds.contains(it.id) }
+        val scripts = allScripts.filter { it.enabled && targetScriptIds.contains(it.id) }
         if (scripts.isEmpty()) return rawYaml
 
         var currentYaml = rawYaml
@@ -134,55 +134,72 @@ object ConfigScriptEngine {
     }
 
     private fun executeWithQuickJS(code: String, jsonStr: String, scriptName: String, gson: Gson): String? {
-        val quickJS = com.quickjs.QuickJS.createRuntime()
-        val jsContext = quickJS.createContext()
-        try {
-            val envPolyfill = """
-                var console = {
-                    log: function() {},
-                    info: function() {},
-                    warn: function() {},
-                    error: function() {}
-                };
-                var module = { exports: {} };
-                var exports = module.exports;
-            """.trimIndent()
-            jsContext.executeVoidScript(envPolyfill, "polyfill.js")
-            jsContext.executeVoidScript(code, scriptName)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit<String?> {
+            val quickJS = com.quickjs.QuickJS.createRuntime()
+            val jsContext = quickJS.createContext()
+            try {
+                val envPolyfill = """
+                    var console = {
+                        log: function() {},
+                        info: function() {},
+                        warn: function() {},
+                        error: function() {}
+                    };
+                    var module = { exports: {} };
+                    var exports = module.exports;
+                """.trimIndent()
+                jsContext.executeVoidScript(envPolyfill, "polyfill.js")
+                jsContext.executeVoidScript(code, scriptName)
 
-            val escapedJson = gson.toJson(jsonStr)
-            val runnerCode = """
-                (function() {
-                    var __input = JSON.parse($escapedJson);
-                    var inProxies = __input.proxies ? JSON.parse(JSON.stringify(__input.proxies)) :
-                                    (__input.Proxies ? JSON.parse(JSON.stringify(__input.Proxies)) :
-                                    (__input.Proxy ? JSON.parse(JSON.stringify(__input.Proxy)) : null));
-                    var inGroups = __input['proxy-groups'] ? JSON.parse(JSON.stringify(__input['proxy-groups'])) : null;
-                    var __fn = (typeof main === 'function') ? main :
-                               (typeof module !== 'undefined' && typeof module.exports === 'function') ? module.exports :
-                               (typeof module !== 'undefined' && module.exports && typeof module.exports.main === 'function') ? module.exports.main :
-                               null;
-                    var __res = __fn ? __fn(__input) : __input;
-                    if (typeof __res === 'undefined' || __res === null) {
-                        __res = __input;
-                    }
-                    if (__res && typeof __res.then === 'function') {
-                        __res = __input;
-                    }
-                    var outProxies = __res.proxies || __res.Proxies || __res.Proxy;
-                    if (inProxies && inProxies.length > 0 && (!outProxies || !Array.isArray(outProxies) || outProxies.length === 0)) {
-                        __res.proxies = inProxies;
-                    }
-                    if (inGroups && inGroups.length > 0 && (!__res['proxy-groups'] || !Array.isArray(__res['proxy-groups']) || __res['proxy-groups'].length === 0)) {
-                        __res['proxy-groups'] = inGroups;
-                    }
-                    return JSON.stringify(__res);
-                })();
-            """.trimIndent()
-            return jsContext.executeStringScript(runnerCode, "runner.js")
+                val escapedJson = gson.toJson(jsonStr)
+                val runnerCode = """
+                    (function() {
+                        var __input = JSON.parse($escapedJson);
+                        var inProxies = __input.proxies ? JSON.parse(JSON.stringify(__input.proxies)) :
+                                        (__input.Proxies ? JSON.parse(JSON.stringify(__input.Proxies)) :
+                                        (__input.Proxy ? JSON.parse(JSON.stringify(__input.Proxy)) : null));
+                        var inGroups = __input['proxy-groups'] ? JSON.parse(JSON.stringify(__input['proxy-groups'])) : null;
+                        var __fn = (typeof main === 'function') ? main :
+                                   (typeof module !== 'undefined' && typeof module.exports === 'function') ? module.exports :
+                                   (typeof module !== 'undefined' && module.exports && typeof module.exports.main === 'function') ? module.exports.main :
+                                   null;
+                        var __res = __fn ? __fn(__input) : __input;
+                        if (typeof __res === 'undefined' || __res === null) {
+                            __res = __input;
+                        }
+                        if (__res && typeof __res.then === 'function') {
+                            __res = __input;
+                        }
+                        if (Array.isArray(__res)) {
+                            __input.proxies = __res;
+                            __res = __input;
+                        }
+                        var outProxies = __res.proxies || __res.Proxies || __res.Proxy;
+                        if (inProxies && inProxies.length > 0 && (!outProxies || !Array.isArray(outProxies) || outProxies.length === 0)) {
+                            __res.proxies = inProxies;
+                        }
+                        if (inGroups && inGroups.length > 0 && (!__res['proxy-groups'] || !Array.isArray(__res['proxy-groups']) || __res['proxy-groups'].length === 0)) {
+                            __res['proxy-groups'] = inGroups;
+                        }
+                        return JSON.stringify(__res);
+                    })();
+                """.trimIndent()
+                jsContext.executeStringScript(runnerCode, "runner.js")
+            } finally {
+                try { jsContext.close() } catch (_: Throwable) {}
+                try { quickJS.close() } catch (_: Throwable) {}
+            }
+        }
+        return try {
+            future.get(RHINO_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            future.cancel(true)
+            throw RuntimeException("脚本执行超时（超过 ${RHINO_TIMEOUT_MS / 1000}s）")
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw (e.cause ?: e)
         } finally {
-            try { jsContext.close() } catch (_: Throwable) {}
-            try { quickJS.close() } catch (_: Throwable) {}
+            executor.shutdownNow()
         }
     }
 

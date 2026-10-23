@@ -477,7 +477,8 @@ fun DashboardScreen(
 
             // Visual Add Shortcut button at bottom when in editing mode
             if (isEditingShortcuts) {
-                val hiddenShortcuts = shortcutOrder
+                val allIds = (shortcutOrder + allShortcutMap.keys).distinct()
+                val hiddenShortcuts = allIds
                     .filter { !visibleShortcuts.contains(it) }
                     .mapNotNull { allShortcutMap[it] }
 
@@ -518,7 +519,7 @@ fun DashboardScreen(
             if (vpnState.error != null) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Surface(
-                    color = Color(0xFFFFEBEE),
+                    color = RedDanger.copy(alpha = 0.12f),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -610,98 +611,94 @@ fun DashboardScreen(
                                 .bounceOverscroll(),
                             contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)
                         ) {
-                            item {
-                                CupertinoGroupedSection {
-                                    filteredNodes.forEachIndexed { index, proxy ->
-                                        val isSelected = proxy.name == activeNodeName
-                                        val nodeEmoji = extractLeadingEmoji(proxy.name)
-                                        val displayName = if (nodeEmoji != null) {
-                                            proxy.name.removePrefix(nodeEmoji).trim()
+                            cupertinoGroupedItems(
+                                items = filteredNodes,
+                                key = { idx, proxy -> "${idx}_${proxy.name}" },
+                                dividerStartIndent = 16.dp
+                            ) { _, proxy ->
+                                val isSelected = proxy.name == activeNodeName
+                                val nodeEmoji = extractLeadingEmoji(proxy.name)
+                                val displayName = if (nodeEmoji != null) {
+                                    proxy.name.removePrefix(nodeEmoji).trim()
+                                } else {
+                                    proxy.name
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .iosPressable {
+                                            haptic.selection()
+                                            onSelectProxy(mainGroupName, proxy)
+                                            showQuickNodeSelector = false
+                                            quickNodeSearchQuery = ""
+                                        }
+                                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        if (nodeEmoji != null) {
+                                            Text(
+                                                text = nodeEmoji,
+                                                fontSize = 18.sp,
+                                                modifier = Modifier.padding(end = 10.dp)
+                                            )
+                                        }
+
+                                        Column {
+                                            Text(
+                                                text = displayName,
+                                                color = LoonTextPrimary,
+                                                fontSize = 15.sp,
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = proxy.type.uppercase(),
+                                                color = LoonTextMuted,
+                                                fontSize = 11.5.sp
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(10.dp))
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (isTestingQuickNodes) {
+                                            CupertinoActivityIndicator(
+                                                modifier = Modifier.size(13.dp),
+                                                color = IosBlue
+                                            )
                                         } else {
-                                            proxy.name
+                                            val (delayColor, delayText) = when {
+                                                proxy.delay == -2 -> Pair(RedDanger, "超时")
+                                                proxy.delay in 1..250 -> Pair(IosGreen, "${proxy.delay} ms")
+                                                proxy.delay in 251..600 -> Pair(IosOrange, "${proxy.delay} ms")
+                                                proxy.delay > 600 -> Pair(RedDanger, "${proxy.delay} ms")
+                                                else -> Pair(LoonTextMuted, "--")
+                                            }
+                                            Text(
+                                                text = delayText,
+                                                color = delayColor,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (proxy.delay > 0 || proxy.delay == -2) FontWeight.SemiBold else FontWeight.Normal
+                                            )
                                         }
 
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .iosPressable {
-                                                    haptic.selection()
-                                                    onSelectProxy(mainGroupName, proxy)
-                                                    showQuickNodeSelector = false
-                                                    quickNodeSearchQuery = ""
-                                                }
-                                                .padding(horizontal = 16.dp, vertical = 11.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                if (nodeEmoji != null) {
-                                                    Text(
-                                                        text = nodeEmoji,
-                                                        fontSize = 18.sp,
-                                                        modifier = Modifier.padding(end = 10.dp)
-                                                    )
-                                                }
-
-                                                Column {
-                                                    Text(
-                                                        text = displayName,
-                                                        color = LoonTextPrimary,
-                                                        fontSize = 15.sp,
-                                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Spacer(modifier = Modifier.height(2.dp))
-                                                    Text(
-                                                        text = proxy.type.uppercase(),
-                                                        color = LoonTextMuted,
-                                                        fontSize = 11.5.sp
-                                                    )
-                                                }
-                                            }
-
-                                            Spacer(modifier = Modifier.width(10.dp))
-
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                if (isTestingQuickNodes) {
-                                                    CupertinoActivityIndicator(
-                                                        modifier = Modifier.size(13.dp),
-                                                        color = IosBlue
-                                                    )
-                                                } else {
-                                                    val (delayColor, delayText) = when {
-                                                        proxy.delay == -2 -> Pair(RedDanger, "超时")
-                                                        proxy.delay in 1..250 -> Pair(IosGreen, "${proxy.delay} ms")
-                                                        proxy.delay in 251..600 -> Pair(IosOrange, "${proxy.delay} ms")
-                                                        proxy.delay > 600 -> Pair(RedDanger, "${proxy.delay} ms")
-                                                        else -> Pair(LoonTextMuted, "--")
-                                                    }
-                                                    Text(
-                                                        text = delayText,
-                                                        color = delayColor,
-                                                        fontSize = 12.sp,
-                                                        fontWeight = if (proxy.delay > 0 || proxy.delay == -2) FontWeight.SemiBold else FontWeight.Normal
-                                                    )
-                                                }
-
-                                                if (isSelected) {
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Icon(
-                                                        imageVector = Icons.Default.Check,
-                                                        contentDescription = null,
-                                                        tint = IosBlue,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        if (index < filteredNodes.lastIndex) {
-                                            CupertinoIndentedDivider(startIndent = if (nodeEmoji != null) 44.dp else 16.dp)
+                                        if (isSelected) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = IosBlue,
+                                                modifier = Modifier.size(18.dp)
+                                            )
                                         }
                                     }
                                 }
@@ -715,7 +712,8 @@ fun DashboardScreen(
             // Add Hidden Shortcut ModalBottomSheet
             // =========================================================================
             if (showAddShortcutSheet) {
-                val hiddenShortcuts = shortcutOrder
+                val allIds = (shortcutOrder + allShortcutMap.keys).distinct()
+                val hiddenShortcuts = allIds
                     .filter { !visibleShortcuts.contains(it) }
                     .mapNotNull { allShortcutMap[it] }
 
@@ -901,8 +899,8 @@ fun DashboardScreenPreview() {
             activeNodeName = "Hong Kong 01",
             totalNodes = 48,
             totalRules = 3520,
-            visibleShortcuts = setOf("nodes", "profiles", "logs", "requests", "dns", "rules", "routing", "network_share"),
-            shortcutOrder = listOf("nodes", "profiles", "logs", "requests", "dns", "rules", "routing", "network_share"),
+            visibleShortcuts = setOf("nodes", "profiles", "core_logs", "request_logs", "dns", "rules", "routing", "network_share"),
+            shortcutOrder = listOf("nodes", "profiles", "core_logs", "request_logs", "dns", "rules", "routing", "network_share"),
             onToggleVpn = {},
             onModeSelected = {},
             onSelectProxy = { _, _ -> },

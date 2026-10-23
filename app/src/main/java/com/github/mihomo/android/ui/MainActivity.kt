@@ -542,21 +542,7 @@ class MainActivity : ComponentActivity() {
                         ClashCore.ensureCoreLoaded(this@MainActivity)
                     }
                     val curTime = System.currentTimeMillis()
-                    val delays = ClashCore.healthCheckGroupNative(targetGroup) { pName, d ->
-                        lifecycleScope.launch(Dispatchers.Main) {
-                            if (d > 0 || d == -2) {
-                                delayCache[pName] = d
-                                delayCache["$targetGroup:$pName"] = d
-                                if (d > 0) {
-                                    nodeLastTestedTimes[pName] = curTime
-                                }
-                            }
-                            if (pName == nodeName) {
-                                testingNodes = testingNodes - nodeName
-                            }
-                        }
-                    }
-                    val singleDelay = delays[nodeName] ?: -2
+                    val singleDelay = ClashCore.testProxyDelayNative(nodeName, targetGroup)
                     withContext(Dispatchers.Main) {
                         if (singleDelay > 0 || singleDelay == -2) {
                             delayCache[nodeName] = singleDelay
@@ -639,6 +625,7 @@ class MainActivity : ComponentActivity() {
         // Dynamic refresh when VPN is connected
         LaunchedEffect(vpnState.status) {
             if (vpnState.status == VpnState.Status.RUNNING) {
+                triggerAutoSpeedTest()
                 while (isActive) {
                     refreshProxiesOnline()
                     delay(3000)
@@ -746,6 +733,12 @@ class MainActivity : ComponentActivity() {
                             onModeSelected = { newMode ->
                                 tunnelMode = newMode
                                 settingsManager.tunnelMode = newMode.value
+                                if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
+                                    lifecycleScope.launch(Dispatchers.IO) {
+                                        ClashCore.reloadActiveConfig(this@MainActivity)
+                                        refreshProxiesOnline()
+                                    }
+                                }
                             },
                             onSelectProxy = { group, proxy -> handleSelectProxy(mainProxyGroupName, proxy) },
                             onHealthCheck = { group -> runSpeedTestForGroup(group) },
@@ -848,6 +841,9 @@ class MainActivity : ComponentActivity() {
                         onTunStackChanged = { stack ->
                             tunStack = stack
                             settingsManager.tunStack = stack
+                            if (vpnState.status == VpnState.Status.RUNNING) {
+                                MihomoVpnService.restart(this@MainActivity)
+                            }
                         },
                         onBootOnStartupChanged = { enabled ->
                             bootOnStartup = enabled
@@ -856,11 +852,9 @@ class MainActivity : ComponentActivity() {
                         onAllowLanChanged = { enabled ->
                             allowLan = enabled
                             settingsManager.allowLan = enabled
-                            if (vpnState.status == VpnState.Status.RUNNING) {
+                            if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
                                 lifecycleScope.launch(Dispatchers.IO) {
-                                    val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
-                                    val conf = ConfigManager.prepareConfig(this@MainActivity, active?.file)
-                                    ClashCore.load(conf)
+                                    ClashCore.reloadActiveConfig(this@MainActivity)
                                 }
                             }
                         },
@@ -1006,6 +1000,12 @@ class MainActivity : ComponentActivity() {
                                         selectedProfileId = profile.id
                                         settingsManager.selectedProfileId = profile.id
                                         parseActiveProfile()
+                                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                ClashCore.reloadActiveConfig(this@MainActivity)
+                                                refreshProxiesOnline()
+                                            }
+                                        }
                                         CupertinoToast.show("已生效配置: ${profile.name}")
                                     },
                                     onAddSubscription = { name, url ->
@@ -1023,6 +1023,12 @@ class MainActivity : ComponentActivity() {
                                         reloadProfiles()
                                         if (selectedProfileId == profile.id) {
                                             parseActiveProfile()
+                                            if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
+                                                lifecycleScope.launch(Dispatchers.IO) {
+                                                    ClashCore.reloadActiveConfig(this@MainActivity)
+                                                    refreshProxiesOnline()
+                                                }
+                                            }
                                         }
                                     },
                                     onRefreshSubscription = { profile ->
@@ -1031,6 +1037,12 @@ class MainActivity : ComponentActivity() {
                                                 val res = ConfigManager.updateSubscription(this@MainActivity, profile.id, profile.name, profile.url)
                                                 if (res.isSuccess) {
                                                     reloadProfiles()
+                                                    if (selectedProfileId == profile.id && (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded)) {
+                                                        withContext(Dispatchers.IO) {
+                                                            ClashCore.reloadActiveConfig(this@MainActivity)
+                                                            refreshProxiesOnline()
+                                                        }
+                                                    }
                                                     CupertinoToast.show("订阅更新成功")
                                                 } else {
                                                     CupertinoToast.show("更新失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
@@ -1039,8 +1051,19 @@ class MainActivity : ComponentActivity() {
                                         }
                                     },
                                     onDeleteProfile = { profile ->
+                                        val wasSelected = selectedProfileId == profile.id
                                         ConfigManager.deleteProfile(this@MainActivity, profile.id)
+                                        if (wasSelected) {
+                                            selectedProfileId = null
+                                            settingsManager.selectedProfileId = null
+                                        }
                                         reloadProfiles()
+                                        if (wasSelected && (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded)) {
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                ClashCore.reloadActiveConfig(this@MainActivity)
+                                                refreshProxiesOnline()
+                                            }
+                                        }
                                     },
                                     onImportLocalFile = {
                                         profileImportLauncher.launch("*/*")
@@ -1085,6 +1108,12 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onScriptsChanged = {
                                         parseActiveProfile()
+                                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
+                                            lifecycleScope.launch(Dispatchers.IO) {
+                                                ClashCore.reloadActiveConfig(this@MainActivity)
+                                                refreshProxiesOnline()
+                                            }
+                                        }
                                     }
                                 )
                             }
@@ -1098,6 +1127,9 @@ class MainActivity : ComponentActivity() {
                                     onModeChanged = { mode ->
                                         perAppMode = mode
                                         settingsManager.perAppProxyMode = mode
+                                        if (vpnState.status == VpnState.Status.RUNNING) {
+                                            MihomoVpnService.restart(this@MainActivity)
+                                        }
                                     },
                                     onTogglePackage = { pkg ->
                                         val updated = if (selectedPackages.contains(pkg)) {
@@ -1107,10 +1139,16 @@ class MainActivity : ComponentActivity() {
                                         }
                                         selectedPackages = updated
                                         settingsManager.selectedPackages = updated
+                                        if (vpnState.status == VpnState.Status.RUNNING) {
+                                            MihomoVpnService.restart(this@MainActivity)
+                                        }
                                     },
                                     onUpdateSelectedPackages = { updated ->
                                         selectedPackages = updated
                                         settingsManager.selectedPackages = updated
+                                        if (vpnState.status == VpnState.Status.RUNNING) {
+                                            MihomoVpnService.restart(this@MainActivity)
+                                        }
                                     }
                                 )
                             }
@@ -1133,11 +1171,9 @@ class MainActivity : ComponentActivity() {
                                     onFakeIpEnabledChanged = { enabled ->
                                         fakeIpEnabled = enabled
                                         settingsManager.fakeIpEnabled = enabled
-                                        if (vpnState.status == VpnState.Status.RUNNING) {
+                                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
                                             lifecycleScope.launch(Dispatchers.IO) {
-                                                val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
-                                                val conf = ConfigManager.prepareConfig(this@MainActivity, active?.file)
-                                                ClashCore.load(conf)
+                                                ClashCore.reloadActiveConfig(this@MainActivity)
                                             }
                                         }
                                     },
@@ -1156,11 +1192,9 @@ class MainActivity : ComponentActivity() {
                                     onAllowLanChanged = { enabled ->
                                         allowLan = enabled
                                         settingsManager.allowLan = enabled
-                                        if (vpnState.status == VpnState.Status.RUNNING) {
+                                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
                                             lifecycleScope.launch(Dispatchers.IO) {
-                                                val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
-                                                val conf = ConfigManager.prepareConfig(this@MainActivity, active?.file)
-                                                ClashCore.load(conf)
+                                                ClashCore.reloadActiveConfig(this@MainActivity)
                                             }
                                         }
                                     },

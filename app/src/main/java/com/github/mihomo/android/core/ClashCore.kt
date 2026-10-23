@@ -81,33 +81,35 @@ object ClashCore {
         init(context)
     }
 
-    suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
-        if (isCoreLoaded) {
-            notifyNetworkChanged(context)
-            return@withContext true
-        }
+    suspend fun reloadActiveConfig(context: Context): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             init(context)
             val settings = com.github.mihomo.android.data.SettingsManager(context)
             val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
             val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
-            if (activeProfile != null && activeProfile.file.exists()) {
-                val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, activeProfile.file)
-                val res = load(configFile)
-                if (res.isSuccess) {
-                    isCoreLoaded = true
-                    runCatching {
-                        val allSaved = settings.getAllSelectedNodes()
-                        allSaved.forEach { (gName, sNode) ->
-                            patchSelector(gName, sNode)
-                        }
+            val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, activeProfile?.file)
+            val res = load(configFile)
+            if (res.isSuccess) {
+                isCoreLoaded = true
+                runCatching {
+                    val allSaved = settings.getAllSelectedNodes()
+                    allSaved.forEach { (gName, sNode) ->
+                        patchSelector(gName, sNode)
                     }
-                    notifyNetworkChanged(context)
-                    return@withContext true
                 }
+                notifyNetworkChanged(context)
+                return@withContext true
             }
             false
         }.getOrDefault(false)
+    }
+
+    suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
+        if (isCoreLoaded) {
+            notifyNetworkChanged(context)
+            return@withContext true
+        }
+        reloadActiveConfig(context)
     }
 
     fun getCoreVersion(): String {
@@ -151,11 +153,9 @@ object ClashCore {
             override fun querySocketUid(protocol: Int, source: String, target: String): Int {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && cm != null) {
                     try {
-                        val srcParts = source.split(":")
-                        val dstParts = target.split(":")
-                        if (srcParts.size == 2 && dstParts.size == 2) {
-                            val srcAddr = InetSocketAddress(srcParts[0], srcParts[1].toInt())
-                            val dstAddr = InetSocketAddress(dstParts[0], dstParts[1].toInt())
+                        val srcAddr = parseSocketAddress(source)
+                        val dstAddr = parseSocketAddress(target)
+                        if (srcAddr != null && dstAddr != null) {
                             return cm.getConnectionOwnerUid(protocol, srcAddr, dstAddr)
                         }
                     } catch (_: Throwable) {
@@ -164,6 +164,14 @@ object ClashCore {
                 return 0
             }
         })
+    }
+
+    private fun parseSocketAddress(endpoint: String): InetSocketAddress? {
+        val lastColon = endpoint.lastIndexOf(':')
+        if (lastColon <= 0 || lastColon == endpoint.lastIndex) return null
+        val hostPart = endpoint.substring(0, lastColon).removeSurrounding("[", "]")
+        val port = endpoint.substring(lastColon + 1).toIntOrNull() ?: return null
+        return InetSocketAddress(hostPart, port)
     }
 
     fun stopTun() {

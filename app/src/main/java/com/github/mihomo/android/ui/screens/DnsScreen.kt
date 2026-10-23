@@ -150,67 +150,50 @@ fun DnsScreen(
                     }
                 }
             } else {
-                item {
-                    CupertinoGroupedSection(
-                        header = if (searchQuery.isNotBlank()) {
-                            "搜索结果 (${filteredRecords.size})"
-                        } else {
-                            "解析记录 (${filteredRecords.size})"
-                        }
-                    ) {
-                        filteredRecords.forEachIndexed { index, record ->
-                            val formattedTime = remember(record.timestamp) {
-                                timeFormat.format(Date(record.timestamp))
-                            }
+                val sectionHeader = if (searchQuery.isNotBlank()) {
+                    "搜索结果 (${filteredRecords.size})"
+                } else {
+                    "解析记录 (${filteredRecords.size})"
+                }
 
-                            DnsRecordCell(
-                                record = record,
-                                formattedTime = formattedTime,
-                                onClick = {
-                                    haptic.lightTick()
-                                    activeDetailRecord = record
-                                }
-                            )
-
-                            if (index < filteredRecords.lastIndex) {
-                                CupertinoIndentedDivider(startIndent = 16.dp)
-                            }
-                        }
+                cupertinoGroupedItems(
+                    items = filteredRecords,
+                    header = sectionHeader,
+                    dividerStartIndent = 16.dp
+                ) { _, record ->
+                    val formattedTime = remember(record.timestamp) {
+                        timeFormat.format(Date(record.timestamp))
                     }
+
+                    DnsRecordCell(
+                        record = record,
+                        formattedTime = formattedTime,
+                        onClick = {
+                            haptic.lightTick()
+                            activeDetailRecord = record
+                        }
+                    )
                 }
             }
         }
     }
 
-    // Detail Inspector: Pure iOS Bottom Sheet Presentation (Replacing Android-style alert dialog)
+    // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRecord != null) {
         val rec = activeDetailRecord!!
         val formattedTime = remember(rec.timestamp) { timeFormat.format(Date(rec.timestamp)) }
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRecord = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(
-                    color = LoonTextMuted.copy(alpha = 0.4f)
-                )
-            }
+            title = "解析详情"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = "解析详情",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Domain Card
                 Text(

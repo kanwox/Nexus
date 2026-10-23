@@ -79,10 +79,7 @@ fun ProfileOverrideScreen(
                                 val profiles = ConfigManager.getProfiles(context)
                                 val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
                                 if (activeProfile?.id == profile.id && ClashCore.isCoreLoaded) {
-                                    runCatching {
-                                        val configFile = ConfigManager.prepareConfig(context, updated.file)
-                                        ClashCore.load(configFile)
-                                    }
+                                    ClashCore.reloadActiveConfig(context)
                                 }
                             }
                             CupertinoToast.show("覆写设置已保存")
@@ -157,9 +154,9 @@ fun ProfileOverrideScreen(
                             val isChecked = selectedScriptIds.contains(script.id)
                             CupertinoCell(
                                 title = script.name,
-                                subtitle = script.type.uppercase(),
+                                subtitle = if (script.enabled) script.type.uppercase() else "${script.type.uppercase()} · 已在脚本中心停用",
                                 icon = Icons.Default.Javascript,
-                                iconBg = if (isChecked) IosBlue else Color(0xFF8E8E93),
+                                iconBg = if (isChecked && script.enabled) IosBlue else Color(0xFF8E8E93),
                                 trailing = {
                                     CupertinoSwitch(
                                         checked = isChecked,

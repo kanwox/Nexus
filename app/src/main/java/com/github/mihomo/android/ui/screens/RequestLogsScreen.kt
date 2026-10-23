@@ -209,112 +209,81 @@ fun RequestLogsScreen(
                     }
                 }
             } else {
-                item {
-                    val sectionHeader = when {
-                        searchQuery.isNotBlank() -> "搜索结果 (${filteredRecords.size})"
-                        selectedFilter == RequestFilter.ACTIVE -> "活跃连接 (${filteredRecords.size})"
-                        selectedFilter == RequestFilter.PROXY -> "代理连接 (${filteredRecords.size})"
-                        selectedFilter == RequestFilter.DIRECT -> "直连记录 (${filteredRecords.size})"
-                        activeCount > 0 -> "全部记录 (${filteredRecords.size} · 活跃 $activeCount)"
-                        else -> "全部记录 (${filteredRecords.size})"
+                val sectionHeader = when {
+                    searchQuery.isNotBlank() -> "搜索结果 (${filteredRecords.size})"
+                    selectedFilter == RequestFilter.ACTIVE -> "活跃连接 (${filteredRecords.size})"
+                    selectedFilter == RequestFilter.PROXY -> "代理连接 (${filteredRecords.size})"
+                    selectedFilter == RequestFilter.DIRECT -> "直连记录 (${filteredRecords.size})"
+                    activeCount > 0 -> "全部记录 (${filteredRecords.size} · 活跃 $activeCount)"
+                    else -> "全部记录 (${filteredRecords.size})"
+                }
+
+                cupertinoGroupedItems(
+                    items = filteredRecords,
+                    header = sectionHeader,
+                    key = { _, record -> record.id },
+                    dividerStartIndent = 16.dp
+                ) { _, record ->
+                    val formattedTime = remember(record.timestamp) {
+                        timeFormat.format(Date(record.timestamp))
                     }
 
-                    CupertinoGroupedSection(
-                        header = sectionHeader
-                    ) {
-                        filteredRecords.forEachIndexed { index, record ->
-                            val formattedTime = remember(record.timestamp) {
-                                timeFormat.format(Date(record.timestamp))
-                            }
-
-                            RequestRecordCell(
-                                record = record,
-                                formattedTime = formattedTime,
-                                onClick = {
-                                    haptic.lightTick()
-                                    activeDetailRecord = record
-                                }
-                            )
-
-                            if (index < filteredRecords.lastIndex) {
-                                CupertinoIndentedDivider(startIndent = 16.dp)
-                            }
+                    RequestRecordCell(
+                        record = record,
+                        formattedTime = formattedTime,
+                        onClick = {
+                            haptic.lightTick()
+                            activeDetailRecord = record
                         }
-                    }
+                    )
                 }
             }
         }
     }
 
-    // Detail Inspector: Pure iOS ModalBottomSheet (Half-modal with native drag handle)
+    // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRecord != null) {
         val rec = activeDetailRecord!!
         val formattedDetailTime = remember(rec.timestamp) {
             detailTimeFormat.format(Date(rec.timestamp))
         }
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRecord = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(
-                    color = LoonTextMuted.copy(alpha = 0.4f)
-                )
+            title = "请求详情",
+            trailingAction = {
+                if (rec.isActive) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(IosGreen)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "活跃中",
+                            color = IosGreen,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "已关闭",
+                        color = LoonTextMuted,
+                        fontSize = 12.sp
+                    )
+                }
             }
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                // Header with status indicator
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "请求详情",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
-                    if (rec.isActive) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(IosGreen.copy(alpha = 0.12f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(IosGreen)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "活跃中",
-                                color = IosGreen,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    } else {
-                        Text(
-                            text = "已关闭",
-                            color = LoonTextMuted,
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Card 1: 目标与网络
                 Text(

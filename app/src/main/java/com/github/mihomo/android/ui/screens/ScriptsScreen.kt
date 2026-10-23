@@ -335,27 +335,16 @@ fun ScriptsScreen(
             Triple("从预设模板创建", "去广告、节点规范化与重定向", Icons.Default.AutoAwesome)
         )
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { showActionMenuSheet = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            title = "添加脚本"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = "添加脚本",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-
                 actions.forEachIndexed { index, (title, desc, icon) ->
                     Row(
                         modifier = Modifier
@@ -399,20 +388,17 @@ fun ScriptsScreen(
     // Create Empty Script BottomSheet
     if (showCreateDialog) {
         var nameInput by remember { mutableStateOf("") }
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { showCreateDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+            title = "新建脚本"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text("新建脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 CupertinoTextField(
                     value = nameInput,
                     onValueChange = { nameInput = it },
@@ -425,12 +411,11 @@ fun ScriptsScreen(
                         val name = nameInput.ifBlank { "Untitled_Script" }
                         val defaultCode = """
                             // Nexus Script Studio
-                            // Type: http-response
-                            function main(params) {
-                                return params;
+                            function main(config) {
+                                return config;
                             }
                         """.trimIndent()
-                        ScriptManager.saveLocalScript(context, name, "", "http-response", defaultCode)
+                        ScriptManager.saveLocalScript(context, name, "", "rule", defaultCode)
                         refresh()
                         showCreateDialog = false
                         CupertinoToast.show("脚本创建成功")
@@ -448,20 +433,17 @@ fun ScriptsScreen(
         var nameInput by remember { mutableStateOf("") }
         var isDownloading by remember { mutableStateOf(false) }
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { if (!isDownloading) showImportUrlDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+            title = "从链接导入脚本"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text("从链接导入脚本", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = LoonTextPrimary)
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 CupertinoTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
@@ -480,7 +462,7 @@ fun ScriptsScreen(
                         if (urlInput.isNotBlank()) {
                             isDownloading = true
                             scope.launch {
-                                val res = ScriptManager.downloadScript(context, urlInput.trim(), nameInput.trim(), "", "http-response")
+                                val res = ScriptManager.downloadScript(context, urlInput.trim(), nameInput.trim(), "", "rule")
                                 isDownloading = false
                                 if (res.isSuccess) {
                                     refresh()
@@ -503,53 +485,60 @@ fun ScriptsScreen(
     // Preset Templates BottomSheet (Flat list, NO box-in-a-box)
     if (showTemplateDialog) {
         val templates = listOf(
-            Triple("分流与规则重写模板", "自动为指定域名或路径重定向或注入代理规则", """
-                // 智能分流重写脚本
+            Triple("分流与规则重写模板", "自动为配置注入高优先级自定义分流规则", """
+                // 智能分流规则注入脚本
                 function main(config) {
+                    var customRules = [
+                        "DOMAIN-SUFFIX,openai.com,DIRECT",
+                        "DOMAIN-KEYWORD,adservice,REJECT"
+                    ];
+                    config.rules = customRules.concat(config.rules || []);
                     return config;
                 }
             """.trimIndent()),
-            Triple("节点智能重命名模板", "去除节点前后缀无用 Emoji 与广告标签", """
+            Triple("节点智能重命名模板", "去除节点前后缀无用括号与广告标签并同步策略组", """
                 // 节点名称规范化脚本
-                function main(proxies) {
-                    return proxies.map(p => {
-                        p.name = p.name.replace(/\[.*?\]|\(.*?\)/g, "").trim();
+                function main(config) {
+                    if (!Array.isArray(config.proxies)) return config;
+                    var renameMap = {};
+                    config.proxies = config.proxies.map(function(p) {
+                        var oldName = p.name;
+                        var newName = oldName.replace(/\[.*?\]|\(.*?\)/g, "").trim() || oldName;
+                        renameMap[oldName] = newName;
+                        p.name = newName;
                         return p;
                     });
+                    if (Array.isArray(config["proxy-groups"])) {
+                        config["proxy-groups"].forEach(function(g) {
+                            if (Array.isArray(g.proxies)) {
+                                g.proxies = g.proxies.map(function(n) { return renameMap[n] || n; });
+                            }
+                        });
+                    }
+                    return config;
                 }
             """.trimIndent()),
-            Triple("URL 302 重定向模板", "将目标请求重定向至本地或代理镜像", """
-                // HTTP 302 重定向
-                function handleRequest(req) {
-                    if (req.url.indexOf("example.com") !== -1) {
-                        return { status: 302, headers: { Location: "https://redirected.com" } };
-                    }
-                    return req;
+            Triple("DNS 与 Hosts 映射重写模板", "将指定域名固定映射到自定义 IP 或镜像地址", """
+                // 自定义 Hosts 与 DNS 覆写脚本
+                function main(config) {
+                    config.hosts = Object.assign({}, config.hosts || {}, {
+                        "example.com": "127.0.0.1"
+                    });
+                    return config;
                 }
             """.trimIndent())
         )
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { showTemplateDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            title = "选择预设模板"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = "选择预设模板",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-
                 templates.forEachIndexed { idx, (tplName, tplDesc, tplCode) ->
                     Row(
                         modifier = Modifier
@@ -589,59 +578,45 @@ fun ScriptsScreen(
     // Cupertino Code Studio Editor Modal
     if (editingScript != null) {
         val target = editingScript!!
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { editingScript = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+            modifier = Modifier.fillMaxHeight(0.92f),
+            title = target.name,
+            leadingAction = {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable { editingScript = null }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Text("取消", color = LoonTextSecondary, fontSize = 15.sp)
+                }
+            },
+            trailingAction = {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable {
+                            haptic.selection()
+                            ScriptManager.updateScriptCode(context, target, scriptCodeInput)
+                            refresh()
+                            editingScript = null
+                            CupertinoToast.show("代码已保存")
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            }
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.92f)
+                    .fillMaxSize()
                     .padding(horizontal = 16.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 16.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { editingScript = null }
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                    ) {
-                        Text("取消", color = LoonTextSecondary, fontSize = 15.sp)
-                    }
+                Spacer(modifier = Modifier.height(6.dp))
 
-                    Text(
-                        text = target.name,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable {
-                                haptic.selection()
-                                ScriptManager.updateScriptCode(context, target, scriptCodeInput)
-                                refresh()
-                                editingScript = null
-                                CupertinoToast.show("代码已保存")
-                            }
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                    ) {
-                        Text("保存", color = IosBlue, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Editor Canvas
+                // Editor Canvas (Pure Cupertino BasicTextField, no Material3 OutlinedTextField)
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = LoonBg,
@@ -650,22 +625,17 @@ fun ScriptsScreen(
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
-                    OutlinedTextField(
+                    androidx.compose.foundation.text.BasicTextField(
                         value = scriptCodeInput,
                         onValueChange = { scriptCodeInput = it },
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(4.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedBorderColor = Color.Transparent,
-                            unfocusedBorderColor = Color.Transparent
-                        ),
+                            .padding(14.dp),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(IosBlue),
                         textStyle = androidx.compose.ui.text.TextStyle(
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp,
+                            fontSize = 12.5.sp,
+                            lineHeight = 18.sp,
                             color = LoonTextPrimary
                         )
                     )

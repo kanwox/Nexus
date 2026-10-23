@@ -319,27 +319,16 @@ fun SettingsScreen(
             Triple("gvisor", "gVisor", "用户态网络协议栈隔离"),
             Triple("system", "System", "操作系统原生网络栈")
         )
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { showTunDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            title = "TUN 协议栈"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = "TUN 协议栈",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-
                 stacks.forEachIndexed { index, (stackKey, label, desc) ->
                     val isSelected = tunStack.equals(stackKey, ignoreCase = true)
                     Row(
@@ -397,27 +386,16 @@ fun SettingsScreen(
             Triple("error", "ERROR", "仅记录严重崩溃与错误"),
             Triple("debug", "DEBUG", "输出底层全部调试报文")
         )
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { showLogLevelDialog = false },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            title = "日志详细程度"
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                Text(
-                    text = "日志详细程度",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-
                 levels.forEachIndexed { index, (lvlKey, label, desc) ->
                     val isSelected = currentLogLevel.equals(lvlKey, ignoreCase = true)
                     Row(
@@ -428,6 +406,11 @@ fun SettingsScreen(
                                 currentLogLevel = lvlKey
                                 settingsManager.logLevel = lvlKey
                                 showLogLevelDialog = false
+                                if (ClashCore.isCoreLoaded) {
+                                    scope.launch(Dispatchers.IO) {
+                                        ClashCore.reloadActiveConfig(context)
+                                    }
+                                }
                             }
                             .padding(horizontal = 8.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -479,6 +462,9 @@ fun SettingsScreen(
             onConfirm = {
                 showResetDialog = false
                 scope.launch {
+                    if (com.github.mihomo.android.service.MihomoVpnService.vpnState.value.status != com.github.mihomo.android.service.VpnState.Status.STOPPED) {
+                        com.github.mihomo.android.service.MihomoVpnService.stop(context)
+                    }
                     withContext(Dispatchers.IO) { ClashCore.reset() }
                     CupertinoToast.show("核心已重置")
                 }

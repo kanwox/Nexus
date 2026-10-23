@@ -52,6 +52,7 @@ class MihomoVpnService : VpnService() {
         private const val TAG = "MihomoVpnService"
         const val ACTION_START = "com.github.mihomo.android.service.START"
         const val ACTION_STOP = "com.github.mihomo.android.service.STOP"
+        const val ACTION_RESTART = "com.github.mihomo.android.service.RESTART"
         private const val NOTIFICATION_CHANNEL_ID = "mihomo_vpn_service"
         private const val NOTIFICATION_ID = 1001
 
@@ -69,6 +70,15 @@ class MihomoVpnService : VpnService() {
                     context.startService(intent)
                 }
             }.onFailure { Log.e(TAG, "Failed to start VPN service", it) }
+        }
+
+        fun restart(context: Context) {
+            if (_vpnState.value.status != VpnState.Status.RUNNING) return
+            val intent = Intent(context, MihomoVpnService::class.java).apply {
+                action = ACTION_RESTART
+            }
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "Failed to deliver restart command to VPN service", it) }
         }
 
         fun stop(context: Context) {
@@ -96,8 +106,20 @@ class MihomoVpnService : VpnService() {
         when (intent?.action) {
             ACTION_START -> startVpn()
             ACTION_STOP -> stopVpn()
+            ACTION_RESTART -> restartVpn()
         }
         return START_NOT_STICKY
+    }
+
+    private fun restartVpn() {
+        startJob?.cancel()
+        startJob = null
+        trafficMonitorJob?.cancel()
+        runCatching { ClashCore.stopTun() }
+        runCatching { vpnInterface?.close() }
+        vpnInterface = null
+        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPED, error = null)
+        startVpn()
     }
 
     private fun startVpn() {

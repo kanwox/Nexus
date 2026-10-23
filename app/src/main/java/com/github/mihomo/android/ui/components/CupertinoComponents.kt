@@ -12,6 +12,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -279,6 +281,80 @@ fun CupertinoGroupedSection(
     }
 }
 
+/**
+ * Virtualized iOS Inset Grouped section for [LazyColumn].
+ * Renders each item as an independent lazy row so lists with thousands of rules/logs/apps
+ * never compose all rows upfront.
+ */
+fun <T> LazyListScope.cupertinoGroupedItems(
+    items: List<T>,
+    header: String? = null,
+    footer: String? = null,
+    key: ((index: Int, item: T) -> Any)? = null,
+    dividerStartIndent: Dp = 16.dp,
+    itemContent: @Composable (index: Int, item: T) -> Unit
+) {
+    if (!header.isNullOrBlank()) {
+        item(contentType = "cupertino_group_header") {
+            Text(
+                text = header.uppercase(),
+                color = LoonTextSecondary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.3.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(start = 14.dp, bottom = 6.dp)
+            )
+        }
+    }
+
+    val lastIdx = items.lastIndex
+    itemsIndexed(
+        items = items,
+        key = key,
+        contentType = { _, _ -> "cupertino_group_row" }
+    ) { index, item ->
+        val isFirst = index == 0
+        val isLast = index == lastIdx
+        val shape = when {
+            isFirst && isLast -> RoundedCornerShape(14.dp)
+            isFirst -> RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp)
+            isLast -> RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
+            else -> RoundedCornerShape(0.dp)
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .clip(shape)
+                .background(LoonCard)
+        ) {
+            itemContent(index, item)
+            if (!isLast) {
+                CupertinoIndentedDivider(startIndent = dividerStartIndent)
+            }
+        }
+    }
+
+    if (!footer.isNullOrBlank()) {
+        item(contentType = "cupertino_group_footer") {
+            Text(
+                text = footer,
+                color = LoonTextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(start = 14.dp, top = 6.dp, end = 14.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun CupertinoCell(
     modifier: Modifier = Modifier,
@@ -497,7 +573,7 @@ fun CupertinoNavBar(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     showBackButton: Boolean = false,
-    backLabel: String? = "返回",
+    backLabel: String? = AppStrings.get("back", LocalAppLanguage.current),
     onBack: (() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null
 ) {

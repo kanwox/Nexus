@@ -199,57 +199,60 @@ fun LogsScreen(
                     }
                 }
             } else {
-                item {
-                    val sectionHeader = when {
-                        searchQuery.isNotBlank() -> "搜索结果 (${filteredLogs.size})"
-                        selectedFilter == LogFilter.ISSUES -> "异常日志 (${filteredLogs.size})"
-                        selectedFilter == LogFilter.INFO -> "信息日志 (${filteredLogs.size})"
-                        selectedFilter == LogFilter.DEBUG -> "调试日志 (${filteredLogs.size})"
-                        else -> "运行日志 (${filteredLogs.size})"
+                val sectionHeader = when {
+                    searchQuery.isNotBlank() -> "搜索结果 (${filteredLogs.size})"
+                    selectedFilter == LogFilter.ISSUES -> "异常日志 (${filteredLogs.size})"
+                    selectedFilter == LogFilter.INFO -> "信息日志 (${filteredLogs.size})"
+                    selectedFilter == LogFilter.DEBUG -> "调试日志 (${filteredLogs.size})"
+                    else -> "运行日志 (${filteredLogs.size})"
+                }
+                val displayLogs = filteredLogs.asReversed()
+
+                cupertinoGroupedItems(
+                    items = displayLogs,
+                    header = sectionHeader,
+                    dividerStartIndent = 16.dp
+                ) { _, entry ->
+                    val formattedTime = remember(entry.timestamp) {
+                        timeFormat.format(Date(entry.timestamp))
                     }
 
-                    CupertinoGroupedSection(
-                        header = sectionHeader
-                    ) {
-                        val displayLogs = remember(filteredLogs) { filteredLogs.asReversed() }
-                        displayLogs.forEachIndexed { index, entry ->
-                            val formattedTime = remember(entry.timestamp) {
-                                timeFormat.format(Date(entry.timestamp))
-                            }
-
-                            LogEntryCell(
-                                entry = entry,
-                                formattedTime = formattedTime,
-                                onClick = {
-                                    haptic.lightTick()
-                                    activeDetailLog = entry
-                                }
-                            )
-
-                            if (index < displayLogs.lastIndex) {
-                                CupertinoIndentedDivider(startIndent = 16.dp)
-                            }
+                    LogEntryCell(
+                        entry = entry,
+                        formattedTime = formattedTime,
+                        onClick = {
+                            haptic.lightTick()
+                            activeDetailLog = entry
                         }
-                    }
+                    )
                 }
             }
         }
     }
 
-    // Detail Inspector: Pure iOS ModalBottomSheet (Half-modal with drag handle)
+    // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailLog != null) {
         val entry = activeDetailLog!!
         val fullTimeStr = remember(entry.timestamp) {
             fullTimeFormat.format(Date(entry.timestamp))
         }
 
-        ModalBottomSheet(
+        val (lvlColor, lvlText) = when (entry.level.lowercase()) {
+            "error" -> Pair(RedDanger, "ERROR")
+            "warning", "warn" -> Pair(IosOrange, "WARNING")
+            "debug" -> Pair(LoonTextMuted, "DEBUG")
+            else -> Pair(IosBlue, "INFO")
+        }
+
+        CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailLog = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(
-                    color = LoonTextMuted.copy(alpha = 0.4f)
+            title = "日志详情",
+            trailingAction = {
+                Text(
+                    text = lvlText,
+                    color = lvlColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
         ) {
@@ -257,38 +260,9 @@ fun LogsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                // Header with level tag
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "日志详情",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
-                    val (lvlColor, lvlText) = when (entry.level.lowercase()) {
-                        "error" -> Pair(RedDanger, "ERROR")
-                        "warning", "warn" -> Pair(IosOrange, "WARNING")
-                        "debug" -> Pair(LoonTextMuted, "DEBUG")
-                        else -> Pair(IosBlue, "INFO")
-                    }
-
-                    Text(
-                        text = lvlText,
-                        color = lvlColor,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Card 1: 发生时间
                 Text(

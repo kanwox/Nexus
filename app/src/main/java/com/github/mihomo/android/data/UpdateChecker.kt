@@ -56,32 +56,33 @@ object UpdateChecker {
                 .header("User-Agent", "Nexus-Android/$CURRENT_VERSION")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext CheckResult.Error("HTTP ${response.code}")
-            }
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext CheckResult.Error("HTTP ${response.code}")
+                }
 
-            val body = response.body?.string()
-                ?: return@withContext CheckResult.Error("Empty response")
+                val body = response.body?.string()
+                    ?: return@withContext CheckResult.Error("Empty response")
 
-            val json = JSONObject(body)
-            val tagName = json.optString("tag_name", "")
-            val releaseName = json.optString("name", tagName)
-            val releaseNotes = json.optString("body", "").take(1000)
-            val htmlUrl = json.optString("html_url", "")
+                val json = JSONObject(body)
+                val tagName = json.optString("tag_name", "")
+                val releaseName = json.optString("name", tagName)
+                val releaseNotes = json.optString("body", "").take(1000)
+                val htmlUrl = json.optString("html_url", "")
 
-            val latestVersion = tagName.trimStart('v', 'V')
-            val isNewer = isVersionNewer(latestVersion, CURRENT_VERSION)
+                val latestVersion = tagName.trimStart('v', 'V')
+                val isNewer = isVersionNewer(latestVersion, CURRENT_VERSION)
 
-            CheckResult.Success(
-                UpdateInfo(
-                    tagName = tagName,
-                    releaseName = releaseName,
-                    releaseNotes = releaseNotes,
-                    htmlUrl = htmlUrl,
-                    isNewer = isNewer
+                CheckResult.Success(
+                    UpdateInfo(
+                        tagName = tagName,
+                        releaseName = releaseName,
+                        releaseNotes = releaseNotes,
+                        htmlUrl = htmlUrl,
+                        isNewer = isNewer
+                    )
                 )
-            )
+            }
         } catch (e: Exception) {
             CheckResult.Error(e.message ?: "Unknown error")
         }
@@ -89,20 +90,49 @@ object UpdateChecker {
 
     /**
      * Returns true if [candidate] is a strictly newer semantic version than [current].
-     * Compares major.minor.patch numerically; non-numeric parts are treated as 0.
+     * Compares major.minor.patch numerically; a stable release (no pre-release suffix)
+     * is considered newer than a pre-release of the same base version (e.g. 1.0.3 > 1.0.3-Beta.3).
      */
-    private fun isVersionNewer(candidate: String, current: String): Boolean {
-        val c = parseVersion(candidate)
-        val cur = parseVersion(current)
-        for (i in 0 until maxOf(c.size, cur.size)) {
-            val cv = c.getOrElse(i) { 0 }
-            val curv = cur.getOrElse(i) { 0 }
+    internal fun isVersionNewer(candidate: String, current: String): Boolean {
+        val (cBase, cPre) = splitPreRelease(candidate)
+        val (curBase, curPre) = splitPreRelease(current)
+
+        val cNums = parseVersionNumbers(cBase)
+        val curNums = parseVersionNumbers(curBase)
+        for (i in 0 until maxOf(cNums.size, curNums.size)) {
+            val cv = cNums.getOrElse(i) { 0 }
+            val curv = curNums.getOrElse(i) { 0 }
             if (cv > curv) return true
             if (cv < curv) return false
         }
-        return false
+
+        // Same base version: stable > pre-release
+        if (cPre.isEmpty() && curPre.isNotEmpty()) return true
+        if (cPre.isNotEmpty() && curPre.isEmpty()) return false
+        if (cPre.isEmpty() && curPre.isEmpty()) return false
+
+        val cPreNums = parseVersionNumbers(cPre)
+        val curPreNums = parseVersionNumbers(curPre)
+        for (i in 0 until maxOf(cPreNums.size, curPreNums.size)) {
+            val cv = cPreNums.getOrElse(i) { 0 }
+            val curv = curPreNums.getOrElse(i) { 0 }
+            if (cv > curv) return true
+            if (cv < curv) return false
+        }
+        return cPre.compareTo(curPre, ignoreCase = true) > 0
     }
 
-    private fun parseVersion(v: String): List<Int> =
-        v.split(".").map { it.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 0 }
+    private fun splitPreRelease(v: String): Pair<String, String> {
+        val dashIdx = v.indexOf('-')
+        return if (dashIdx >= 0) {
+            v.substring(0, dashIdx) to v.substring(dashIdx + 1)
+        } else {
+            v to ""
+        }
+    }
+
+    private fun parseVersionNumbers(v: String): List<Int> =
+        v.split(".", "-").mapNotNull { part ->
+            part.filter { ch -> ch.isDigit() }.takeIf { it.isNotEmpty() }?.toIntOrNull()
+        }
 }

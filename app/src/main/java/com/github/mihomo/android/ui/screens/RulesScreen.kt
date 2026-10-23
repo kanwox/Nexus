@@ -222,39 +222,34 @@ fun RulesScreen(
                     }
                 }
             } else {
-                item {
-                    val sectionHeader = when {
-                        searchQuery.isNotBlank() -> "搜索结果 (${filteredRules.size})"
-                        selectedFilter == RuleFilter.PROXY -> "代理规则 (${filteredRules.size})"
-                        selectedFilter == RuleFilter.DIRECT -> "直连规则 (${filteredRules.size})"
-                        selectedFilter == RuleFilter.REJECT -> "拦截规则 (${filteredRules.size})"
-                        totalRules > filteredRules.size -> "全部规则 (${filteredRules.size} / 共 $totalRules 条)"
-                        else -> "分流规则 (${filteredRules.size})"
-                    }
+                val sectionHeader = when {
+                    searchQuery.isNotBlank() -> "搜索结果 (${filteredRules.size})"
+                    selectedFilter == RuleFilter.PROXY -> "代理规则 (${filteredRules.size})"
+                    selectedFilter == RuleFilter.DIRECT -> "直连规则 (${filteredRules.size})"
+                    selectedFilter == RuleFilter.REJECT -> "拦截规则 (${filteredRules.size})"
+                    totalRules > filteredRules.size -> "全部规则 (${filteredRules.size} / 共 $totalRules 条)"
+                    else -> "分流规则 (${filteredRules.size})"
+                }
 
-                    CupertinoGroupedSection(
-                        header = sectionHeader
-                    ) {
-                        filteredRules.forEachIndexed { listIndex, indexedRule ->
-                            RuleCell(
-                                indexedRule = indexedRule,
-                                onClick = {
-                                    haptic.lightTick()
-                                    activeDetailRule = indexedRule
-                                }
-                            )
-
-                            if (listIndex < filteredRules.lastIndex) {
-                                CupertinoIndentedDivider(startIndent = 16.dp)
-                            }
+                cupertinoGroupedItems(
+                    items = filteredRules,
+                    header = sectionHeader,
+                    key = { _, indexedRule -> indexedRule.index },
+                    dividerStartIndent = 16.dp
+                ) { _, indexedRule ->
+                    RuleCell(
+                        indexedRule = indexedRule,
+                        onClick = {
+                            haptic.lightTick()
+                            activeDetailRule = indexedRule
                         }
-                    }
+                    )
                 }
             }
         }
     }
 
-    // Detail Inspector: Pure iOS ModalBottomSheet (Half-modal with drag handle)
+    // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRule != null) {
         val indexed = activeDetailRule!!
         val rule = indexed.rule
@@ -274,13 +269,15 @@ fun RulesScreen(
             }
         }
 
-        ModalBottomSheet(
+        CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRule = null },
-            containerColor = LoonCard,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            dragHandle = {
-                BottomSheetDefaults.DragHandle(
-                    color = LoonTextMuted.copy(alpha = 0.4f)
+            title = "规则详情",
+            trailingAction = {
+                Text(
+                    text = "#${indexed.index + 1} 优先级",
+                    color = IosBlue,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         ) {
@@ -288,31 +285,9 @@ fun RulesScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 24.dp)
+                    .padding(bottom = 8.dp)
             ) {
-                // Header with priority badge
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "规则详情",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = LoonTextPrimary
-                    )
-
-                    Text(
-                        text = "#${indexed.index + 1} 优先级",
-                        color = IosBlue,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Card 1: 完整语法 (Raw Rule Syntax)
                 Text(

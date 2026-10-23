@@ -211,33 +211,28 @@ fun AppRoutingScreen(
                         }
                     }
                 } else {
-                    item {
-                        val headerText = if (searchQuery.isNotBlank()) {
-                            "搜索结果 (${displayApps.size})"
-                        } else {
-                            "应用列表 (${selectedPackages.size} / ${displayApps.size})"
-                        }
+                    val headerText = if (searchQuery.isNotBlank()) {
+                        "搜索结果 (${displayApps.size})"
+                    } else {
+                        "应用列表 (${selectedPackages.size} / ${displayApps.size})"
+                    }
 
-                        CupertinoGroupedSection(
-                            header = headerText
-                        ) {
-                            displayApps.forEachIndexed { index, app ->
-                                val isSelected = selectedPackages.contains(app.packageName)
+                    cupertinoGroupedItems(
+                        items = displayApps,
+                        header = headerText,
+                        key = { _, app -> app.packageName },
+                        dividerStartIndent = 64.dp
+                    ) { _, app ->
+                        val isSelected = selectedPackages.contains(app.packageName)
 
-                                AppItemCell(
-                                    app = app,
-                                    isSelected = isSelected,
-                                    onClick = {
-                                        haptic.lightTick()
-                                        onTogglePackage(app.packageName)
-                                    }
-                                )
-
-                                if (index < displayApps.lastIndex) {
-                                    CupertinoIndentedDivider(startIndent = 64.dp)
-                                }
+                        AppItemCell(
+                            app = app,
+                            isSelected = isSelected,
+                            onClick = {
+                                haptic.lightTick()
+                                onTogglePackage(app.packageName)
                             }
-                        }
+                        )
                     }
                 }
             }
