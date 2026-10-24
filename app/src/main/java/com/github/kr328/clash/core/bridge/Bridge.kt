@@ -10,6 +10,7 @@ import kotlinx.coroutines.CompletableDeferred
 import java.io.File
 
 @Keep
+@Suppress("unused")
 object Bridge {
     private const val TAG = "Bridge"
     private var isInitialized = false
@@ -62,7 +63,7 @@ object Bridge {
         val assetFiles = listOf("geoip.metadb", "Country.mmdb", "geosite.dat")
         for (fileName in assetFiles) {
             val destFile = targetDir.resolve(fileName)
-            if (!destFile.exists() || destFile.length() == 0L) {
+            if (!destFile.exists() || (destFile.length() == 0L)) {
                 runCatching {
                     context.assets.open(fileName).use { input ->
                         destFile.outputStream().use { output ->

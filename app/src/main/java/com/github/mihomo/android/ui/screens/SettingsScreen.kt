@@ -1,18 +1,15 @@
 package com.github.mihomo.android.ui.screens
 
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
+import androidx.core.net.toUri
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -100,7 +97,7 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .padding(top = 20.dp, bottom = 12.dp)
+                .padding(top = 8.dp, bottom = 8.dp)
                 .heightIn(min = 40.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -493,7 +490,7 @@ fun SettingsScreen(
             onConfirm = {
                 showUpdateDialog = false
                 if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
-                    val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(result.info.htmlUrl))
+                    val browserIntent = Intent(Intent.ACTION_VIEW, result.info.htmlUrl.toUri())
                     runCatching { context.startActivity(browserIntent) }
                 }
             },

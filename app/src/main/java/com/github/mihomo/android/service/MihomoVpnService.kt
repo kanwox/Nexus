@@ -37,7 +37,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
 
 data class VpnState(
     val status: Status = Status.STOPPED,
@@ -74,11 +73,7 @@ class MihomoVpnService : VpnService() {
                 action = ACTION_START
             }
             runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
+                context.startForegroundService(intent)
             }.onFailure { Log.e(TAG, "Failed to start VPN service", it) }
         }
 
@@ -166,7 +161,7 @@ class MihomoVpnService : VpnService() {
 
         private fun handlePhysicalNetworkChanged(network: Network) {
             if (_vpnState.value.status != VpnState.Status.RUNNING) return
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
             if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
             ClashCore.notifyNetworkChanged(this@MihomoVpnService)
@@ -176,7 +171,7 @@ class MihomoVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val pm = getSystemService(POWER_SERVICE) as? PowerManager
         isScreenInteractive = pm?.isInteractive ?: true
         registerScreenStateReceiver()
         registerPhysicalNetworkCallback()
@@ -450,25 +445,26 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                getString(R.string.notification_channel_name),
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = getString(R.string.notification_channel_desc)
-                setShowBadge(false)
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            getString(R.string.notification_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = getString(R.string.notification_channel_desc)
+            setShowBadge(false)
         }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
     }
 
+    @Suppress("SameParameterValue")
     private fun startForegroundServiceNotification(content: String) {
         lastNotificationContent = content
         val notification = buildNotification(content)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }

@@ -2,6 +2,7 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -34,6 +35,7 @@ data class RewriteRule(
     val enabled: Boolean = true
 )
 
+@Suppress("unused")
 object ScriptManager {
     private const val TAG = "ScriptManager"
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
@@ -126,7 +128,7 @@ object ScriptManager {
 
     private fun saveScripts(context: Context, list: List<ScriptItem>) {
         val raw = json.encodeToString(list)
-        getScriptsPrefs(context).edit().putString("script_items", raw).apply()
+        getScriptsPrefs(context).edit { putString("script_items", raw) }
         // Script content changes the parsed profile, whose cache key does not include it.
         ProfileParser.clearCache()
     }
@@ -323,7 +325,7 @@ object ScriptManager {
 
     private fun saveRewrites(context: Context, list: List<RewriteRule>) {
         val raw = json.encodeToString(list)
-        getScriptsPrefs(context).edit().putString("rewrite_rules", raw).apply()
+        getScriptsPrefs(context).edit { putString("rewrite_rules", raw) }
         ProfileParser.clearCache()
     }
 

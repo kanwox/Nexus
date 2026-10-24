@@ -34,6 +34,16 @@ class DnsAndRequestRepositoryTest {
         // 4. Resolution with upstream server
         DnsRepository.parseFromLog("[DNS] dns.google --> [8.8.8.8 8.8.4.4] from 223.5.5.5")
         assertEquals("8.8.8.8, 8.8.4.4", DnsRepository.findIpForDomain("dns.google"))
+
+        // 5. Mihomo format with comma before upstream protocol server
+        DnsRepository.parseFromLog("[DNS] example.com --> [93.184.216.34], from udp://8.8.8.8:53")
+        assertEquals("93.184.216.34", DnsRepository.findIpForDomain("example.com"))
+
+        // 6. Pending resolve updated by result
+        DnsRepository.parseFromLog("[DNS] resolve cloudflare.com A from udp://223.5.5.5:53")
+        assertEquals("Resolving...", DnsRepository.findIpForDomain("cloudflare.com"))
+        DnsRepository.parseFromLog("[DNS] cloudflare.com --> 104.16.132.229, 15ms")
+        assertEquals("104.16.132.229", DnsRepository.findIpForDomain("cloudflare.com"))
     }
 
     @Test

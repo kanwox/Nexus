@@ -19,6 +19,7 @@ fun Traffic.trafficSpeedDownload(): String {
     return formatPackedTraffic(this and 0xFFFFFFFFL, isSpeed = true)
 }
 
+@Suppress("unused")
 fun Traffic.trafficTotal(): String {
     val upload = rawUpload()
     val download = rawDownload()
@@ -86,6 +87,7 @@ fun trafficString(bytes: Long): String {
     }
 }
 
+@Suppress("unused")
 fun formatSpeedString(bytesPerSec: Long): String {
     val b = if (bytesPerSec < 0) 0L else bytesPerSec
     return when {

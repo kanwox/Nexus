@@ -8,9 +8,9 @@
 
 1. **纯正 iOS 物理微交互与手势**：
    - **禁止墨水涟漪 (No Ripple)**：全局禁用 Material Design 水波纹（`NoIndication`）。可点击卡片、单元格与按钮统一使用 `iosPressable`（微弹性缩放默认 `0.982f`）或 `iosHighlightPressable`。
-   - **精准触感反馈 (Taptic Engine Discipline)**：
-     - **离散动作触发触感**：按钮点击、开关切换、列表项选择、分段控件切换、清空输入、长按拖拽激活等离散交互，统一使用 `rememberIosHaptic()`（`lightTick`、`selection`、`mediumImpact`）。
-     - **连续滚动回弹保持静默**：所有可滚动容器（`verticalScroll`、`LazyColumn`）必须附加 `.bounceOverscroll()` 实现 iOS `UIScrollView` 橡皮筋阻尼视觉回弹，但**严禁在普通滚动触顶/触底回弹时触发震动**（遵循 iOS HIG 原生规范，防止触觉疲劳与线性马达无效耗电）。
+   - **精准触感反馈 (Taptic Engine Discipline - 极简克制原则)**：
+     - **全局仅保留两处高优先级触感**：仅在「点击底部导航栏切换标签 (`navTabSelection()`)」与「开启/关闭 VPN 开关 (`vpnToggleImpact()`)」两处核心操作时触发触感反馈。
+     - **其他所有点击与滚动保持静默**：普通列表项、卡片、按钮、次级开关、弹窗菜单以及滚动容器橡皮筋阻尼回弹一律保持静默（严禁触发多余震动），杜绝触觉疲劳与冗余耗电。
    - **iOS 边缘侧滑返回 (Interactive Pop Gesture)**：二级子页面统一支持屏幕左边缘（`32.dp` 响应区）水平右滑跟手返回与弹簧回弹。
 
 2. **严禁混用 Android / Material 原生视觉控件**：
@@ -75,7 +75,8 @@
 ## 3. 标准组件使用规范 (Component Patterns)
 
 ### 1) 导航栏 (`CupertinoNavBar` & 一级大标题)
-- **一级主标签页（策略、设置）**：采用 iOS Large Title 风格（`32.sp`，`FontWeight.Bold`）。
+- **一级主标签页（仪表盘、策略/节点、配置/设置）**：采用 iOS Large Title 风格（`32.sp`，`FontWeight.Bold`）。
+  - **顶部间距标准**：外层容器附带 `.statusBarsPadding()`，内层大标题头部紧凑对齐状态栏下方（`top = 8.dp, bottom = 8~10.dp`），严禁设置 `20.dp` 以上过大间距导致界面整体下坠凹陷。
 - **二级子页面**：统一采用标准居中标题导航栏 `CupertinoNavBar`：
 ```kotlin
 CupertinoNavBar(

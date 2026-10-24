@@ -13,7 +13,7 @@ data class ParsedRule(
     val type: String,
     val payload: String,
     val target: String,
-    val noResolve: Boolean = false
+    val noResolve: Boolean = false,
 )
 
 data class ParsedProfile(
@@ -23,7 +23,7 @@ data class ParsedProfile(
     val totalNodes: Int = 0,
     val totalRules: Int = 0,
     val activeNode: String = "",
-    val rules: List<ParsedRule> = emptyList()
+    val rules: List<ParsedRule> = emptyList(),
 )
 
 object ProfileParser {
@@ -44,7 +44,7 @@ object ProfileParser {
         val parsed: ParsedProfile
     ) {
         fun isValid(lm: Long, len: Long, hash: Int, sKey: String): Boolean =
-            lastModified == lm && length == len && savedNodesHash == hash && scriptKey == sKey
+            (lastModified == lm) && (length == len) && (savedNodesHash == hash) && (scriptKey == sKey)
     }
     private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, CacheEntry>()
 
@@ -53,7 +53,7 @@ object ProfileParser {
     }
 
     fun parse(file: File?, savedNodes: Map<String, String> = emptyMap(), context: Context? = null): ParsedProfile {
-        if (file == null || !file.exists()) {
+        if ((file == null) || !file.exists()) {
             return ParsedProfile()
         }
 
@@ -64,12 +64,12 @@ object ProfileParser {
 
         val activeProfile = if (context != null) {
             ConfigManager.getProfiles(context).find {
-                it.file.name == file.name || it.file.absolutePath == file.absolutePath || it.id == file.nameWithoutExtension
+                (it.file.name == file.name) || (it.file.absolutePath == file.absolutePath) || (it.id == file.nameWithoutExtension)
             }
         } else null
         val resolvedScriptIds = if (context != null && activeProfile != null && activeProfile.scriptEnabled) {
             activeProfile.scriptIds.ifEmpty {
-                ScriptManager.getScripts(context).filter { it.enabled }.map { it.id }
+                ScriptManager.getScripts(context).asSequence().filter { it.enabled }.map { it.id }.toList()
             }
         } else emptyList()
         val scriptKey = resolvedScriptIds.sorted().joinToString(",")
@@ -142,7 +142,7 @@ object ProfileParser {
                             includeAll = includeAll
                         )
 
-                        val proxies = memberNames.mapNotNull { mName ->
+                        val proxies = memberNames.map { mName ->
                             val mType = proxyMap[mName] ?: if (mName in listOf("DIRECT", "REJECT", "GLOBAL")) mName else "Group"
                             val isSubGroup = rawGroupNames.contains(mName)
                             Proxy(
@@ -264,8 +264,9 @@ object ProfileParser {
                 return@forEach
             }
             if (lower.startsWith("proxy-groups:") || lower.startsWith("proxy group:")) {
-                if (currentName != null) {
-                    proxyMap[currentName!!] = currentType ?: "Proxy"
+                val cName = currentName
+                if (cName != null) {
+                    proxyMap[cName] = currentType ?: "Proxy"
                     currentName = null
                 }
                 inProxies = false
@@ -281,8 +282,9 @@ object ProfileParser {
 
             if (inProxies) {
                 if (trimmed.startsWith("- name:") || trimmed.startsWith("- {name:")) {
-                    if (currentName != null) {
-                        proxyMap[currentName!!] = currentType ?: "Proxy"
+                    val cName = currentName
+                    if (cName != null) {
+                        proxyMap[cName] = currentType ?: "Proxy"
                     }
                     val namePart = if (trimmed.startsWith("- name:")) {
                         trimmed.removePrefix("- name:").trim()
@@ -313,10 +315,12 @@ object ProfileParser {
                     currentGroupFilter = trimmed.removePrefix("filter:").trim().trim('"', '\'')
                 } else if (trimmed.startsWith("include-all:") || trimmed.startsWith("include-all-proxies:")) {
                     currentGroupIncludeAll = trimmed.substringAfter(":").trim().trim('"', '\'').toBoolean()
-                } else if (trimmed.startsWith("icon:") && currentGroupName != null) {
-                    groupIcons[currentGroupName!!] = trimmed.removePrefix("icon:").trim().trim('"', '\'')
-                } else if (trimmed.startsWith("img-url:") && currentGroupName != null) {
-                    groupIcons[currentGroupName!!] = trimmed.removePrefix("img-url:").trim().trim('"', '\'')
+                } else if (trimmed.startsWith("icon:")) {
+                    val gName = currentGroupName
+                    if (gName != null) groupIcons[gName] = trimmed.removePrefix("icon:").trim().trim('"', '\'')
+                } else if (trimmed.startsWith("img-url:")) {
+                    val gName = currentGroupName
+                    if (gName != null) groupIcons[gName] = trimmed.removePrefix("img-url:").trim().trim('"', '\'')
                 } else if (trimmed.startsWith("- ") && !trimmed.startsWith("- name:")) {
                     val pName = trimmed.removePrefix("- ").trim().trim('"', '\'')
                     if (pName.isNotBlank() && currentGroupName != null) {
@@ -324,7 +328,7 @@ object ProfileParser {
                         currentGroupProxies.add(Proxy(name = pName, title = pName, type = pType, delay = -1))
                     }
                 }
-            } else if (!inProxies && !inGroups && content.contains("rules:")) {
+            } else if (content.contains("rules:")) {
                 if (trimmed.startsWith("- ")) {
                     val ruleContent = trimmed.removePrefix("- ").trim().trim('"', '\'')
                     val parts = ruleContent.split(",").map { it.trim() }
@@ -340,8 +344,9 @@ object ProfileParser {
             }
         }
 
-        if (currentName != null) {
-            proxyMap[currentName!!] = currentType ?: "Proxy"
+        val cName = currentName
+        if (cName != null) {
+            proxyMap[cName] = currentType ?: "Proxy"
         }
         finalizeGroup()
 

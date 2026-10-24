@@ -1,6 +1,5 @@
 package com.github.mihomo.android.ui.screens
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -541,7 +540,7 @@ private fun DetailRow(
                 textAlign = androidx.compose.ui.text.style.TextAlign.End,
                 modifier = Modifier.weight(1f, fill = false)
             )
-            if (showCopy && onCopy != null) {
+            if (showCopy && (onCopy != null)) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.Default.ContentCopy,

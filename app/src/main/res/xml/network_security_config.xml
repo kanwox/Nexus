@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<network-security-config>
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
     <!-- Cleartext HTTP is permitted for subscriptions, remote scripts, and local proxies. -->
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration" />
     <!-- The loopback exception is kept for local tooling only. -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>

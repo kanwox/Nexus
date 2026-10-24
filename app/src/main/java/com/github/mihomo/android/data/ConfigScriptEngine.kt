@@ -90,6 +90,7 @@ object ConfigScriptEngine {
      * Execute a single script in sandbox preview mode against [rawYaml] (or fallback sample config),
      * capturing console output, structural diffs (nodes/groups/rules), execution time, and output YAML.
      */
+    @Suppress("unused")
     fun previewScript(
         rawYaml: String,
         code: String,
@@ -190,7 +191,7 @@ object ConfigScriptEngine {
                     if (k != null) finalMap[k.toString()] = v
                 }
                 if (!resultJson.isNullOrBlank() && resultJson != "undefined" && resultJson != "null") {
-                    val modifiedMap = gson.fromJson(resultJson, Map::class.java) as? Map<*, *>
+                    val modifiedMap = gson.fromJson(resultJson, Map::class.java)
                     if (modifiedMap != null && modifiedMap.isNotEmpty()) {
                         for ((k, v) in modifiedMap) {
                             if (k != null) finalMap[k.toString()] = v
@@ -321,7 +322,7 @@ object ConfigScriptEngine {
                     val configMap: Any? = runCatching { yamlParser.load<Any>(currentYaml) }.getOrNull()
                     if (configMap != null) {
                         val jsonStr = gson.toJson(configMap)
-                        var resultJson: String? = null
+                        var resultJson: String?
 
                         // 1. Primary Engine: QuickJS (Full ES2020+ support for ?., ??, { ...obj }, for-of-const, arrow functions, etc.)
                         try {
@@ -339,8 +340,8 @@ object ConfigScriptEngine {
                         }
 
                         if (!resultJson.isNullOrBlank() && resultJson != "undefined" && resultJson != "null") {
-                            val modifiedMap = gson.fromJson(resultJson, Map::class.java) as? Map<*, *>
-                            if (modifiedMap != null && modifiedMap.isNotEmpty()) {
+                            val modifiedMap = gson.fromJson(resultJson, Map::class.java)
+                            if (!modifiedMap.isNullOrEmpty()) {
                                 // Merge defense: ensure proxies and proxy-groups are NEVER dropped
                                 val finalMap = LinkedHashMap<String, Any?>()
                                 if (configMap is Map<*, *>) {
@@ -502,7 +503,7 @@ object ConfigScriptEngine {
         }
         return try {
             future.get(RHINO_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
-        } catch (e: java.util.concurrent.TimeoutException) {
+        } catch (_: java.util.concurrent.TimeoutException) {
             future.cancel(true)
             throw RuntimeException("脚本执行超时（超过 ${RHINO_TIMEOUT_MS / 1000}s）")
         } catch (e: java.util.concurrent.ExecutionException) {
@@ -539,7 +540,7 @@ object ConfigScriptEngine {
             rhinoCtx.optimizationLevel = -1
             rhinoCtx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
             rhinoCtx.instructionObserverThreshold = 10_000
-            rhinoCtx.setClassShutter(org.mozilla.javascript.ClassShutter { false })
+            rhinoCtx.setClassShutter { false }
 
             val scope = rhinoCtx.initSafeStandardObjects()
             val envPolyfill = """

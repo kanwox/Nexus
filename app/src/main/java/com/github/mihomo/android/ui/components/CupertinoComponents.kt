@@ -8,7 +8,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -27,6 +26,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.text.BasicTextField
+import kotlin.time.Duration.Companion.milliseconds
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -83,25 +83,35 @@ fun rememberIosHaptic(): IosHapticHelper {
 }
 
 class IosHapticHelper(private val view: android.view.View) {
+    // Generic click haptics are cancelled per design requirements (silent)
     fun lightTick() {
-        runCatching {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-        }
+        // Silent
     }
 
     fun mediumImpact() {
-        runCatching {
-            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-        }
+        // Silent
     }
 
     fun impact() {
-        mediumImpact()
+        // Silent
     }
 
     fun selection() {
+        // Silent
+    }
+
+    // Only explicitly authorized interaction haptics:
+    /** Haptic feedback for switching bottom navigation bar tabs */
+    fun navTabSelection() {
         runCatching {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+    }
+
+    /** Haptic feedback for starting / stopping VPN toggle */
+    fun vpnToggleImpact() {
+        runCatching {
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
     }
 }
@@ -813,6 +823,7 @@ fun CupertinoActionSheet(
     }
 }
 
+@Suppress("unused")
 @Composable
 fun <T> CupertinoSelectDialog(
     title: String,
@@ -922,7 +933,7 @@ fun <T> CupertinoSegmentedControl(
             .background(LoonTertiaryBg)
             .padding(2.dp)
     ) {
-        val totalWidth = maxWidth
+        val totalWidth = this.maxWidth
         val segmentWidth = totalWidth / items.size
 
         // iOS spring sliding indicator (Single physical Thumb)
@@ -1503,6 +1514,7 @@ object CupertinoToast {
     }
 }
 
+@Suppress("unused")
 fun Context.showCupertinoToast(
     message: String,
     icon: ImageVector? = null,
@@ -1524,7 +1536,7 @@ fun CupertinoToastHost(
     LaunchedEffect(toastData?.id) {
         val current = toastData ?: return@LaunchedEffect
         haptic.lightTick()
-        delay(current.durationMs)
+        delay(current.durationMs.milliseconds)
         CupertinoToast.dismiss()
     }
 

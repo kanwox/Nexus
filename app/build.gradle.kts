@@ -23,7 +23,7 @@ val releaseStoreFile = signingValue("releaseStoreFile", "RELEASE_STORE_FILE")
 val releaseKeyAlias = signingValue("releaseKeyAlias", "RELEASE_KEY_ALIAS") ?: "nexus"
 val releaseKeyPassword = signingValue("releaseKeyPassword", "RELEASE_KEY_PASSWORD") ?: "34FbaR6f58zuReU98JlHb96fsMU65Szz"
 val releaseStorePassword = signingValue("releaseStorePassword", "RELEASE_STORE_PASSWORD") ?: "34FbaR6f58zuReU98JlHb96fsMU65Szz"
-val hasReleaseSigning = releaseStoreFile != null && releaseStoreFile.exists()
+val hasReleaseSigning = (releaseStoreFile != null) && releaseStoreFile.exists()
 
 android {
     namespace = "com.github.mihomo.android"

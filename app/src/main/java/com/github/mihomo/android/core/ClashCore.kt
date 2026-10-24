@@ -20,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -84,6 +85,7 @@ object ClashCore {
         Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
     }
 
+    @Suppress("unused")
     suspend fun ensureInitialized(context: Context) = withContext(Dispatchers.IO) {
         init(context)
     }
@@ -135,7 +137,7 @@ object ClashCore {
             val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
             Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
             Bridge.nativeLoad(deferred, configDir)
-            withTimeout(LOAD_TIMEOUT_MS) { deferred.await() }
+            withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
             isCoreLoaded = true
             if (profileId != null) {
                 loadedProfileId = profileId
@@ -206,6 +208,7 @@ object ClashCore {
         return runCatching { Bridge.nativeQueryTrafficTotal() }.getOrDefault(0L)
     }
 
+    @Suppress("unused")
     fun queryTunnelState(): TunnelState {
         return runCatching {
             val res = Bridge.nativeQueryTunnelState()
@@ -265,7 +268,7 @@ object ClashCore {
                 val reported = mutableSetOf<String>()
                 pollJob = launch {
                     while (isActive && !deferred.isCompleted) {
-                        delay(120L)
+                        delay(120L.milliseconds)
                         val currentGroup = queryGroup(name)
                         val proxies = currentGroup?.proxies ?: emptyList()
                         proxies.forEach { p ->
@@ -281,7 +284,7 @@ object ClashCore {
                     }
                 }
             }
-            withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
+            withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
                 deferred.await()
             }
         } catch (_: Throwable) {
@@ -317,7 +320,7 @@ object ClashCore {
         if (isProxyItselfGroup) {
             val deferred = getOrStartGroupHealthCheck(proxyName)
             try {
-                withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
+                withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
                     deferred.await()
                 }
             } catch (_: Throwable) {
@@ -347,9 +350,9 @@ object ClashCore {
         val deferred = getOrStartGroupHealthCheck(targetGroup)
 
         try {
-            withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
+            withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
                 while (isActive && !deferred.isCompleted) {
-                    delay(80L)
+                    delay(80L.milliseconds)
                     val curGroup = queryGroup(targetGroup)
                     val curProxy = curGroup?.proxies?.find { it.name == proxyName }
                     if (curProxy != null && curProxy.delay in 1..65534 && curProxy.delay != initialDelay) {
@@ -384,6 +387,7 @@ object ClashCore {
         -2
     }
 
+    @Suppress("unused")
     fun healthCheckAll() {
         runCatching { Bridge.nativeHealthCheckAll() }
     }
@@ -395,7 +399,3 @@ object ClashCore {
         runCatching { Bridge.nativeReset() }
     }
 }
-
-
-
-

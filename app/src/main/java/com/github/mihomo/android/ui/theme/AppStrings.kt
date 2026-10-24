@@ -81,7 +81,7 @@ object AppStrings {
         "confirm" to "确定",
         "cancel" to "取消",
         "dialog_ok" to "知道了",
-        "language_updated" to "语言设置已更新"
+        "language_updated" to "语言设置已更新",
     )
 
     private val en = mapOf(
@@ -317,7 +317,7 @@ object AppStrings {
         "profile_override_title" to "配置覆写",
         "override_remote" to "远程订阅配置",
         "override_local" to "本地配置文件",
-        "override_desc" to "开启后，此配置将由选中的脚本进行动态规则与策略组复写。",
+        "override_desc" to "选中的覆写脚本将在底层核心加载时自动注入，动态覆写该配置的分流规则与策略组。",
         "override_go_scripts" to "前往脚本管理",
         "override_scripts_hint" to "导入、新建或编辑脚本代码",
         "override_select_scripts" to "选择要绑定的脚本",
@@ -506,7 +506,7 @@ object AppStrings {
     fun get(key: String, languageCode: String = "SYSTEM"): String {
         val effectiveLang = if (languageCode == "SYSTEM") {
             val sys = Locale.getDefault().language
-            if (sys == "zh" || sys == "ru") sys else "en"
+            if ((sys == "zh") || (sys == "ru")) sys else "en"
         } else {
             languageCode
         }

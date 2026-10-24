@@ -29,7 +29,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.github.mihomo.android.ui.theme.LocalAppLanguage
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -919,7 +919,6 @@ class MainActivity : ComponentActivity() {
                             onHealthCheck = { group -> runSpeedTestForGroup(group) },
                             onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },
                             onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
-                            onNavigateToLogs = { currentSubScreen = SubScreen.LOGS },
                             onNavigateToRules = { currentSubScreen = SubScreen.RULES },
                             onNavigateToDns = { currentSubScreen = SubScreen.DNS },
                             onNavigateToRequests = { currentSubScreen = SubScreen.REQUESTS },

@@ -1,8 +1,6 @@
 package com.github.mihomo.android.ui.screens
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -35,6 +33,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextOverflow
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.zIndex
@@ -74,7 +73,6 @@ fun DashboardScreen(
     onHealthCheck: (group: String) -> Unit,
     onNavigateToProfiles: () -> Unit,
     onNavigateToAppRouting: () -> Unit,
-    onNavigateToLogs: () -> Unit,
     onNavigateToRules: () -> Unit = {},
     onNavigateToDns: () -> Unit = {},
     onNavigateToRequests: () -> Unit = {},
@@ -120,14 +118,11 @@ fun DashboardScreen(
         vpnState.coreVersion, isRunning
     ) {
         mapOf(
-            "nodes" to ShortcutDef("nodes", AppStrings.get("shortcut_nodes", lang), if (activeNodeName.isNotBlank()) activeNodeName else "$totalNodes", { NodesIllustration() }) {
+            "nodes" to ShortcutDef("nodes", AppStrings.get("shortcut_nodes", lang), activeNodeName.ifBlank { "$totalNodes" }, { NodesIllustration() }) {
                 showQuickNodeSelector = true
             },
             "profiles" to ShortcutDef("profiles", AppStrings.get("shortcut_profiles", lang), activeProfileName, { ProfilesIllustration() }) {
                 onNavigateToProfiles()
-            },
-            "core_logs" to ShortcutDef("core_logs", AppStrings.get("shortcut_logs", lang), if (isRunning) "实时监控" else "点击查看", { CoreLogsIllustration() }) {
-                onNavigateToLogs()
             },
             "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) "实时监控" else "未开启", { RequestLogsIllustration() }) {
                 onNavigateToRequests()
@@ -196,7 +191,7 @@ fun DashboardScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 20.dp, bottom = 18.dp)
+                        .padding(top = 8.dp, bottom = 10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -214,7 +209,10 @@ fun DashboardScreen(
                         // Top Right iOS Cupertino Switch (aligned directly with NEXUS title)
                         CupertinoSwitch(
                             checked = isRunning || isStarting,
-                            onCheckedChange = { onToggleVpn() }
+                            onCheckedChange = {
+                                haptic.vpnToggleImpact()
+                                onToggleVpn()
+                            }
                         )
                     }
 
@@ -288,9 +286,10 @@ fun DashboardScreen(
                 }
 
                 // Order according to user preference (Default: nodes, profiles, ...)
+                @Suppress("UnusedBoxWithConstraintsScope")
                 BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                     val spacingDp = 12.dp
-                    val itemWidthDp = (maxWidth - spacingDp) / 2
+                    val itemWidthDp = (this.maxWidth - spacingDp) / 2
                     val itemHeightDp = 118.dp
 
                     val density = LocalDensity.current
@@ -312,7 +311,7 @@ fun DashboardScreen(
 
                     Box(modifier = gridBoxModifier) {
                         displayedShortcuts.forEach { item ->
-                            androidx.compose.runtime.key(item.id) {
+                            key(item.id) {
                                 val origSlotIndex = displayedShortcuts.indexOfFirst { it.id == item.id }
                                 val isBeingDragged = draggedId == item.id
 
@@ -544,7 +543,7 @@ fun DashboardScreen(
                                         isTestingQuickNodes = true
                                         coroutineScope.launch {
                                             onHealthCheck(mainGroupName)
-                                            delay(1800)
+                                            delay(1800.milliseconds)
                                             isTestingQuickNodes = false
                                         }
                                     }
@@ -649,9 +648,9 @@ fun DashboardScreen(
                                                 color = IosBlue
                                             )
                                         } else if (proxy.delay in 1..65534) {
-                                            val delayColor = when {
-                                                proxy.delay in 1..250 -> IosGreen
-                                                proxy.delay in 251..600 -> IosOrange
+                                            val delayColor = when (proxy.delay) {
+                                                in 1..250 -> IosGreen
+                                                in 251..600 -> IosOrange
                                                 else -> RedDanger
                                             }
                                             Text(
@@ -876,7 +875,7 @@ private fun DashboardTrafficRow(
 fun DashboardScreenPreview() {
     val sampleProxies = listOf(
         Proxy(name = "Hong Kong 01", type = "SS", delay = 68),
-        Proxy(name = "Tokyo 02", type = "Vmess", delay = 112),
+        Proxy(name = "Tokyo 02", type = "VMess", delay = 112),
         Proxy(name = "Singapore 03", type = "Trojan", delay = 85)
     )
     MihomoTheme {
@@ -895,15 +894,14 @@ fun DashboardScreenPreview() {
             activeNodeName = "Hong Kong 01",
             totalNodes = 48,
             totalRules = 3520,
-            visibleShortcuts = setOf("nodes", "profiles", "core_logs", "request_logs", "dns", "rules", "routing", "network_share"),
-            shortcutOrder = listOf("nodes", "profiles", "core_logs", "request_logs", "dns", "rules", "routing", "network_share"),
+            visibleShortcuts = setOf("nodes", "profiles", "request_logs", "dns", "rules", "routing", "network_share"),
+            shortcutOrder = listOf("nodes", "profiles", "request_logs", "dns", "rules", "routing", "network_share"),
             onToggleVpn = {},
             onModeSelected = {},
             onSelectProxy = { _, _ -> },
             onHealthCheck = {},
             onNavigateToProfiles = {},
             onNavigateToAppRouting = {},
-            onNavigateToLogs = {},
             onNavigateToRules = {},
             onNavigateToDns = {},
             onNavigateToRequests = {},

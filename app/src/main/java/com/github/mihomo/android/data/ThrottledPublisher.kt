@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.milliseconds
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -45,7 +46,7 @@ internal class ThrottledPublisher(
         }
         if (scheduled.compareAndSet(false, true)) {
             scope.launch {
-                delay(intervalMs)
+                delay(intervalMs.milliseconds)
                 scheduled.set(false)
                 publish()
             }

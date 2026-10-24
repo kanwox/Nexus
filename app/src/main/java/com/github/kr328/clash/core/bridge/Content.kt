@@ -1,7 +1,7 @@
 package com.github.kr328.clash.core.bridge
 
-import android.net.Uri
 import androidx.annotation.Keep
+import androidx.core.net.toUri
 import com.github.kr328.clash.common.Global
 import java.io.FileNotFoundException
 
@@ -9,7 +9,7 @@ import java.io.FileNotFoundException
 object Content {
     @JvmStatic
     fun open(url: String): Int {
-        val uri = Uri.parse(url)
+        val uri = url.toUri()
 
         if (uri.scheme != "content") {
             throw UnsupportedOperationException("Unsupported scheme ${uri.scheme}")

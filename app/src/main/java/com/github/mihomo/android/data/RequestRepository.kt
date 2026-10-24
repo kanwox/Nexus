@@ -23,7 +23,7 @@ object RequestRepository {
     }
 
     private val closeRegex = Regex(
-        """\[(TCP|UDP|ICMP)\]\s+(?:connection\s+to\s+)?(?:\[([0-9a-fA-F:]+)\]|([^\s:]+))(?::\d+)?\s+closed""",
+        """\[(TCP|UDP|ICMP)]\s+(?:connection\s+to\s+)?(?:\[([0-9a-fA-F:]+)]|([^\s:]+))(?::\d+)?\s+closed""",
         RegexOption.IGNORE_CASE
     )
 
@@ -33,7 +33,7 @@ object RequestRepository {
     // [UDP] 172.19.0.1:12345 --> 8.8.8.8:53 using DIRECT
     // [TCP] 172.19.0.1:54321 --> [2607:f8b0:4005:805::200e]:443 match GeoIP(US) using Proxy[US 01]
     private val arrowRegex = Regex(
-        """^\[(TCP|UDP|ICMP)\]\s+(?:\[?[0-9a-fA-F.:]+\]?:\d+)?(?:\(([^)]+)\))?\s+(?:-->|->)\s+(?:\[([0-9a-fA-F:]+)\]|([^\s:]+)):?(\d+)?(?:\s+(?:match\s+([a-zA-Z0-9_.-]+)(?:\(([^)]*)\))?|doesn't match any rule))?\s+using\s+(.+)$""",
+        """\[(TCP|UDP|ICMP)]\s+(?:\[?[0-9a-fA-F.:]+]?:\d+)?(?:\(([^)]+)\))?\s+(?:-->|->)\s+(?:\[([0-9a-fA-F:]+)]|([^\s:]+)):?(\d+)?(?:\s+(?:match\s+([a-zA-Z0-9_.-]+)(?:\(([^)]*)\))?|doesn't match any rule))?\s+using\s+(.+)$""",
         RegexOption.IGNORE_CASE
     )
 
@@ -41,14 +41,14 @@ object RequestRepository {
     // [TCP] dial Proxy[HK 01] (match DomainSuffix/github.com) to api.github.com:443
     // [TCP] dial DIRECT to 127.0.0.1:53
     private val dialRegex = Regex(
-        """^\[(TCP|UDP|ICMP)\]\s+dial\s+(.+?)(?:\s+\(match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?\))?\s+to\s+(?:\[([0-9a-fA-F:]+)\]|([^\s:]+)):?(\d+)?$""",
+        """\[(TCP|UDP|ICMP)]\s+dial\s+(.+?)(?:\s+\(match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?\))?\s+to\s+(?:\[([0-9a-fA-F:]+)]|([^\s:]+)):?(\d+)?$""",
         RegexOption.IGNORE_CASE
     )
 
     @Synchronized
     fun addRecord(record: RequestRecord) {
         val now = record.timestamp
-        if (now - lastSweepTimestamp >= TTL_SWEEP_INTERVAL_MS) {
+        if ((now - lastSweepTimestamp) >= TTL_SWEEP_INTERVAL_MS) {
             lastSweepTimestamp = now
             for (i in recordList.indices) {
                 val existing = recordList[i]
@@ -112,7 +112,7 @@ object RequestRepository {
             return listOf(trimmed.uppercase())
         }
         // Check for Proxy[name] or Group[Node] format: e.g. 🔰 节点选择[🇭🇰 香港 01]
-        val bracketMatch = Regex("""^(.*?)\s*\[(.*?)\]$""").find(trimmed)
+        val bracketMatch = Regex("""^(.*?)\s*\[(.*?)]$""").find(trimmed)
         if (bracketMatch != null) {
             val group = bracketMatch.groupValues[1].trim()
             val node = bracketMatch.groupValues[2].trim()
@@ -170,6 +170,17 @@ object RequestRepository {
                 val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
                 val isReject = outbound.equals("REJECT", ignoreCase = true)
 
+                // Ensure DNS repository captures domain resolution requests initiated through the client
+                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$"""))) {
+                    val ipForDns = if (resolvedIp != host) resolvedIp else "198.18.0.x (Proxy)"
+                    DnsRepository.addRecord(
+                        domain = host,
+                        ip = ipForDns,
+                        isFakeIp = ipForDns.startsWith("198.18.") || ipForDns.contains("Proxy"),
+                        server = outbound
+                    )
+                }
+
                 addRecord(
                     RequestRecord(
                         id = nextId.getAndIncrement(),
@@ -208,6 +219,17 @@ object RequestRepository {
 
                 val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
                 val isReject = outbound.equals("REJECT", ignoreCase = true)
+
+                // Ensure DNS repository captures domain resolution requests initiated through the client
+                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$"""))) {
+                    val ipForDns = if (resolvedIp != host) resolvedIp else "198.18.0.x (Proxy)"
+                    DnsRepository.addRecord(
+                        domain = host,
+                        ip = ipForDns,
+                        isFakeIp = ipForDns.startsWith("198.18.") || ipForDns.contains("Proxy"),
+                        server = outbound
+                    )
+                }
 
                 addRecord(
                     RequestRecord(

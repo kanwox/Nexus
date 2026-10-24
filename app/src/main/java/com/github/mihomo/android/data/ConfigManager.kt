@@ -2,6 +2,7 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -22,14 +23,14 @@ data class ProfileItem(
     val uploadBytes: Long = 0L,
     val downloadBytes: Long = 0L,
     val totalBytes: Long = 0L,
-    val expireTimestamp: Long = 0L
+    val expireTimestamp: Long = 0L,
 )
 
 data class SubscriptionUserInfo(
     val upload: Long = 0L,
     val download: Long = 0L,
     val total: Long = 0L,
-    val expire: Long = 0L
+    val expire: Long = 0L,
 )
 
 object ConfigManager {
@@ -70,7 +71,7 @@ object ConfigManager {
                 }
             }
         }
-        return if (total > 0L || expire > 0L) SubscriptionUserInfo(upload, download, total, expire) else null
+        return if ((total > 0L) || (expire > 0L)) SubscriptionUserInfo(upload, download, total, expire) else null
     }
 
     internal fun extractProfileName(name: String?, response: okhttp3.Response?, body: String, url: String): String {
@@ -93,7 +94,7 @@ object ConfigManager {
             if (!query.isNullOrBlank()) {
                 for (param in query.split("&")) {
                     val pair = param.split("=")
-                    if (pair.size == 2 && (pair[0].equals("name", ignoreCase = true) || pair[0].equals("title", ignoreCase = true))) {
+                    if ((pair.size == 2) && (pair[0].equals("name", ignoreCase = true) || pair[0].equals("title", ignoreCase = true))) {
                         val decoded = runCatching { java.net.URLDecoder.decode(pair[1], "UTF-8") }.getOrDefault(pair[1])
                         if (decoded.isNotBlank()) return decoded.trim()
                     }
@@ -330,7 +331,7 @@ object ConfigManager {
 
     fun saveProfileOrder(context: Context, orderIds: List<String>) {
         val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        prefs.edit().putString("custom_profile_order", orderIds.joinToString(",")).apply()
+        prefs.edit { putString("custom_profile_order", orderIds.joinToString(",")) }
         invalidateProfilesCache()
     }
 
@@ -338,32 +339,33 @@ object ConfigManager {
         saveProfileMetadata(context, item)
     }
 
+    @Suppress("unused")
     fun saveProfileContent(context: Context, id: String, content: String): Boolean {
         return runCatching {
             val file = getProfilesDir(context).resolve("$id.yaml")
             file.writeText(content)
             val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-            prefs.edit().putLong("${id}_updated", System.currentTimeMillis()).apply()
+            prefs.edit { putLong("${id}_updated", System.currentTimeMillis()) }
             invalidateProfilesCache()
             true
-        }.getOrDefault(false)
+        }.getOrDefault(defaultValue = false)
     }
 
     private fun saveProfileMetadata(context: Context, item: ProfileItem) {
         val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("${item.id}_name", item.name)
-            .putString("${item.id}_url", item.url)
-            .putLong("${item.id}_updated", item.lastUpdated)
-            .putBoolean("${item.id}_script_enabled", item.scriptEnabled)
-            .putString("${item.id}_script_ids", item.scriptIds.joinToString(","))
-            .putBoolean("${item.id}_auto_update", item.autoUpdate)
-            .putInt("${item.id}_auto_update_interval", item.autoUpdateInterval)
-            .putLong("${item.id}_upload_bytes", item.uploadBytes)
-            .putLong("${item.id}_download_bytes", item.downloadBytes)
-            .putLong("${item.id}_total_bytes", item.totalBytes)
-            .putLong("${item.id}_expire_timestamp", item.expireTimestamp)
-            .apply()
+        prefs.edit {
+            putString("${item.id}_name", item.name)
+            putString("${item.id}_url", item.url)
+            putLong("${item.id}_updated", item.lastUpdated)
+            putBoolean("${item.id}_script_enabled", item.scriptEnabled)
+            putString("${item.id}_script_ids", item.scriptIds.joinToString(","))
+            putBoolean("${item.id}_auto_update", item.autoUpdate)
+            putInt("${item.id}_auto_update_interval", item.autoUpdateInterval)
+            putLong("${item.id}_upload_bytes", item.uploadBytes)
+            putLong("${item.id}_download_bytes", item.downloadBytes)
+            putLong("${item.id}_total_bytes", item.totalBytes)
+            putLong("${item.id}_expire_timestamp", item.expireTimestamp)
+        }
         invalidateProfilesCache()
     }
 
@@ -437,6 +439,25 @@ object ConfigManager {
         val targetFile = getConfigFile(context)
         val settings = SettingsManager(context)
 
+        val formatDnsList = { raw: String, fallback: List<String> ->
+            val items = raw.split(',', '\n')
+                .asSequence()
+                .map { it.trim().trim('"', '\'') }
+                .filter { it.isNotBlank() }
+                .toList()
+            val effective = items.ifEmpty { fallback }
+            effective.joinToString("\n") { "                - $it" }
+        }
+
+        val nameserversYaml = formatDnsList(
+            settings.dnsNameservers,
+            listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
+        )
+        val fallbackYaml = formatDnsList(
+            settings.dnsFallbackServers,
+            listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "1.1.1.1", "8.8.8.8")
+        )
+
         val header = """
             # Mihomo Android Injected Runtime Config
             mode: ${settings.tunnelMode}
@@ -453,23 +474,16 @@ object ConfigManager {
             dns:
               enable: true
               listen: 127.0.0.1:1053
-              ipv6: false
+              ipv6: ${settings.dnsIpv6Enabled}
               enhanced-mode: ${if (settings.fakeIpEnabled) "fake-ip" else "redir-host"}
               fake-ip-range: 198.18.0.1/16
               default-nameserver:
                 - 223.5.5.5
                 - 119.29.29.29
               nameserver:
-                - https://223.5.5.5/dns-query
-                - https://doh.pub/dns-query
-                - 223.5.5.5
-                - 119.29.29.29
-                - 180.76.76.76
+$nameserversYaml
               fallback:
-                - https://1.1.1.1/dns-query
-                - https://8.8.8.8/dns-query
-                - 1.1.1.1
-                - 8.8.8.8
+$fallbackYaml
               fake-ip-filter:
                 - "*.lan"
                 - "*.local"
@@ -488,14 +502,14 @@ object ConfigManager {
 
         """.trimIndent()
 
-        if (sourceFile != null && sourceFile.exists()) {
+        if ((sourceFile != null) && sourceFile.exists()) {
             var rawContent = sourceFile.readText()
             val activeProfile = getProfiles(context).find {
                 it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
             }
             val targetIds = if (activeProfile != null && activeProfile.scriptEnabled) {
                 activeProfile.scriptIds.ifEmpty {
-                    ScriptManager.getScripts(context).filter { it.enabled }.map { it.id }
+                    ScriptManager.getScripts(context).asSequence().filter { it.enabled }.map { it.id }.toList()
                 }
             } else emptyList()
             if (targetIds.isNotEmpty()) {

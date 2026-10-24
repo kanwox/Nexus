@@ -268,6 +268,7 @@ fun MihomoTheme(
     if (!view.isInEditMode) {
         val statusBarColor = loonColors.bg.toArgb()
         val navBarColor = loonColors.bg.toArgb()
+        @Suppress("DEPRECATION")
         SideEffect {
             val window = view.context.findActivity()?.window ?: return@SideEffect
             window.statusBarColor = statusBarColor

@@ -4,7 +4,6 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,7 +14,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-@RequiresApi(Build.VERSION_CODES.N)
 class MihomoTileService : TileService() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var stateJob: Job? = null
@@ -65,6 +63,7 @@ class MihomoTileService : TileService() {
                     startActivityAndCollapse(pendingIntent)
                 } else {
                     @Suppress("DEPRECATION")
+                    @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
                     startActivityAndCollapse(vpnIntent)
                 }
             }

@@ -28,13 +28,13 @@ object DnsRepository {
     // [DNS] www.google.com --> 142.250.190.46 from 223.5.5.5
     // [DNS] dns.google --> [8.8.8.8 8.8.4.4] from 223.5.5.5
     private val arrowRegex = Regex(
-        """\[DNS\]\s+(?:cache\s+hit\s+)?([^\s:]+)\s+-->\s+(\[[^\]]+\]|[0-9a-fA-F.:]+)(?:\s+from\s+([^\s,]+)|,\s*expire\s+at\s+.*)?""",
+        """\[DNS]\s+(?:cache\s+hit\s+)?([^\s:]+)(?:\s+[A-Za-z0-9]+)?\s+-->\s+(\[[^]]+]|[0-9a-fA-F.:]+)(?:[,\s]+(?:from\s+([^\s,]+)|expire\s+at\s+.*|([0-9]+ms)))?""",
         RegexOption.IGNORE_CASE
     )
 
     private val resolveRegex = Regex(
-        """\[DNS\]\s+resolve\s+([^\s]+)\s+([A-Za-z0-9]+)\s+from\s+([^\s]+)""",
-        RegexOption.IGNORE_CASE
+        """\[DNS]\s+resolve\s+(\S+)\s+([A-Za-z0-9]+)\s+from\s+(\S+)""",
+        RegexOption.IGNORE_CASE,
     )
 
     @Synchronized
@@ -50,7 +50,31 @@ object DnsRepository {
         val cleanIp = ip.trim().trim('[', ']').split(Regex("""\s+""")).joinToString(", ")
         if (cleanDomain.isBlank() || cleanIp.isBlank()) return
 
+        val cleanServer = server?.trim()
+            ?.removePrefix("udp://")
+            ?.removePrefix("tcp://")
+            ?.removeSuffix(":53")
+
+        val effectiveFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19.")
+
         domainToIpMap[cleanDomain.lowercase()] = cleanIp
+
+        // If there was an in-progress "Resolving..." entry for this domain, update it in place
+        val pendingIndex = recordList.indexOfFirst {
+            it.domain.equals(cleanDomain, ignoreCase = true) && (it.ip == "Resolving...")
+        }
+        if ((pendingIndex != -1) && (cleanIp != "Resolving...")) {
+            val old = recordList[pendingIndex]
+            recordList[pendingIndex] = old.copy(
+                ip = cleanIp,
+                isFakeIp = effectiveFakeIp,
+                latencyMs = latencyMs,
+                server = cleanServer ?: old.server,
+                type = type
+            )
+            publisher.request()
+            return
+        }
 
         // Avoid duplicate identical queries spamming in consecutive 1.5 seconds
         val first = recordList.firstOrNull()
@@ -63,11 +87,11 @@ object DnsRepository {
             id = nextId.getAndIncrement(),
             domain = cleanDomain,
             ip = cleanIp,
-            isFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19."),
+            isFakeIp = effectiveFakeIp,
             latencyMs = latencyMs,
             timestamp = System.currentTimeMillis(),
             type = type,
-            server = server
+            server = cleanServer
         )
         if (recordList.size >= MAX_RECORDS) {
             recordList.removeLast()
