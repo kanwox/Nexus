@@ -121,6 +121,26 @@ class ConfigScriptEngineTest {
     }
 
     @Test
+    fun `module exports and arrow function script styles also rewrite the config`() {
+        val styles = listOf(
+            "module.exports = function(config) { config['mixed-port'] = 7891; return config; }",
+            "module.exports = (config) => { config['mixed-port'] = 7892; return config; }",
+            "const main = (config) => { config['mixed-port'] = 7893; return config; }"
+        )
+        for ((index, code) in styles.withIndex()) {
+            val result = ConfigScriptEngine.previewScript(rawYaml = sampleYaml, code = code)
+            assertTrue(
+                "style #$index failed: ${result.errorMessage}\n${result.consoleLogs}",
+                result.success
+            )
+            assertTrue(
+                "style #$index did not apply the rewrite",
+                result.outputYaml.contains("789${index + 1}")
+            )
+        }
+    }
+
+    @Test
     fun `infinite loop script is interrupted by the engine timeout`() {
         val originalTimeout = ConfigScriptEngine.scriptTimeoutMs
         ConfigScriptEngine.scriptTimeoutMs = 1000L
@@ -175,5 +195,45 @@ class ConfigScriptEngineTest {
             "expected console log: ${result.consoleLogs}",
             result.consoleLogs.any { it.contains("[LOG]") && it.contains("rewriting") }
         )
+    }
+
+    // ----------------------------------------------------------------------
+    // Regression tests for the v1.0.4-Alpha.1 breakage
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `JS detection accepts all common script definition styles`() {
+        // Styles that real scripts use and that must route into the JS engine:
+        val jsStyles = listOf(
+            "function main(config) { return config; }",
+            "async function main(config) { return config; }",
+            "const main = (config) => config",
+            "let main = async (config) => config",
+            "main = function(config) { return config; }",
+            "module.exports = function main(config) { return config; }",
+            "module.exports = (config) => config",
+            "exports.main = function(config) { return config; }",
+            "export default function main(config) { return config; }"
+        )
+        for (style in jsStyles) {
+            assertTrue(
+                "should be detected as JS: $style",
+                ConfigScriptEngine.looksLikeJavaScript(style)
+            )
+        }
+
+        // YAML that must NOT be misrouted into the JS engine:
+        val yamlStyles = listOf(
+            "maintain: keep-this-key",
+            "rules:\n  - DOMAIN,microsoft.com,DIRECT",
+            "proxies:\n  - name: main-server\n    type: ss",
+            "main: some-value"
+        )
+        for (style in yamlStyles) {
+            assertFalse(
+                "should NOT be detected as JS: $style",
+                ConfigScriptEngine.looksLikeJavaScript(style)
+            )
+        }
     }
 }

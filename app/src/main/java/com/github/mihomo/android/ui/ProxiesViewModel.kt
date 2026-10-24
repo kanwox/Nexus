@@ -1,7 +1,6 @@
 package com.github.mihomo.android.ui
 
 import android.app.Application
-import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -641,18 +640,6 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             parseActiveProfile()
             if (wasSelected) {
                 reloadCoreAndRefresh(coreActive)
-            }
-        }
-    }
-
-    fun importProfile(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val res = ConfigManager.importProfileFromUri(app(), uri)
-            if (res.isSuccess) {
-                reloadProfiles()
-                CupertinoToast.show("成功导入配置: ${res.getOrNull()?.name}")
-            } else {
-                CupertinoToast.show("导入失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
             }
         }
     }

@@ -266,7 +266,20 @@ fun MainAppScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            vm.importProfile(uri)
+            // SAF grants are scoped to the picker-launching component: read the URI with
+            // the activity context (some providers deny the application context), then
+            // hand the result back to the ViewModel for the list reload.
+            coroutineScope.launch(Dispatchers.IO) {
+                val res = ConfigManager.importProfileFromUri(activity, uri)
+                withContext(Dispatchers.Main) {
+                    if (res.isSuccess) {
+                        vm.reloadProfiles()
+                        CupertinoToast.show("成功导入配置: ${res.getOrNull()?.name}")
+                    } else {
+                        CupertinoToast.show("导入失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
+                    }
+                }
+            }
         }
     }
 

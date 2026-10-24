@@ -24,14 +24,17 @@ object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
     private const val SCRIPT_TIMEOUT_MS = 5_000L
 
-    // Word-boundary detection of a JS entry point. A plain substring check for "main"
-    // misfired on YAML containing e.g. "maintain" or a node named "Domain-main", routing
-    // YAML into the JS engine (syntax error) or JS into the YAML merger (silently ignored).
+    // Detection of a JS entry point. A plain substring check for "main" misfired on YAML
+    // containing e.g. "maintain", but the first tightened regex overcorrected and also
+    // dropped real script styles like `main = (config) => ...` — which silently disabled
+    // script rewrites for those users. Match the entry point being defined or called in
+    // any common style, plus the arrow-function marker (invalid in YAML, unambiguous).
     private val JS_ENTRY_REGEX = Regex(
-        """\b(function\s+main\s*\(|\bmain\s*\(|module\.exports|export\s+default\b)"""
+        """\b(function\s+main\s*\(|\bmain\s*[=(]|module\.exports|export\s+default\b)"""
     )
 
-    internal fun looksLikeJavaScript(code: String): Boolean = JS_ENTRY_REGEX.containsMatchIn(code)
+    internal fun looksLikeJavaScript(code: String): Boolean =
+        JS_ENTRY_REGEX.containsMatchIn(code) || code.contains("=>")
 
     data class ScriptPreviewResult(
         val success: Boolean,
@@ -527,7 +530,11 @@ object ConfigScriptEngine {
                     function("error") { args -> pushConsoleLog(logs, "ERROR", args) }
                 }
                 quickJs.evaluate<Unit>("var module = { exports: {} }; var exports = module.exports;")
-                quickJs.evaluate<Unit>(code)
+                // Any? instead of Unit: a script whose last statement produces a value
+                // (e.g. `module.exports = ...`) has a non-undefined completion value, and
+                // the engine has no converter for it to Unit — evaluating as Unit would
+                // throw and silently disable every such script.
+                quickJs.evaluate<Any?>(code)
 
                 val escapedJson = jsonToJsStringLiteral(jsonStr)
                 val runnerCode = """

@@ -94,6 +94,14 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
+            ### Changes in v1.0.4-Alpha.2
+
+            #### Fixed (regressions in v1.0.4-Alpha.1)
+            - **Config rewrite scripts were silently disabled for most script styles.** The new QuickJS engine evaluated user scripts expecting a Unit completion value; any script whose last statement produces a value (e.g. `module.exports = ...`) failed with a type-converter error and was skipped — so existing profiles lost their rewrites, displayed the raw (unmodified) groups and misbehaved. Scripts are now evaluated without a completion-value constraint; all common styles (`function main`, `module.exports =`, arrow-function `main`, `exports.main`) are covered by engine tests.
+            - JS detection accepted only `main(...)` call syntax; `main = (config) => ...` and other definition styles were misrouted to the YAML merger and ignored. Detection now covers definition, assignment and export styles (still without misfiring on YAML like "maintain").
+            - Local file import read the picked URI through the application context, which some file providers deny; it now uses the picker-launching activity context again.
+            - Subscription/script downloads crashed on chunked (Content-Length-less) responses with a negative buffer size — fixed and covered by a test.
+
             ### Changes in v1.0.4-Alpha.1
 
             #### Security

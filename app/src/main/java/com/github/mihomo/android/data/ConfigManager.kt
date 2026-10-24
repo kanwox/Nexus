@@ -62,7 +62,9 @@ object ConfigManager {
         val body = response.body ?: error(emptyError)
         val declared = body.contentLength()
         if (declared > maxBytes) error("内容过大 (${declared / 1024 / 1024} MB, 上限 ${maxBytes / 1024 / 1024} MB)")
-        val out = java.io.StringWriter((declared.coerceAtMost(1024 * 1024)).toInt())
+        // Chunked responses report -1: coerce to a sane initial buffer size instead of
+        // constructing StringWriter with a negative capacity (which throws).
+        val out = java.io.StringWriter(declared.coerceIn(0, 1024 * 1024).toInt())
         body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
             val buf = CharArray(64 * 1024)
             var total = 0L
