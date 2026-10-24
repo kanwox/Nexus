@@ -138,7 +138,22 @@ object ConfigScriptEngine {
 
             if (isJs) {
                 if (baseMap == null) {
-                    throw IllegalArgumentException("输入配置不是合法的 YAML 格式")
+                    val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                    logs.add("[ERROR] 输入配置不是合法的 YAML 格式")
+                    return ScriptPreviewResult(
+                        success = false,
+                        engineName = "Error",
+                        durationMs = elapsed,
+                        outputYaml = effectiveInputYaml,
+                        consoleLogs = logs,
+                        errorMessage = "输入配置不是合法的 YAML 格式",
+                        beforeProxies = beforeP,
+                        afterProxies = beforeP,
+                        beforeGroups = beforeG,
+                        afterGroups = beforeG,
+                        beforeRules = beforeR,
+                        afterRules = beforeR
+                    )
                 }
                 val jsonStr = gson.toJson(baseMap)
                 var engineUsed = "QuickJS (ES2020)"
@@ -150,7 +165,23 @@ object ConfigScriptEngine {
                     try {
                         executeWithRhino(code, jsonStr, scriptName, gson, logs)
                     } catch (rhinoErr: Throwable) {
-                        throw Exception(rhinoErr.message ?: qjsErr.message ?: "语法或运行时错误")
+                        val errMsg = rhinoErr.message ?: qjsErr.message ?: "语法或运行时错误"
+                        val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                        logs.add("[ERROR] $errMsg")
+                        return ScriptPreviewResult(
+                            success = false,
+                            engineName = "Rhino (ES6)",
+                            durationMs = elapsed,
+                            outputYaml = effectiveInputYaml,
+                            consoleLogs = logs,
+                            errorMessage = errMsg,
+                            beforeProxies = beforeP,
+                            afterProxies = beforeP,
+                            beforeGroups = beforeG,
+                            afterGroups = beforeG,
+                            beforeRules = beforeR,
+                            afterRules = beforeR
+                        )
                     }
                 }
 
@@ -186,7 +217,24 @@ object ConfigScriptEngine {
                 )
             } else {
                 val snippetMap = runCatching { yamlParser.load<Any>(code) as? Map<*, *> }.getOrNull()
-                    ?: throw IllegalArgumentException("未检测到 main(config) 函数，且内容不是有效的 YAML 键值对片段")
+                if (snippetMap == null) {
+                    val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                    logs.add("[ERROR] 未检测到 main(config) 函数，且内容不是有效的 YAML 键值对片段")
+                    return ScriptPreviewResult(
+                        success = false,
+                        engineName = "Error",
+                        durationMs = elapsed,
+                        outputYaml = effectiveInputYaml,
+                        consoleLogs = logs,
+                        errorMessage = "未检测到 main(config) 函数，且内容不是有效的 YAML 键值对片段",
+                        beforeProxies = beforeP,
+                        afterProxies = beforeP,
+                        beforeGroups = beforeG,
+                        afterGroups = beforeG,
+                        beforeRules = beforeR,
+                        afterRules = beforeR
+                    )
+                }
                 val mergedMap = LinkedHashMap<String, Any?>()
                 if (baseMap != null) {
                     for ((k, v) in baseMap) {

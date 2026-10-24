@@ -387,7 +387,9 @@ class MihomoVpnService : VpnService() {
                 val totalDownStr = total.trafficDownload()
 
                 val cur = _vpnState.value
-                if (cur.upSpeed != upStr || cur.downSpeed != downStr || cur.totalUp != totalUpStr || cur.totalDown != totalDownStr) {
+                val speedChanged = cur.upSpeed != upStr || cur.downSpeed != downStr
+                val totalChanged = cur.totalUp != totalUpStr || cur.totalDown != totalDownStr
+                if (speedChanged || totalChanged) {
                     _vpnState.value = cur.copy(
                         upSpeed = upStr,
                         downSpeed = downStr,

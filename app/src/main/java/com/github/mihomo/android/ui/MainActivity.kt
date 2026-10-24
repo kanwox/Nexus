@@ -85,6 +85,7 @@ private val subScreenSaver: Saver<SubScreen?, String> = Saver(
     restore = { name -> runCatching { SubScreen.valueOf(name) }.getOrNull() }
 )
 
+@Suppress("LargeClass")
 class MainActivity : ComponentActivity() {
 
     private lateinit var settingsManager: SettingsManager
