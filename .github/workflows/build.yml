@@ -90,11 +90,24 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
-            ### Nexus Automated Cloud Build
-            - Version: ${{ env.VERSION_NAME }}
-            - Core: Mihomo ARM64 (libclash.so & libbridge.so)
-            - ABI: arm64-v8a only
-            - APK: download below and install directly on a 64-bit ARM Android device.
+            ### Changes in v1.0.3
+
+            #### Changed
+            - Upgraded Mihomo core to v1.19.33 (compiled with Go 1.27 and NDK 29; binary stripped to 56 MB).
+            - Simplified DNS settings to Fake-IP mode and IPv6 resolution toggles.
+            - Standardized font selection labels in Appearance settings to System Default and SF Pro.
+            - Adjusted primary screen top padding to 8 dp in accordance with iOS navigation standards.
+            - Restricted haptic feedback exclusively to bottom navigation and VPN toggle events.
+            - Reorganized dashboard shortcuts into a balanced 8-item grid.
+
+            #### Fixed
+            - Fixed domain resolution capture in request logs for newer Mihomo log formats.
+            - Fixed UDP resolution tracking in connection monitoring.
+            - Resolved Android 15 edge-to-edge status bar and Compose lifecycle deprecation warnings.
+
+            #### Removed
+            - Removed manual DNS server editor and presets from DNS settings.
+            - Removed Core Logs shortcut from dashboard.
           draft: false
           prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'Beta') || contains(env.RELEASE_TAG, 'rc') || contains(env.RELEASE_TAG, 'alpha') }}
           files: build_output/*.apk

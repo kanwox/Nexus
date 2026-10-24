@@ -1,45 +1,60 @@
+# ===========================================================================
+# Nexus ProGuard / R8 Shrinking & Optimization Rules
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-# Native bridge (libclash.so / libbridge.so) -- entry points are looked up by
-# JNI name, so they must survive shrinking and obfuscation.
-# NOTE: shrinking is currently disabled (isMinifyEnabled = false) because the
-# minified build crashes on startup with the native core. These rules are kept
-# for when that is investigated further.
+# Disable Name Obfuscation (Keep original class, method, and field names)
+# ---------------------------------------------------------------------------
+-dontobfuscate
+
+# ---------------------------------------------------------------------------
+# General Code Quality & Attributes
+# ---------------------------------------------------------------------------
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable
+
+# ---------------------------------------------------------------------------
+# Native Bridge (libclash.so & libbridge.so)
+# Entry points and callbacks are looked up via JNI name/signature by Go & C++
 # ---------------------------------------------------------------------------
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
 }
 -keep class com.github.kr328.clash.core.** { *; }
 -keep interface com.github.kr328.clash.core.** { *; }
+-keep class com.github.mihomo.android.core.** { *; }
+
+# JNI callback interfaces
 -keep class * implements com.github.kr328.clash.core.bridge.TunInterface { *; }
 -keep class * implements com.github.kr328.clash.core.bridge.FetchCallback { *; }
 -keep class * implements com.github.kr328.clash.core.bridge.LogcatInterface { *; }
--keepattributes *Annotation*
+
+# QuickJS JNI engine
+-keep class com.quickjs.** { *; }
 
 # ---------------------------------------------------------------------------
-# kotlinx.serialization -- generated serializers are referenced reflectively.
+# Data Models & Serialization (kotlinx.serialization / Gson)
 # ---------------------------------------------------------------------------
--keepattributes RuntimeVisibleAnnotations,AnnotationDefault,InnerClasses
 -dontnote kotlinx.serialization.**
+-keep class com.github.kr328.clash.core.model.** { *; }
+-keep class com.github.mihomo.android.data.** { *; }
+
 -keep,includedescriptorclasses class com.github.mihomo.android.**$$serializer { *; }
--keepclassmembers class com.github.mihomo.android.** {
+-keep,includedescriptorclasses class com.github.kr328.clash.core.**$$serializer { *; }
+-keepclassmembers class * {
     *** Companion;
 }
--keepclasseswithmembers class com.github.mihomo.android.** {
+-keepclasseswithmembers class * {
     kotlinx.serialization.KSerializer serializer(...);
 }
 
 # ---------------------------------------------------------------------------
-# Third-party engines
+# Scripting Engine & Third-Party Libraries
 # ---------------------------------------------------------------------------
-# QuickJS is driven through JNI.
--keep class com.quickjs.** { *; }
-
-# Rhino is invoked reflectively by the script engine.
+# Mozilla Rhino JS engine (invoked reflectively)
 -dontwarn org.mozilla.javascript.**
 -keep class org.mozilla.javascript.** { *; }
 
-# SnakeYAML / Gson / OkHttp ship their own (or need no) keep rules; silence the
-# optional-dependency warnings they emit.
+# SnakeYAML / Gson / OkHttp / Okio / SLF4J
 -dontwarn org.yaml.snakeyaml.**
 -dontwarn com.google.gson.**
 -dontwarn okhttp3.**
