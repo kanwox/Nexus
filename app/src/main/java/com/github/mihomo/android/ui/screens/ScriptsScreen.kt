@@ -26,8 +26,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,7 +47,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -913,14 +911,10 @@ private fun ScriptEditorScreen(
                         .fillMaxWidth()
                         .onFocusChanged { isEditorFocused = it.isFocused }
                         .pointerInput(Unit) {
-                            awaitEachGesture {
-                                val down = awaitFirstDown(
-                                    requireUnconsumed = false,
-                                    pass = PointerEventPass.Initial
-                                )
+                            detectTapGestures { offset ->
                                 if (!isEditorFocused) {
                                     codeTextLayoutResult?.let { layout ->
-                                        val tappedOffset = layout.getOffsetForPosition(down.position)
+                                        val tappedOffset = layout.getOffsetForPosition(offset)
                                             .coerceIn(0, textFieldValue.text.length)
                                         if (textFieldValue.selection.collapsed &&
                                             textFieldValue.selection.start != tappedOffset

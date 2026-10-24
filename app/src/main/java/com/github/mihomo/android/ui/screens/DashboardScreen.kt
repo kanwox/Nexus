@@ -126,13 +126,13 @@ fun DashboardScreen(
             "profiles" to ShortcutDef("profiles", AppStrings.get("shortcut_profiles", lang), activeProfileName, { ProfilesIllustration() }) {
                 onNavigateToProfiles()
             },
-            "core_logs" to ShortcutDef("core_logs", AppStrings.get("shortcut_logs", lang), if (isRunning) "实时监控" else "点击查看", { RequestLogsIllustration() }) {
+            "core_logs" to ShortcutDef("core_logs", AppStrings.get("shortcut_logs", lang), if (isRunning) "实时监控" else "点击查看", { CoreLogsIllustration() }) {
                 onNavigateToLogs()
             },
             "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) "实时监控" else "未开启", { RequestLogsIllustration() }) {
                 onNavigateToRequests()
             },
-            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), "Fake-IP", { DnsIllustration() }) {
+            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) "实时解析" else "点击查看", { DnsIllustration() }) {
                 onNavigateToDns()
             },
             "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "1", { RulesIllustration() }) {
@@ -246,24 +246,13 @@ fun DashboardScreen(
                     }
                 }
 
-                // Dual Traffic Cards Row (Upload & Download)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    LoonTrafficCard(
-                        modifier = Modifier.weight(1f),
-                        title = AppStrings.get("traffic_up", lang),
-                        speed = if (isRunning) vpnState.upSpeed else "--",
-                        isUpload = true
-                    )
-                    LoonTrafficCard(
-                        modifier = Modifier.weight(1f),
-                        title = AppStrings.get("traffic_down", lang),
-                        speed = if (isRunning) vpnState.downSpeed else "--",
-                        isUpload = false
-                    )
-                }
+                // Dual Traffic Cards Row (Upload & Download - isolated to prevent whole dashboard recomposition)
+                DashboardTrafficRow(
+                    isRunning = isRunning,
+                    upSpeed = vpnState.upSpeed,
+                    downSpeed = vpnState.downSpeed,
+                    lang = lang
+                )
 
                 Spacer(modifier = Modifier.height(26.dp))
 
@@ -543,7 +532,7 @@ fun DashboardScreen(
                         quickNodeSearchQuery = ""
                     },
                     sheetState = quickNodeSheetState,
-                    modifier = Modifier.fillMaxHeight(0.88f),
+                    modifier = Modifier.fillMaxHeight(0.60f),
                     title = "选择节点",
                     leadingAction = {
                         Box(
@@ -853,6 +842,32 @@ fun DashboardScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DashboardTrafficRow(
+    isRunning: Boolean,
+    upSpeed: String,
+    downSpeed: String,
+    lang: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        LoonTrafficCard(
+            modifier = Modifier.weight(1f),
+            title = AppStrings.get("traffic_up", lang),
+            speed = if (isRunning) upSpeed else "--",
+            isUpload = true
+        )
+        LoonTrafficCard(
+            modifier = Modifier.weight(1f),
+            title = AppStrings.get("traffic_down", lang),
+            speed = if (isRunning) downSpeed else "--",
+            isUpload = false
+        )
     }
 }
 

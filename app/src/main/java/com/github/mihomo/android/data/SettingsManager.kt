@@ -134,7 +134,7 @@ class SettingsManager(context: Context) {
         set(value) = prefs.edit().putString("node_sort_mode", value).apply()
 
     var logLevel: String
-        get() = prefs.getString("core_log_level", "info") ?: "info"
+        get() = prefs.getString("core_log_level", "debug") ?: "debug"
         set(value) = prefs.edit().putString("core_log_level", value).apply()
 
     var themeMode: ThemeMode

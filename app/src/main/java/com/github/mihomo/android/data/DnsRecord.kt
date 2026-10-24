@@ -7,5 +7,6 @@ data class DnsRecord(
     val isFakeIp: Boolean = false,
     val latencyMs: Int = 0,
     val timestamp: Long = System.currentTimeMillis(),
-    val type: String = "A"
+    val type: String = "A",
+    val server: String? = null
 )

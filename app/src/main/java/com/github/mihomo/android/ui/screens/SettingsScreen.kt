@@ -55,6 +55,7 @@ fun SettingsScreen(
     onNavigateToAppRouting: () -> Unit,
     onNavigateToLogs: () -> Unit,
     onNavigateToAppearance: () -> Unit = {},
+    onNavigateToDnsSettings: () -> Unit = {},
     onNavigateToDns: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -200,7 +201,9 @@ fun SettingsScreen(
                     icon = Icons.Default.Public,
                     iconBg = Color(0xFF30B0C7),
                     showChevron = true,
-                    onClick = onNavigateToDns
+                    onClick = {
+                        if (onNavigateToDnsSettings != {}) onNavigateToDnsSettings() else onNavigateToDns()
+                    }
                 )
                 CupertinoDivider()
                 CupertinoCell(

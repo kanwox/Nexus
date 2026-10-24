@@ -413,46 +413,163 @@ fun LoonShortcutCard(
 
 
 @Composable
+fun CoreLogsIllustration() {
+    Box(modifier = Modifier.size(54.dp)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // 1. Terminal Console Window Body (Deep Slate/Obsidian Gradient)
+            val consoleGrad = Brush.verticalGradient(
+                colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A)),
+                startY = h * 0.16f,
+                endY = h * 0.84f
+            )
+            drawRoundRect(
+                brush = consoleGrad,
+                topLeft = Offset(w * 0.16f, h * 0.16f),
+                size = Size(w * 0.68f, h * 0.68f),
+                cornerRadius = CornerRadius(8.dp.toPx())
+            )
+            // Subtle border outline for authentic iOS dark window depth
+            drawRoundRect(
+                color = Color(0x2E94A3B8),
+                topLeft = Offset(w * 0.16f, h * 0.16f),
+                size = Size(w * 0.68f, h * 0.68f),
+                cornerRadius = CornerRadius(8.dp.toPx()),
+                style = Stroke(width = 1.dp.toPx())
+            )
+
+            // 2. Window Control Dots (Ruby, Amber, Emerald)
+            val dotRadius = 1.6.dp.toPx()
+            drawCircle(color = Color(0xFFEF4444), radius = dotRadius, center = Offset(w * 0.26f, h * 0.26f))
+            drawCircle(color = Color(0xFFF59E0B), radius = dotRadius, center = Offset(w * 0.33f, h * 0.26f))
+            drawCircle(color = Color(0xFF10B981), radius = dotRadius, center = Offset(w * 0.40f, h * 0.26f))
+
+            // Subtle titlebar divider line
+            drawLine(
+                color = Color(0x1FFFFFFF),
+                start = Offset(w * 0.16f, h * 0.33f),
+                end = Offset(w * 0.84f, h * 0.33f),
+                strokeWidth = 0.8.dp.toPx()
+            )
+
+            // 3. Terminal Prompt `>` in Cyber Mint / Cyan
+            val promptPath = Path().apply {
+                moveTo(w * 0.26f, h * 0.42f)
+                lineTo(w * 0.33f, h * 0.47f)
+                lineTo(w * 0.26f, h * 0.52f)
+            }
+            drawPath(
+                path = promptPath,
+                color = Color(0xFF38BDF8),
+                style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+
+            // 4. Command input line
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.95f),
+                topLeft = Offset(w * 0.38f, h * 0.445f),
+                size = Size(w * 0.24f, h * 0.05f),
+                cornerRadius = CornerRadius(1.5.dp.toPx())
+            )
+            // Blinking cursor
+            drawRoundRect(
+                color = Color(0xFF34D399),
+                topLeft = Offset(w * 0.65f, h * 0.44f),
+                size = Size(w * 0.055f, h * 0.06f),
+                cornerRadius = CornerRadius(1.dp.toPx())
+            )
+
+            // 5. Core output / log lines
+            drawRoundRect(
+                color = Color(0xFF94A3B8),
+                topLeft = Offset(w * 0.26f, h * 0.59f),
+                size = Size(w * 0.42f, h * 0.045f),
+                cornerRadius = CornerRadius(1.5.dp.toPx())
+            )
+            drawRoundRect(
+                color = Color(0xFF10B981).copy(alpha = 0.85f),
+                topLeft = Offset(w * 0.26f, h * 0.69f),
+                size = Size(w * 0.32f, h * 0.045f),
+                cornerRadius = CornerRadius(1.5.dp.toPx())
+            )
+        }
+    }
+}
+
+@Composable
 fun RequestLogsIllustration() {
     Box(modifier = Modifier.size(54.dp)) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
 
-            // Main document paper card (vibrant violet-purple with subtle lighting)
-            val docGrad = Brush.verticalGradient(
-                colors = listOf(Color(0xFFA855F7), Color(0xFF9333EA)),
+            // 1. Main Network Card (Vibrant Royal Indigo / Sapphire Gradient)
+            val cardGrad = Brush.verticalGradient(
+                colors = listOf(Color(0xFF6366F1), Color(0xFF4338CA)),
                 startY = h * 0.16f,
                 endY = h * 0.84f
             )
             drawRoundRect(
-                brush = docGrad,
-                topLeft = Offset(w * 0.18f, h * 0.16f),
-                size = Size(w * 0.64f, h * 0.68f),
+                brush = cardGrad,
+                topLeft = Offset(w * 0.16f, h * 0.16f),
+                size = Size(w * 0.68f, h * 0.68f),
                 cornerRadius = CornerRadius(8.dp.toPx())
             )
+            // Subtle card border
+            drawRoundRect(
+                color = Color(0x33FFFFFF),
+                topLeft = Offset(w * 0.16f, h * 0.16f),
+                size = Size(w * 0.68f, h * 0.68f),
+                cornerRadius = CornerRadius(8.dp.toPx()),
+                style = Stroke(width = 1.dp.toPx())
+            )
 
-            // Three white data lines on document body (1:1 identical to original Loon image)
-            // Top line: shorter and bolder
-            drawRoundRect(
+            // 2. Bidirectional Traffic Arrows:
+            // Outbound Request Arrow (Pointing Up-Right in Crisp White)
+            val strokeW = 2.2.dp.toPx()
+            val upArrowPath = Path().apply {
+                // Shaft
+                moveTo(w * 0.34f, h * 0.66f)
+                lineTo(w * 0.34f, h * 0.34f)
+                // Arrowhead
+                moveTo(w * 0.26f, h * 0.42f)
+                lineTo(w * 0.34f, h * 0.34f)
+                lineTo(w * 0.42f, h * 0.42f)
+            }
+            drawPath(
+                path = upArrowPath,
                 color = Color.White,
-                topLeft = Offset(w * 0.28f, h * 0.32f),
-                size = Size(w * 0.24f, h * 0.055f),
-                cornerRadius = CornerRadius(2.dp.toPx())
+                style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
             )
-            // Middle line: longer
-            drawRoundRect(
-                color = Color.White.copy(alpha = 0.95f),
-                topLeft = Offset(w * 0.28f, h * 0.45f),
-                size = Size(w * 0.44f, h * 0.055f),
-                cornerRadius = CornerRadius(2.dp.toPx())
+
+            // Inbound Response Arrow (Pointing Down-Left in Vibrant Emerald Mint)
+            val downArrowPath = Path().apply {
+                // Shaft
+                moveTo(w * 0.58f, h * 0.34f)
+                lineTo(w * 0.58f, h * 0.66f)
+                // Arrowhead
+                moveTo(w * 0.50f, h * 0.58f)
+                lineTo(w * 0.58f, h * 0.66f)
+                lineTo(w * 0.66f, h * 0.58f)
+            }
+            drawPath(
+                path = downArrowPath,
+                color = Color(0xFF34D399),
+                style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round)
             )
-            // Bottom line: medium length
-            drawRoundRect(
-                color = Color.White.copy(alpha = 0.95f),
-                topLeft = Offset(w * 0.28f, h * 0.58f),
-                size = Size(w * 0.32f, h * 0.055f),
-                cornerRadius = CornerRadius(2.dp.toPx())
+
+            // 3. Floating Network Packet Indicator Dots
+            drawCircle(
+                color = Color(0xFFFBBF24),
+                radius = 2.2.dp.toPx(),
+                center = Offset(w * 0.46f, h * 0.34f)
+            )
+            drawCircle(
+                color = Color(0xFF67E8F9),
+                radius = 2.2.dp.toPx(),
+                center = Offset(w * 0.46f, h * 0.66f)
             )
         }
     }

@@ -5,13 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material3.BottomSheetDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,16 +31,13 @@ import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Suppress("UnusedParameter", "UNUSED_PARAMETER")
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun DnsScreen(
-    fakeIpEnabled: Boolean,
-    onFakeIpEnabledChanged: (Boolean) -> Unit,
+    onNavigateToSettings: (() -> Unit)? = null,
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
-    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
     val records by DnsRepository.recordsFlow.collectAsState()
@@ -75,24 +71,46 @@ fun DnsScreen(
             showBackButton = true,
             onBack = onBack,
             actions = {
-                if (records.isNotEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .height(44.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .iosPressable {
-                                haptic.selection()
-                                showClearActionSheet = true
-                            }
-                            .padding(horizontal = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "清空",
-                            color = RedDanger,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Normal
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onNavigateToSettings != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .iosPressable {
+                                    haptic.lightTick()
+                                    onNavigateToSettings()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "DNS 设置",
+                                tint = IosBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    if (records.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .height(44.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .iosPressable {
+                                    haptic.selection()
+                                    showClearActionSheet = true
+                                }
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "清空",
+                                color = RedDanger,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }
@@ -116,25 +134,6 @@ fun DnsScreen(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
                         placeholder = "搜索"
-                    )
-                }
-            }
-
-            item {
-                CupertinoGroupedSection(
-                    header = "解析模式",
-                    footer = if (fakeIpEnabled) "Fake-IP 模式可加速 DNS 响应并有效防止 DNS 污染。" else "当前使用 Redir-Host 真实 IP 解析模式。"
-                ) {
-                    CupertinoCell(
-                        title = "Fake-IP 增强模式",
-                        subtitle = "198.18.0.1/16",
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = fakeIpEnabled,
-                                onCheckedChange = { onFakeIpEnabledChanged(it) }
-                            )
-                        }
                     )
                 }
             }
@@ -287,6 +286,32 @@ fun DnsScreen(
                         tint = IosBlue,
                         modifier = Modifier.size(16.dp)
                     )
+                }
+
+                if (!rec.server.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "解析服务器",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = LoonTextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(LoonBg)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = rec.server,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Normal,
+                            color = LoonTextPrimary
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -454,8 +479,7 @@ private fun DnsRecordCell(
 @Composable
 fun DnsScreenPreview() {
     DnsScreen(
-        fakeIpEnabled = true,
-        onFakeIpEnabledChanged = {},
+        onNavigateToSettings = {},
         onBack = {}
     )
 }

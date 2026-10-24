@@ -74,6 +74,7 @@ enum class SubScreen {
     PROFILE_OVERRIDE,
     RULES,
     DNS,
+    DNS_SETTINGS,
     REQUESTS,
     NETWORK_SHARE,
     APPEARANCE
@@ -796,7 +797,7 @@ class MainActivity : ComponentActivity() {
             if (shouldPollProxies) {
                 lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                     while (isActive) {
-                        delay(5000)
+                        delay(20_000L)
                         refreshProxiesOnline()
                     }
                 }
@@ -1051,6 +1052,7 @@ class MainActivity : ComponentActivity() {
                         onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
                         onNavigateToLogs = { currentSubScreen = SubScreen.LOGS },
                         onNavigateToAppearance = { currentSubScreen = SubScreen.APPEARANCE },
+                        onNavigateToDnsSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
                         onNavigateToDns = { currentSubScreen = SubScreen.DNS }
                     )
                 }
@@ -1145,7 +1147,7 @@ class MainActivity : ComponentActivity() {
                         fun getDepth(s: SubScreen?): Int = when (s) {
                             null -> 0
                             SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
-                            SubScreen.RULES, SubScreen.DNS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
+                            SubScreen.RULES, SubScreen.DNS, SubScreen.DNS_SETTINGS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
                             SubScreen.APPEARANCE -> 1
                             SubScreen.PROFILE_OVERRIDE -> 2
                             SubScreen.SCRIPTS -> 3
@@ -1351,6 +1353,12 @@ class MainActivity : ComponentActivity() {
                             }
                             SubScreen.DNS -> {
                                 DnsScreen(
+                                    onNavigateToSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
+                                    onBack = { currentSubScreen = null }
+                                )
+                            }
+                            SubScreen.DNS_SETTINGS -> {
+                                DnsSettingsScreen(
                                     fakeIpEnabled = fakeIpEnabled,
                                     onFakeIpEnabledChanged = { enabled ->
                                         fakeIpEnabled = enabled

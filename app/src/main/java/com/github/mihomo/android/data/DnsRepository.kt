@@ -3,25 +3,56 @@ package com.github.mihomo.android.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 object DnsRepository {
     private const val MAX_RECORDS = 500
+    private const val PUBLISH_INTERVAL_MS = 400L
     private val nextId = AtomicLong(1)
     private val recordList = ArrayDeque<DnsRecord>(MAX_RECORDS)
+    private val domainToIpMap = ConcurrentHashMap<String, String>()
+
     private val _recordsFlow = MutableStateFlow<List<DnsRecord>>(emptyList())
     val recordsFlow: StateFlow<List<DnsRecord>> = _recordsFlow.asStateFlow()
 
-    private val dnsRegex1 = Regex("""(?:\[DNS\]\s+)?(?:resolve:?\s+|fake-ip:?\s+|query:?\s+|cache:?\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:-->|->|to)\s*\[?([0-9a-fA-F.:]+)\]?""")
-    private val dnsRegex2 = Regex("""\[DNS\]\s+([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:\[|\()([0-9a-fA-F.:]+)(?:\]|\))""")
+    private val publisher = ThrottledPublisher(PUBLISH_INTERVAL_MS, _recordsFlow.subscriptionCount) {
+        val snapshot = synchronized(this) { recordList.toList() }
+        _recordsFlow.value = snapshot
+    }
+
+    // Handles:
+    // [DNS] www.google.com --> 142.250.190.46
+    // [DNS] www.google.com --> 198.18.0.2
+    // [DNS] cache hit www.google.com --> 198.18.0.2, expire at 2026-10-24 15:30:00
+    // [DNS] www.google.com --> 142.250.190.46 from 223.5.5.5
+    // [DNS] dns.google --> [8.8.8.8 8.8.4.4] from 223.5.5.5
+    private val arrowRegex = Regex(
+        """\[DNS\]\s+(?:cache\s+hit\s+)?([^\s:]+)\s+-->\s+(\[[^\]]+\]|[0-9a-fA-F.:]+)(?:\s+from\s+([^\s,]+)|,\s*expire\s+at\s+.*)?""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val resolveRegex = Regex(
+        """\[DNS\]\s+resolve\s+([^\s]+)\s+([A-Za-z0-9]+)\s+from\s+([^\s]+)""",
+        RegexOption.IGNORE_CASE
+    )
 
     @Synchronized
-    fun addRecord(domain: String, ip: String, isFakeIp: Boolean = false, latencyMs: Int = 0, type: String = "A") {
+    fun addRecord(
+        domain: String,
+        ip: String,
+        isFakeIp: Boolean = false,
+        latencyMs: Int = 0,
+        type: String = "A",
+        server: String? = null
+    ) {
         val cleanDomain = domain.trim()
-        val cleanIp = ip.trim().trim('[', ']')
+        val cleanIp = ip.trim().trim('[', ']').split(Regex("""\s+""")).joinToString(", ")
         if (cleanDomain.isBlank() || cleanIp.isBlank()) return
 
-        // Avoid spamming duplicate identical queries in consecutive succession
+        domainToIpMap[cleanDomain.lowercase()] = cleanIp
+
+        // Avoid duplicate identical queries spamming in consecutive 1.5 seconds
         val first = recordList.firstOrNull()
         if (first != null && first.domain.equals(cleanDomain, ignoreCase = true) && first.ip == cleanIp) {
             val now = System.currentTimeMillis()
@@ -35,46 +66,50 @@ object DnsRepository {
             isFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19."),
             latencyMs = latencyMs,
             timestamp = System.currentTimeMillis(),
-            type = type
+            type = type,
+            server = server
         )
         if (recordList.size >= MAX_RECORDS) {
             recordList.removeLast()
         }
         recordList.addFirst(record)
-        _recordsFlow.value = recordList.toList()
+        publisher.request()
     }
 
     @Synchronized
     fun clear() {
         recordList.clear()
-        _recordsFlow.value = emptyList()
+        domainToIpMap.clear()
+        publisher.publishNow()
     }
 
-    @Synchronized
     fun findIpForDomain(domain: String): String? {
-        val clean = domain.trim()
-        return recordList.firstOrNull { it.domain.equals(clean, ignoreCase = true) }?.ip
+        val clean = domain.trim().lowercase()
+        return domainToIpMap[clean]
     }
 
     fun parseFromLog(message: String) {
         try {
-            if (!message.contains("[DNS]", ignoreCase = true) && !message.contains("resolve", ignoreCase = true)) return
+            if (!message.contains("[DNS]", ignoreCase = true)) return
 
-            // 1. Match: [DNS] (optional resolve/fake-ip/query/cache) domain -> ip or --> ip or to ip
-            val match1 = dnsRegex1.find(message)
-            if (match1 != null) {
-                val domain = match1.groupValues[1]
-                val ip = match1.groupValues[2]
-                addRecord(domain, ip)
+            val arrowMatch = arrowRegex.find(message)
+            if (arrowMatch != null) {
+                val domain = arrowMatch.groupValues[1]
+                val ipRaw = arrowMatch.groupValues[2]
+                val server = arrowMatch.groupValues[3].takeIf { it.isNotBlank() }
+                addRecord(domain = domain, ip = ipRaw, server = server)
                 return
             }
 
-            // 2. Match: [DNS] domain [ip] or [DNS] domain (ip)
-            val match2 = dnsRegex2.find(message)
-            if (match2 != null) {
-                val domain = match2.groupValues[1]
-                val ip = match2.groupValues[2]
-                addRecord(domain, ip)
+            val resolveMatch = resolveRegex.find(message)
+            if (resolveMatch != null) {
+                val domain = resolveMatch.groupValues[1]
+                val recordType = resolveMatch.groupValues[2]
+                val server = resolveMatch.groupValues[3]
+                // Recorded as in-progress or pending resolution if not yet resolved
+                if (!domainToIpMap.containsKey(domain.lowercase())) {
+                    addRecord(domain = domain, ip = "Resolving...", type = recordType, server = server)
+                }
             }
         } catch (_: Exception) {}
     }
