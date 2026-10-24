@@ -27,12 +27,15 @@ import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.PerAppProxyMode
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.ui.MainActivity
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -101,6 +104,11 @@ class MihomoVpnService : VpnService() {
     private var trafficMonitorJob: Job? = null
     private var startJob: Job? = null
     private var vpnInterface: ParcelFileDescriptor? = null
+
+    // Set when a start/restart request arrives while a stop is still tearing the tunnel down;
+    // closeTunnel picks it up and launches a fresh start once STOPPED is reached.
+    @Volatile
+    private var pendingStartAfterStop = false
 
     @Volatile
     private var isScreenInteractive: Boolean = true
@@ -237,19 +245,26 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun restartVpn() {
-        startJob?.cancel()
-        startJob = null
-        trafficMonitorJob?.cancel()
-        runCatching { ClashCore.stopTun() }
-        runCatching { vpnInterface?.close() }
-        vpnInterface = null
-        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPED, error = null)
-        startVpn()
+        if (_vpnState.value.status == VpnState.Status.STOPPED) {
+            startVpn()
+            return
+        }
+        // Tear down asynchronously (stopTun is a blocking JNI call) and start again from
+        // closeTunnel once the old tunnel is fully gone.
+        pendingStartAfterStop = true
+        stopVpn()
     }
 
     private fun startVpn() {
         val status = _vpnState.value.status
-        if (startJob?.isActive == true || status != VpnState.Status.STOPPED) {
+        if (startJob?.isActive == true || status == VpnState.Status.STARTING || status == VpnState.Status.RUNNING) {
+            return
+        }
+        if (status == VpnState.Status.STOPPING) {
+            // startForegroundService() attached a startForeground obligation to this call even
+            // though the tunnel is not ready: satisfy it now and start once teardown finishes.
+            startForegroundServiceNotification(getString(R.string.notification_restoring))
+            pendingStartAfterStop = true
             return
         }
 
@@ -274,6 +289,10 @@ class MihomoVpnService : VpnService() {
                 if (loadRes.isFailure) {
                     error("加载配置文件失败: ${loadRes.exceptionOrNull()?.message}")
                 }
+                // From here on the coroutine never suspends, so a stop request must be able to
+                // abort before we establish the TUN interface; otherwise it would tear down
+                // first and this job would resurrect a ghost tunnel afterwards.
+                ensureActive()
 
                 // Restore user's saved proxy selections into core
                 runCatching {
@@ -333,6 +352,12 @@ class MihomoVpnService : VpnService() {
                 }
 
                 val pfd = builder.establish() ?: error("无法建立 VPN TUN 接口 (Builder.establish() 返回 null)")
+                if (!isActive) {
+                    // vpnInterface is not assigned yet, so this is the only place that can
+                    // release the freshly established fd before the cancellation aborts us.
+                    runCatching { pfd.close() }
+                    currentCoroutineContext().ensureActive()
+                }
                 vpnInterface = pfd
 
                 // 5. Hand over fd to Mihomo core
@@ -425,18 +450,27 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        if (_vpnState.value.status == VpnState.Status.STOPPED) {
+        if (_vpnState.value.status == VpnState.Status.STOPPED && startJob == null) {
             stopSelf()
             return
         }
-        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING)
-        // Cancel an in-flight start first: otherwise it can establish the TUN and flip the state
-        // back to RUNNING after we have already torn down and reported STOPPED.
-        startJob?.cancel()
-        startJob = null
+        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING, error = null)
         trafficMonitorJob?.cancel()
 
-        serviceScope.launch { closeTunnel() }
+        val job = startJob
+        startJob = null
+        if (job != null && job.isActive) {
+            // Wait for the in-flight start to finish before tearing down. Cancelling without
+            // joining used to race: the start job had no suspension point after ClashCore.load
+            // and could establish the TUN after closeTunnel had already reported STOPPED,
+            // leaking the fd and leaving the state stuck on RUNNING.
+            serviceScope.launch {
+                job.cancelAndJoin()
+                closeTunnel()
+            }
+        } else {
+            serviceScope.launch { closeTunnel() }
+        }
     }
 
     private fun closeTunnel() {
@@ -447,10 +481,16 @@ class MihomoVpnService : VpnService() {
         } catch (e: Throwable) {
             Log.w(TAG, "Error closing VPN", e)
         } finally {
+            val restartAfterStop = pendingStartAfterStop
+            pendingStartAfterStop = false
             _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
-            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-            stopSelf()
-            Log.i(TAG, "Nexus VPN stopped.")
+            if (restartAfterStop) {
+                startVpn()
+            } else {
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                stopSelf()
+                Log.i(TAG, "Nexus VPN stopped.")
+            }
         }
     }
 

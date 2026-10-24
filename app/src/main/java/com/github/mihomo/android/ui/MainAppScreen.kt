@@ -22,9 +22,11 @@ import androidx.compose.ui.zIndex
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.mihomo.android.core.ClashCore
@@ -46,15 +48,10 @@ import com.github.mihomo.android.ui.screens.*
 import com.github.mihomo.android.ui.theme.LoonBg
 import com.github.mihomo.android.ui.theme.LocalAppLanguage
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 enum class SubScreen {
@@ -89,7 +86,21 @@ fun MainAppScreen(
 ) {
     // The composable is only hosted by MainActivity; data-layer calls need its Context.
     val activity = LocalContext.current as ComponentActivity
-    val lifecycleScope = activity.lifecycleScope
+
+    // Profiles / proxies / speed-test state lives in the ViewModel so an in-flight group
+    // speed test survives rotation and its measured delays are not wiped.
+    val vm: ProxiesViewModel = viewModel()
+    val profiles = vm.profiles
+    val selectedProfileId = vm.selectedProfileId
+    val parsedProfile = vm.parsedProfile
+    val proxyGroups = vm.proxyGroups
+    val liveGroupMap = vm.liveGroupMap
+    val selectedGroupName = vm.selectedGroupName
+    val currentGroupData = vm.currentGroupData
+    val activeNodeName = vm.activeNodeName
+    val delayCache = vm.delayCache
+    val testingNodes = vm.testingNodes
+    val mainProxyGroupName = vm.mainProxyGroupName
 
     // Primary Tabs: 0: 仪表, 1: 策略, 2: 配置
     var currentTab by rememberSaveable { mutableStateOf(0) }
@@ -99,16 +110,22 @@ fun MainAppScreen(
     var overrideTargetProfileId by rememberSaveable { mutableStateOf<String?>(null) }
     var overrideTargetProfile by remember { mutableStateOf<ProfileItem?>(null) }
 
-    val vpnState by MihomoVpnService.vpnState.collectAsState()
+    // Field-level derived reads: vpnState updates once per second (traffic strings), and
+    // reading the whole object here would recompose this entire screen (and the three
+    // persistent pager tabs) on every tick. Status/error/version change rarely; the traffic
+    // values are only read inside DashboardTrafficRow via vpnTraffic.
+    val vpnTraffic = MihomoVpnService.vpnState.collectAsStateWithLifecycle()
+    val vpnStatus by remember { derivedStateOf { vpnTraffic.value.status } }
+    val vpnError by remember { derivedStateOf { vpnTraffic.value.error } }
+    val vpnCoreVersion by remember { derivedStateOf { vpnTraffic.value.coreVersion } }
+    val coreActive = vpnStatus == VpnState.Status.RUNNING || ClashCore.isCoreLoaded
 
-    var profiles by remember { mutableStateOf(emptyList<ProfileItem>()) }
-    var selectedProfileId by remember { mutableStateOf(settingsManager.selectedProfileId) }
     var tunnelMode by remember { mutableStateOf(TunnelMode.fromString(settingsManager.tunnelMode)) }
     var appLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
 
-    // Listing the profile directory touches the disk, so it is not composition work.
+    // Initial profile listing (disk IO) is owned by the ViewModel.
     LaunchedEffect(Unit) {
-        profiles = withContext(Dispatchers.IO) { ConfigManager.getProfiles(activity) }
+        vm.reloadProfiles()
     }
 
     // Re-resolve the override target after rotation, when only its id could be restored.
@@ -118,22 +135,6 @@ fun MainAppScreen(
         } else if (overrideTargetProfile?.id != overrideTargetProfileId) {
             overrideTargetProfile = profiles.find { it.id == overrideTargetProfileId }
         }
-    }
-
-    var parsedProfile by remember { mutableStateOf(ParsedProfile()) }
-    var proxyGroups by remember { mutableStateOf(listOf<String>()) }
-    var liveGroupMap by remember { mutableStateOf<Map<String, ProxyGroup>>(emptyMap()) }
-    var selectedGroupName by rememberSaveable { mutableStateOf("") }
-    var currentGroupData by remember { mutableStateOf<ProxyGroup?>(null) }
-    var activeNodeName by remember { mutableStateOf("") }
-
-    val mainProxyGroupName = remember(proxyGroups, parsedProfile.groups) {
-        proxyGroups.firstOrNull { it.equals("节点选择", ignoreCase = true) }
-            ?: proxyGroups.firstOrNull { it.equals("PROXY", ignoreCase = true) }
-            ?: proxyGroups.firstOrNull { it.equals("Proxies", ignoreCase = true) }
-            ?: proxyGroups.firstOrNull { it.equals("Proxy", ignoreCase = true) }
-            ?: proxyGroups.firstOrNull { parsedProfile.groups[it]?.hidden != true }
-            ?: proxyGroups.firstOrNull() ?: ""
     }
 
     var visibleShortcuts by remember { mutableStateOf(settingsManager.visibleShortcuts) }
@@ -172,7 +173,11 @@ fun MainAppScreen(
         )
     ) { mutableStateMapOf<String, Boolean>() }
     val proxiesPerGroupTabStates = remember { mutableStateMapOf<String, LazyListState>() }
-    var testingNodes by remember { mutableStateOf(setOf<String>()) }
+    // Group tab scroll states are keyed by group name; a different profile's groups would
+    // otherwise accumulate in this map forever as the user switches subscriptions.
+    LaunchedEffect(selectedProfileId) {
+        proxiesPerGroupTabStates.clear()
+    }
     val pagerState = rememberPagerState(initialPage = currentTab, pageCount = { 3 })
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(pagerState.currentPage) {
@@ -181,539 +186,36 @@ fun MainAppScreen(
         }
     }
 
-    // Persistent node selection handler (Instant 0-delay optimistic update)
+    // ---- Delegates to ProxiesViewModel (state + speed-test engine live there) ----
+
     fun handleSelectProxy(group: String, proxy: Proxy) {
-        settingsManager.setSelectedNode(group, proxy.name)
-        if (group == mainProxyGroupName) {
-            activeNodeName = proxy.name
-        }
-        if (group == selectedGroupName) {
-            currentGroupData = currentGroupData?.copy(now = proxy.name)
-        }
-
-        // 1. Update in parsedProfile map
-        val existingGroup = parsedProfile.groups[group]
-        if (existingGroup != null) {
-            val updatedGroup = existingGroup.copy(now = proxy.name)
-            val newMap = parsedProfile.groups.toMutableMap()
-            newMap[group] = updatedGroup
-            val updatedActiveNode = if (group == mainProxyGroupName) proxy.name else parsedProfile.activeNode
-            parsedProfile = parsedProfile.copy(groups = newMap, activeNode = updatedActiveNode)
-        }
-
-        // 2. Immediately update liveGroupMap on main thread
-        val currentLive = liveGroupMap[group] ?: existingGroup
-        if (currentLive != null) {
-            val updatedMap = liveGroupMap.toMutableMap()
-            updatedMap[group] = currentLive.copy(now = proxy.name)
-            liveGroupMap = updatedMap
-        }
-
-        // 3. Asynchronously dispatch to core without blocking UI
-        if (vpnState.status == VpnState.Status.RUNNING) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                ClashCore.patchSelector(group, proxy.name)
-            }
-        }
+        vm.selectProxy(group, proxy, dispatchToCore = vpnStatus == VpnState.Status.RUNNING)
     }
 
-    var parseJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun parseActiveProfile() = vm.parseActiveProfile()
 
-    // Parse currently active profile offline to immediately show nodes & groups
-    fun parseActiveProfile() {
-        val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
-        parseJob?.cancel()
-        parseJob = lifecycleScope.launch(Dispatchers.IO) {
-            val savedMap = settingsManager.getAllSelectedNodes()
-            val parsed = ProfileParser.parse(active?.file, savedMap, activity)
-            withContext(Dispatchers.Main) {
-                parsedProfile = parsed
-                proxyGroups = parsed.groupNames
-                if (selectedGroupName.isBlank() || !parsed.groupNames.contains(selectedGroupName)) {
-                    selectedGroupName = parsed.groupNames.firstOrNull() ?: ""
-                }
-                if (selectedGroupName.isNotBlank()) {
-                    val grp = parsed.groups[selectedGroupName]
-                    val savedNode = settingsManager.getSelectedNode(selectedGroupName)
-                    val effectiveNow = if (savedNode != null && grp?.proxies?.any { it.name == savedNode } == true) {
-                        savedNode
-                    } else {
-                        grp?.now ?: ""
-                    }
-                    currentGroupData = grp?.copy(now = effectiveNow)
-                }
-                val effectiveMainGroup = parsed.groupNames.firstOrNull { it.equals("节点选择", ignoreCase = true) }
-                    ?: parsed.groupNames.firstOrNull { it.equals("PROXY", ignoreCase = true) }
-                    ?: parsed.groupNames.firstOrNull { it.equals("Proxies", ignoreCase = true) }
-                    ?: parsed.groupNames.firstOrNull { it.equals("Proxy", ignoreCase = true) }
-                    ?: parsed.groupNames.firstOrNull { parsed.groups[it]?.hidden != true }
-                    ?: parsed.groupNames.firstOrNull() ?: ""
-                val mainGrp = parsed.groups[effectiveMainGroup]
-                val savedMainNode = settingsManager.getSelectedNode(effectiveMainGroup)
-                val effectiveMainNow = if (savedMainNode != null && mainGrp?.proxies?.any { it.name == savedMainNode } == true) {
-                    savedMainNode
-                } else {
-                    mainGrp?.now ?: parsed.activeNode
-                }
-                activeNodeName = effectiveMainNow
-            }
-        }
-    }
+    fun refreshProxiesOnline() = vm.refreshProxiesOnline()
 
-    // Reload profiles from storage
-    fun reloadProfiles() {
-        profiles = ConfigManager.getProfiles(activity)
-        if (selectedProfileId == null && profiles.isNotEmpty()) {
-            selectedProfileId = profiles.first().id
-            settingsManager.selectedProfileId = selectedProfileId
-        }
-        parseActiveProfile()
-    }
+    fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false): Job =
+        vm.runSpeedTestForGroup(groupName, isAutoTest)
 
-    // Refresh proxy groups dynamically when core is running
-    val delayCache = remember { mutableStateMapOf<String, Int>() }
-    val nodeLastTestedTimes = remember { mutableMapOf<String, Long>() }
+    fun runSpeedTestForSingleNode(groupName: String?, nodeName: String) =
+        vm.runSpeedTestForSingleNode(groupName, nodeName)
 
-    fun refreshProxiesOnline() {
-        // Skip refresh while speed tests are running to avoid clobbering results
-        if (testingNodes.isNotEmpty()) return
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val allGroups = ClashCore.queryGroupNames()
-                val groups = mutableListOf<String>()
-                val groupDataMap = mutableMapOf<String, ProxyGroup>()
-                for (gName in allGroups) {
-                    val gData = ClashCore.queryGroup(gName) ?: continue
-                    if (gData.hidden == true) continue
-                    groups.add(gName)
-                    val mergedProxies = gData.proxies.map { p ->
-                        val cachedDelay = delayCache[p.name] ?: delayCache["$gName:${p.name}"]
-                        if (cachedDelay != null) {
-                            p.copy(delay = cachedDelay)
-                        } else if (p.delay >= 65535 || p.delay <= 0) {
-                            p.copy(delay = -1) // not tested -> show "--"
-                        } else p
-                    }
-                    groupDataMap[gName] = gData.copy(proxies = mergedProxies)
-                }
-                if (groups.isNotEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        if (proxyGroups != groups) {
-                            proxyGroups = groups
-                        }
-                        if (liveGroupMap != groupDataMap) {
-                            liveGroupMap = groupDataMap
-                        }
-                        if (selectedGroupName.isBlank() || !groups.contains(selectedGroupName)) {
-                            selectedGroupName = groups.firstOrNull() ?: ""
-                        }
-                        if (selectedGroupName.isNotBlank()) {
-                            val cur = groupDataMap[selectedGroupName]
-                            if (cur != null && currentGroupData != cur) {
-                                currentGroupData = cur
-                            }
-                        }
-                        val mainCur = groupDataMap[mainProxyGroupName]
-                        if (mainCur != null && mainCur.now.isNotBlank() && activeNodeName != mainCur.now) {
-                            activeNodeName = mainCur.now
-                        }
-                    }
-                }
-            } catch (_: Throwable) {
-            }
-        }
-    }
-
-    fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false): Job {
-        val groupTestingKey = "group:$groupName"
-        if (groupName.isNotBlank() && testingNodes.contains(groupTestingKey)) {
-            return Job().apply { complete() }
-        }
-
-        // Immediate visual feedback on the UI thread when manually testing a specific group
-        if (!isAutoTest && groupName.isNotBlank()) {
-            val initialGrp = liveGroupMap[groupName]
-                ?: parsedProfile.groups[groupName]
-                ?: (if (selectedGroupName == groupName) currentGroupData else null)
-            val initialScopedKeys = initialGrp?.proxies
-                ?.filter { p ->
-                    !p.name.equals("DIRECT", ignoreCase = true) &&
-                        !p.name.equals("REJECT", ignoreCase = true) &&
-                        !p.name.equals("COMPATIBLE", ignoreCase = true)
-                }
-                ?.map { "$groupName:${it.name}" }
-                .orEmpty()
-            testingNodes = testingNodes + groupTestingKey + initialScopedKeys
-        }
-
-        return lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                ClashCore.ensureCoreLoaded(activity)
-                val targetGroups = if (groupName.isNotBlank()) listOf(groupName) else proxyGroups
-                val semaphore = Semaphore(3)
-                val subGroupBatchCache = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Int>>()
-
-                suspend fun resolveSubGroupDelay(subG: String, visited: Set<String> = emptySet()): Int = coroutineScope {
-                    if (subG in visited || visited.size > 4) {
-                        return@coroutineScope delayCache[subG] ?: -1
-                    }
-                    val deferred = subGroupBatchCache.getOrPut(subG) {
-                        async(Dispatchers.IO) {
-                            val subGrp = liveGroupMap[subG]
-                                ?: parsedProfile.groups[subG]
-                                ?: ClashCore.queryGroup(subG)
-                            val nonVirtual = subGrp?.proxies?.filter { p ->
-                                !p.name.equals("DIRECT", ignoreCase = true) &&
-                                    !p.name.equals("REJECT", ignoreCase = true) &&
-                                    !p.name.equals("COMPATIBLE", ignoreCase = true)
-                            }.orEmpty()
-
-                            val nestedSubGroups = nonVirtual.map { it.name }.filter {
-                                parsedProfile.groups.containsKey(it) || liveGroupMap.containsKey(it)
-                            }.toSet()
-                            val leafMembers = nonVirtual.map { it.name }.filter { it !in nestedSubGroups }
-
-                            val subDelays: Map<String, Int> = if (leafMembers.isNotEmpty()) {
-                                ClashCore.healthCheckGroupNative(subG) { subNodeName, subNodeDelay ->
-                                    if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                        lifecycleScope.launch(Dispatchers.Main) {
-                                            delayCache[subNodeName] = subNodeDelay
-                                            delayCache["$subG:$subNodeName"] = subNodeDelay
-                                            nodeLastTestedTimes[subNodeName] = System.currentTimeMillis()
-                                        }
-                                    }
-                                }
-                            } else {
-                                emptyMap()
-                            }
-
-                            val subGroupData = ClashCore.queryGroup(subG) ?: subGrp
-                            val subBestName = subGroupData?.now ?: ""
-
-                            // If the active choice in this sub-group is itself a nested sub-group, resolve it
-                            val nestedBestDelay = if (subBestName.isNotBlank() && subBestName in nestedSubGroups) {
-                                resolveSubGroupDelay(subBestName, visited + subG)
-                            } else if (leafMembers.isEmpty() && nestedSubGroups.isNotEmpty()) {
-                                val firstNested = nestedSubGroups.first()
-                                resolveSubGroupDelay(firstNested, visited + subG)
-                            } else {
-                                -1
-                            }
-
-                            val rawBestDelay = when {
-                                nestedBestDelay in 1..65534 -> nestedBestDelay
-                                (subDelays[subBestName] ?: -1) in 1..65534 -> subDelays[subBestName]!!
-                                (delayCache[subBestName] ?: -1) in 1..65534 -> delayCache[subBestName]!!
-                                (subGroupData?.proxies?.find { it.name == subBestName }?.delay ?: -1) in 1..65534 ->
-                                    subGroupData!!.proxies.find { it.name == subBestName }!!.delay
-                                else -> -1
-                            }
-                            val minValidSubDelay = subDelays.values.filter { it in 1..65534 }.minOrNull()
-                            val finalSubDelay = when {
-                                rawBestDelay in 1..65534 -> rawBestDelay
-                                minValidSubDelay != null -> minValidSubDelay
-                                else -> -1
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                val nowMs = System.currentTimeMillis()
-                                subDelays.forEach { (subNodeName, subNodeDelay) ->
-                                    if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                        delayCache[subNodeName] = subNodeDelay
-                                        delayCache["$subG:$subNodeName"] = subNodeDelay
-                                        nodeLastTestedTimes[subNodeName] = nowMs
-                                    }
-                                }
-                                if (finalSubDelay in 1..65534) {
-                                    delayCache[subG] = finalSubDelay
-                                }
-                                if (subGroupData != null && subGroupData.now.isNotBlank()) {
-                                    val existing = liveGroupMap[subG] ?: parsedProfile.groups[subG]
-                                    if (existing != null) {
-                                        liveGroupMap = liveGroupMap + (subG to existing.copy(now = subGroupData.now))
-                                    }
-                                }
-                            }
-                            finalSubDelay
-                        }
-                    }
-                    deferred.await()
-                }
-
-                coroutineScope {
-                    targetGroups.map { g ->
-                        async(Dispatchers.IO) {
-                            semaphore.withPermit {
-                                val gKey = "group:$g"
-                                val grp = liveGroupMap[g]
-                                    ?: parsedProfile.groups[g]
-                                    ?: (if (selectedGroupName == g) currentGroupData else null)
-                                    ?: ClashCore.queryGroup(g)
-                                val normType = (grp?.type ?: "").lowercase().replace("-", "").replace("_", "").trim()
-                                val isAutoGroup = normType == "urltest" || normType == "fallback" || normType == "loadbalance"
-
-                                if (isAutoTest && !isAutoGroup) return@withPermit
-
-                                val filterVirtual = grp?.proxies?.filter { p ->
-                                    !p.name.equals("DIRECT", ignoreCase = true) &&
-                                        !p.name.equals("REJECT", ignoreCase = true) &&
-                                        !p.name.equals("COMPATIBLE", ignoreCase = true)
-                                } ?: emptyList()
-
-                                val allNodeNames = filterVirtual.map { it.name }
-                                if (allNodeNames.isEmpty()) {
-                                    withContext(Dispatchers.Main) {
-                                        testingNodes = testingNodes - gKey
-                                    }
-                                    return@withPermit
-                                }
-
-                                val memberSubGroups = allNodeNames.filter {
-                                    parsedProfile.groups.containsKey(it) || liveGroupMap.containsKey(it)
-                                }.toSet()
-                                val leafNodeNames = allNodeNames.filter { it !in memberSubGroups }
-                                val scopedKeys = allNodeNames.map { "$g:$it" }
-
-                                withContext(Dispatchers.Main) {
-                                    testingNodes = if (isAutoTest) {
-                                        testingNodes + gKey
-                                    } else {
-                                        testingNodes + scopedKeys + gKey
-                                    }
-                                }
-
-                                try {
-                                    val curTime = System.currentTimeMillis()
-
-                                    // Run native group health check only if the group has direct leaf nodes
-                                    val parentJob = async(Dispatchers.IO) {
-                                        if (leafNodeNames.isNotEmpty()) {
-                                            ClashCore.healthCheckGroupNative(g) { pName, delay ->
-                                                val isSubGroup = memberSubGroups.contains(pName)
-                                                lifecycleScope.launch(Dispatchers.Main) {
-                                                    if (!isSubGroup && delay in 1..65534) {
-                                                        delayCache[pName] = delay
-                                                        delayCache["$g:$pName"] = delay
-                                                        nodeLastTestedTimes[pName] = System.currentTimeMillis()
-                                                    } else if (isSubGroup && delay in 1..65534) {
-                                                        delayCache[pName] = delay
-                                                        delayCache["$g:$pName"] = delay
-                                                    }
-                                                    if (!isSubGroup) {
-                                                        testingNodes = testingNodes - "$g:$pName"
-                                                    }
-                                                }
-                                            }
-                                        } else {
-                                            emptyMap()
-                                        }
-                                    }
-
-                                    val subJobs = memberSubGroups.map { subG ->
-                                        async(Dispatchers.IO) {
-                                            val finalSubDelay = resolveSubGroupDelay(subG, setOf(g))
-                                            withContext(Dispatchers.Main) {
-                                                if (finalSubDelay in 1..65534) {
-                                                    delayCache[subG] = finalSubDelay
-                                                    delayCache["$g:$subG"] = finalSubDelay
-                                                }
-                                                testingNodes = testingNodes - "$g:$subG"
-                                            }
-                                        }
-                                    }
-
-                                    val groupDelays = parentJob.await()
-                                    subJobs.awaitAll()
-
-                                    withContext(Dispatchers.Main) {
-                                        groupDelays.forEach { (name, delay) ->
-                                            val isSubGroup = memberSubGroups.contains(name)
-                                            if (!isSubGroup && delay in 1..65534) {
-                                                delayCache[name] = delay
-                                                delayCache["$g:$name"] = delay
-                                                nodeLastTestedTimes[name] = curTime
-                                            } else if (isSubGroup && delay in 1..65534 && (delayCache[name] ?: -1) !in 1..65534) {
-                                                delayCache[name] = delay
-                                                delayCache["$g:$name"] = delay
-                                            }
-                                        }
-                                    }
-
-                                    val finalGroup = ClashCore.queryGroup(g)
-                                    withContext(Dispatchers.Main) {
-                                        val bestNodeName = finalGroup?.now ?: grp?.now ?: ""
-                                        val rawBest = delayCache["$g:$bestNodeName"]
-                                            ?: delayCache[bestNodeName]
-                                            ?: finalGroup?.proxies?.find { it.name == bestNodeName }?.delay
-                                            ?: -1
-                                        val minValid = allNodeNames.mapNotNull { name ->
-                                            (delayCache["$g:$name"] ?: delayCache[name] ?: groupDelays[name])?.takeIf { it in 1..65534 }
-                                        }.minOrNull()
-                                        val finalGroupDelay = when {
-                                            rawBest in 1..65534 -> rawBest
-                                            minValid != null -> minValid
-                                            else -> -1
-                                        }
-                                        if (finalGroupDelay in 1..65534) {
-                                            delayCache[g] = finalGroupDelay
-                                        }
-
-                                        if (finalGroup != null && finalGroup.now.isNotBlank()) {
-                                            val existing = liveGroupMap[g] ?: parsedProfile.groups[g]
-                                            if (existing != null) {
-                                                liveGroupMap = liveGroupMap + (g to existing.copy(now = finalGroup.now))
-                                            }
-                                            if (selectedGroupName == g && currentGroupData != null) {
-                                                currentGroupData = currentGroupData?.copy(now = finalGroup.now)
-                                            }
-                                        }
-                                    }
-                                } finally {
-                                    withContext(Dispatchers.Main) {
-                                        testingNodes = testingNodes - scopedKeys.toSet() - gKey
-                                    }
-                                }
-                            }
-                        }
-                    }.awaitAll()
-                }
-            } catch (_: Throwable) {
-                withContext(Dispatchers.Main) {
-                    if (groupName.isNotBlank()) {
-                        testingNodes = testingNodes.filterNot {
-                            it == groupTestingKey || it.startsWith("$groupName:")
-                        }.toSet()
-                    }
-                }
-            }
-        }
-    }
-
-    fun runSpeedTestForSingleNode(groupName: String?, nodeName: String) {
-        val scopedKey = if (!groupName.isNullOrBlank()) "$groupName:$nodeName" else nodeName
-        if (testingNodes.contains(scopedKey)) return
-
-        if (parsedProfile.groups.containsKey(nodeName) || liveGroupMap.containsKey(nodeName)) {
-            testingNodes = testingNodes + scopedKey
-            val job = runSpeedTestForGroup(nodeName, isAutoTest = false)
-            job.invokeOnCompletion {
-                lifecycleScope.launch(Dispatchers.Main) {
-                    val resolved = delayCache[nodeName]
-                    if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
-                        delayCache["$groupName:$nodeName"] = resolved
-                    }
-                    testingNodes = testingNodes - scopedKey
-                }
-            }
-            return
-        }
-
-        val targetGroup = when {
-            !groupName.isNullOrBlank() -> groupName
-            else -> liveGroupMap.entries.firstOrNull { (_, g) -> g.proxies.any { it.name == nodeName } }?.key
-                ?: parsedProfile.groups.entries.firstOrNull { (_, g) -> g.proxies.any { it.name == nodeName } }?.key
-        }
-
-        if (targetGroup.isNullOrBlank()) {
-            Log.w("MainAppScreen", "Cannot resolve group for node $nodeName")
-            return
-        }
-
-        val targetScopedKey = "$targetGroup:$nodeName"
-        if (testingNodes.contains(targetScopedKey)) return
-        testingNodes = testingNodes + targetScopedKey
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                ClashCore.ensureCoreLoaded(activity)
-                val curTime = System.currentTimeMillis()
-                val singleDelay = ClashCore.testProxyDelayNative(nodeName, targetGroup)
-                withContext(Dispatchers.Main) {
-                    if (singleDelay in 1..65534) {
-                        delayCache[nodeName] = singleDelay
-                        delayCache[targetScopedKey] = singleDelay
-                        nodeLastTestedTimes[nodeName] = curTime
-                    }
-                }
-            } catch (e: Throwable) {
-                Log.e("MainAppScreen", "Speed test failed for node $nodeName: ${e.message}", e)
-            } finally {
-                withContext(Dispatchers.Main) {
-                    testingNodes = testingNodes - targetScopedKey
-                }
-            }
-        }
-    }
-
-    val lastAutoTestTimes = remember { mutableMapOf<String, Long>() }
-    var autoTestJob by remember { mutableStateOf<Job?>(null) }
-
-    fun isAutoStrategyGroupType(type: String): Boolean {
-        val norm = type.lowercase().replace("-", "").replace("_", "").trim()
-        return norm == "urltest" || norm == "fallback" || norm == "loadbalance"
-    }
-
-    fun triggerAutoSpeedTest() {
-        // Checked and set on the main thread; every caller (LaunchedEffect, ON_RESUME) runs
-        // there, so two triggers cannot both start a sweep.
-        if (autoTestJob?.isActive == true) return
-        autoTestJob = lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                if (!ClashCore.isCoreLoaded) {
-                    ClashCore.ensureCoreLoaded(activity)
-                }
-                val now = System.currentTimeMillis()
-
-                // Strictly find the 3 auto-testable group types (url-test, fallback, load-balance)
-                val autoGroups = parsedProfile.groups.filter { (gName, grp) ->
-                    val isAutoType = isAutoStrategyGroupType(grp.type)
-                    val isRootGroup = gName.equals("GLOBAL", ignoreCase = true) ||
-                            gName.equals("节点选择", ignoreCase = true) ||
-                            gName.equals("PROXIES", ignoreCase = true) ||
-                            gName.equals("Proxy", ignoreCase = true) ||
-                            gName.equals("全部节点", ignoreCase = true)
-                    isAutoType && !isRootGroup
-                }.keys.toList()
-
-                // Filter out groups that have already been tested within cooldown (120 seconds)
-                val groupsToTest = autoGroups.filter { g ->
-                    val lastTime = lastAutoTestTimes[g] ?: 0L
-                    now - lastTime > 120_000L
-                }
-
-                for (g in groupsToTest) {
-                    lastAutoTestTimes[g] = System.currentTimeMillis()
-                    // Await each group so the sweep cannot overlap itself or finish early.
-                    runSpeedTestForGroup(g, isAutoTest = true).join()
-                    delay(200L)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                Log.w("MainAppScreen", "Auto speed test failed", e)
-            }
-        }
-    }
-
-    // Re-parse once the profile list finishes loading, otherwise the first run (when the list
-    // starts empty) would parse nothing and show no nodes.
-    LaunchedEffect(selectedProfileId, profiles) {
-        parseActiveProfile()
-    }
+    fun triggerAutoSpeedTest() = vm.triggerAutoSpeedTest()
 
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // Trigger initial auto speed test once when VPN transitions to RUNNING
-    LaunchedEffect(vpnState.status) {
-        if (vpnState.status == VpnState.Status.RUNNING) {
+    LaunchedEffect(vpnStatus) {
+        if (vpnStatus == VpnState.Status.RUNNING) {
             triggerAutoSpeedTest()
             refreshProxiesOnline()
         }
     }
 
     // Dynamic refresh when VPN is connected and user is actively viewing Dashboard or Proxies tab
-    val shouldPollProxies = vpnState.status == VpnState.Status.RUNNING &&
+    val shouldPollProxies = vpnStatus == VpnState.Status.RUNNING &&
         currentSubScreen == null &&
         (currentTab == 0 || currentTab == 1)
 
@@ -752,7 +254,7 @@ fun MainAppScreen(
             allowLanPasswordInitialized = true
             return@LaunchedEffect
         }
-        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
+        if (vpnStatus == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
             delay(800L)
             withContext(Dispatchers.IO) {
                 ClashCore.reloadActiveConfig(activity)
@@ -764,18 +266,7 @@ fun MainAppScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val res = ConfigManager.importProfileFromUri(activity, uri)
-                withContext(Dispatchers.Main) {
-                    if (res.isSuccess) {
-                        val imported = res.getOrNull()
-                        reloadProfiles()
-                        CupertinoToast.show("成功导入配置: ${imported?.name}")
-                    } else {
-                        CupertinoToast.show("导入失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
-                    }
-                }
-            }
+            vm.importProfile(uri)
         }
     }
 
@@ -834,7 +325,10 @@ fun MainAppScreen(
                         ?: activeNodeName).ifBlank { parsedProfile.activeNode }
                     DashboardScreen(
                         scrollState = dashboardScrollState,
-                        vpnState = vpnState,
+                        vpnStatus = vpnStatus,
+                        vpnError = vpnError,
+                        coreVersion = vpnCoreVersion,
+                        vpnTraffic = vpnTraffic,
                         currentMode = tunnelMode,
                         activeProfileName = profiles.firstOrNull { it.id == selectedProfileId }?.name ?: "默认配置",
                         mainGroupName = mainProxyGroupName,
@@ -848,8 +342,8 @@ fun MainAppScreen(
                         onModeSelected = { newMode ->
                             tunnelMode = newMode
                             settingsManager.tunnelMode = newMode.value
-                            if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                lifecycleScope.launch(Dispatchers.IO) {
+                            if (coreActive) {
+                                coroutineScope.launch(Dispatchers.IO) {
                                     ClashCore.reloadActiveConfig(activity)
                                     refreshProxiesOnline()
                                 }
@@ -934,20 +428,7 @@ fun MainAppScreen(
                             settingsManager.nodeSortMode = sortMode
                         },
                         onSelectGroup = { gName ->
-                            selectedGroupName = gName
-                            val savedNode = settingsManager.getSelectedNode(gName)
-                            if (vpnState.status == VpnState.Status.RUNNING) {
-                                lifecycleScope.launch(Dispatchers.IO) {
-                                    val gData = ClashCore.queryGroup(gName)
-                                    withContext(Dispatchers.Main) {
-                                        currentGroupData = gData
-                                    }
-                                }
-                            } else {
-                                val gData = parsedProfile.groups[gName]
-                                val effectiveNow = if (savedNode != null && gData?.proxies?.any { it.name == savedNode } == true) savedNode else (gData?.now ?: "")
-                                currentGroupData = gData?.copy(now = effectiveNow)
-                            }
+                            vm.selectGroup(gName, vpnStatus == VpnState.Status.RUNNING)
                         },
                         onSelectProxy = { group, proxy -> handleSelectProxy(group, proxy) },
                         onHealthCheck = { group -> runSpeedTestForGroup(group) },
@@ -966,7 +447,7 @@ fun MainAppScreen(
                     onTunStackChanged = { stack ->
                         tunStack = stack
                         settingsManager.tunStack = stack
-                        if (vpnState.status == VpnState.Status.RUNNING) {
+                        if (vpnStatus == VpnState.Status.RUNNING) {
                             MihomoVpnService.restart(activity)
                         }
                     },
@@ -977,8 +458,8 @@ fun MainAppScreen(
                     onAllowLanChanged = { enabled ->
                         allowLan = enabled
                         settingsManager.allowLan = enabled
-                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                            lifecycleScope.launch(Dispatchers.IO) {
+                        if (coreActive) {
+                            coroutineScope.launch(Dispatchers.IO) {
                                 ClashCore.reloadActiveConfig(activity)
                             }
                         }
@@ -988,7 +469,7 @@ fun MainAppScreen(
                         settingsManager.ipv6Enabled = enabled
                         // Both the injected header and the TUN routes change, so a full
                         // tunnel restart is required for the switch to take effect.
-                        if (vpnState.status == VpnState.Status.RUNNING) {
+                        if (vpnStatus == VpnState.Status.RUNNING) {
                             MihomoVpnService.restart(activity)
                         }
                     },
@@ -1132,34 +613,17 @@ fun MainAppScreen(
                                 selectedProfileId = selectedProfileId,
                                 onBack = { currentSubScreen = null },
                                 onSelectProfile = { profile ->
-                                    selectedProfileId = profile.id
-                                    settingsManager.selectedProfileId = profile.id
-                                    parseActiveProfile()
-                                    if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
-                                            refreshProxiesOnline()
-                                        }
-                                    }
-                                    CupertinoToast.show("已生效配置: ${profile.name}")
+                                    vm.selectProfile(profile, coreActive)
                                 },
                                 onAddSubscription = { name, url ->
-                                    lifecycleScope.launch {
-                                        val res = ConfigManager.downloadSubscription(activity, url, name)
-                                        if (res.isSuccess) {
-                                            reloadProfiles()
-                                            CupertinoToast.show("订阅添加成功")
-                                        } else {
-                                            CupertinoToast.show("下载失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
-                                        }
-                                    }
+                                    vm.addSubscription(name, url)
                                 },
                                 onUpdateProfile = { profile ->
-                                    reloadProfiles()
+                                    vm.reloadProfiles()
                                     if (selectedProfileId == profile.id) {
                                         parseActiveProfile()
-                                        if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                            lifecycleScope.launch(Dispatchers.IO) {
+                                        if (coreActive) {
+                                            coroutineScope.launch(Dispatchers.IO) {
                                                 ClashCore.reloadActiveConfig(activity)
                                                 refreshProxiesOnline()
                                             }
@@ -1167,45 +631,16 @@ fun MainAppScreen(
                                     }
                                 },
                                 onRefreshSubscription = { profile ->
-                                    if (profile.url != null) {
-                                        lifecycleScope.launch {
-                                            val res = ConfigManager.updateSubscription(activity, profile.id, profile.name, profile.url)
-                                            if (res.isSuccess) {
-                                                reloadProfiles()
-                                                if (selectedProfileId == profile.id && (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded)) {
-                                                    withContext(Dispatchers.IO) {
-                                                        ClashCore.reloadActiveConfig(activity)
-                                                        refreshProxiesOnline()
-                                                    }
-                                                }
-                                                CupertinoToast.show("订阅更新成功")
-                                            } else {
-                                                CupertinoToast.show("更新失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
-                                            }
-                                        }
-                                    }
+                                    vm.refreshSubscription(profile, coreActive)
                                 },
                                 onDeleteProfile = { profile ->
-                                    val wasSelected = selectedProfileId == profile.id
-                                    ConfigManager.deleteProfile(activity, profile.id)
-                                    if (wasSelected) {
-                                        selectedProfileId = null
-                                        settingsManager.selectedProfileId = null
-                                    }
-                                    reloadProfiles()
-                                    if (wasSelected && (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded)) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
-                                            refreshProxiesOnline()
-                                        }
-                                    }
+                                    vm.deleteProfile(profile, coreActive)
                                 },
                                 onImportLocalFile = {
                                     profileImportLauncher.launch("*/*")
                                 },
                                 onReorderProfiles = { newOrderList ->
-                                    profiles = newOrderList
-                                    ConfigManager.saveProfileOrder(activity, newOrderList.map { it.id })
+                                    vm.reorderProfiles(newOrderList)
                                 },
                                 onNavigateToOverride = { profile ->
                                     overrideTargetProfile = profile
@@ -1224,8 +659,7 @@ fun MainAppScreen(
                                     onProfileUpdated = { updated ->
                                         overrideTargetProfile = updated
                                         overrideTargetProfileId = updated.id
-                                        reloadProfiles()
-                                        parseActiveProfile()
+                                        vm.onProfileMetadataUpdated()
                                     }
                                 )
                             } else {
@@ -1242,13 +676,7 @@ fun MainAppScreen(
                                     }
                                 },
                                 onScriptsChanged = {
-                                    parseActiveProfile()
-                                    if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
-                                            refreshProxiesOnline()
-                                        }
-                                    }
+                                    vm.onScriptsChanged(coreActive)
                                 }
                             )
                         }
@@ -1262,7 +690,7 @@ fun MainAppScreen(
                                 onModeChanged = { mode ->
                                     perAppMode = mode
                                     settingsManager.perAppProxyMode = mode
-                                    if (vpnState.status == VpnState.Status.RUNNING) {
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
                                         MihomoVpnService.restart(activity)
                                     }
                                 },
@@ -1274,14 +702,14 @@ fun MainAppScreen(
                                     }
                                     selectedPackages = updated
                                     settingsManager.selectedPackages = updated
-                                    if (vpnState.status == VpnState.Status.RUNNING) {
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
                                         MihomoVpnService.restart(activity)
                                     }
                                 },
                                 onUpdateSelectedPackages = { updated ->
                                     selectedPackages = updated
                                     settingsManager.selectedPackages = updated
-                                    if (vpnState.status == VpnState.Status.RUNNING) {
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
                                         MihomoVpnService.restart(activity)
                                     }
                                 }
@@ -1312,8 +740,8 @@ fun MainAppScreen(
                                 onFakeIpEnabledChanged = { enabled ->
                                     fakeIpEnabled = enabled
                                     settingsManager.fakeIpEnabled = enabled
-                                    if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
+                                    if (coreActive) {
+                                        coroutineScope.launch(Dispatchers.IO) {
                                             ClashCore.reloadActiveConfig(activity)
                                         }
                                     }
@@ -1323,7 +751,7 @@ fun MainAppScreen(
                         }
                         SubScreen.REQUESTS -> {
                             RequestLogsScreen(
-                                vpnState = vpnState,
+                                vpnStatus = vpnStatus,
                                 onBack = { currentSubScreen = null }
                             )
                         }
@@ -1333,8 +761,8 @@ fun MainAppScreen(
                                 onAllowLanChanged = { enabled ->
                                     allowLan = enabled
                                     settingsManager.allowLan = enabled
-                                    if (vpnState.status == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-                                        lifecycleScope.launch(Dispatchers.IO) {
+                                    if (coreActive) {
+                                        coroutineScope.launch(Dispatchers.IO) {
                                             ClashCore.reloadActiveConfig(activity)
                                         }
                                     }
@@ -1344,7 +772,7 @@ fun MainAppScreen(
                                     allowLanPassword = pwd
                                     settingsManager.allowLanPassword = pwd
                                 },
-                                vpnState = vpnState,
+                                vpnStatus = vpnStatus,
                                 onBack = { currentSubScreen = null }
                             )
                         }
@@ -1371,8 +799,11 @@ fun MainAppScreen(
                 .navigationBarsPadding()
                 .padding(bottom = 16.dp)
         ) {
+            // Derived read: targetPage changes every frame while a tab animation runs, so
+            // reading it directly here would recompose this bar on every frame.
+            val targetTab by remember { derivedStateOf { pagerState.targetPage } }
             LoonFloatingBottomBar(
-                selectedTab = pagerState.targetPage,
+                selectedTab = targetTab,
                 onTabSelected = { tabIndex ->
                     currentTab = tabIndex
                     coroutineScope.launch {
@@ -1382,7 +813,7 @@ fun MainAppScreen(
                         )
                     }
                     if (tabIndex == 1) {
-                        if (vpnState.status == VpnState.Status.RUNNING) {
+                        if (vpnStatus == VpnState.Status.RUNNING) {
                             refreshProxiesOnline()
                         } else if (parsedProfile.groups.isEmpty()) {
                             parseActiveProfile()

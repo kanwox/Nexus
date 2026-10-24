@@ -39,7 +39,7 @@ fun NetworkShareScreen(
     onAllowLanChanged: (Boolean) -> Unit,
     allowLanPassword: String,
     onAllowLanPasswordChanged: (String) -> Unit,
-    vpnState: VpnState,
+    vpnStatus: VpnState.Status,
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
@@ -47,7 +47,7 @@ fun NetworkShareScreen(
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
 
-    val localIp = remember(allowLan, vpnState.status) {
+    val localIp = remember(allowLan, vpnStatus) {
         getLocalIpAddress(context)
     }
 
@@ -144,7 +144,7 @@ fun NetworkShareScreen(
             // Contextual Status Alert
             if (allowLan) {
                 item {
-                    val isRunning = vpnState.status == VpnState.Status.RUNNING
+                    val isRunning = vpnStatus == VpnState.Status.RUNNING
 
                     Row(
                         modifier = Modifier
@@ -436,7 +436,7 @@ fun NetworkShareScreenPreview() {
         onAllowLanChanged = {},
         allowLanPassword = "",
         onAllowLanPasswordChanged = {},
-        vpnState = VpnState(VpnState.Status.RUNNING),
+        vpnStatus = VpnState.Status.RUNNING,
         onBack = {}
     )
 }

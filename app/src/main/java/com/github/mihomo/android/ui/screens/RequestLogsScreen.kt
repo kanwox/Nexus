@@ -42,7 +42,7 @@ private enum class RequestFilter(val label: String) {
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun RequestLogsScreen(
-    vpnState: VpnState,
+    vpnStatus: VpnState.Status,
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
@@ -717,7 +717,7 @@ private fun formatDuration(ms: Long): String {
 @Composable
 fun RequestLogsScreenPreview() {
     RequestLogsScreen(
-        vpnState = VpnState(VpnState.Status.RUNNING),
+        vpnStatus = VpnState.Status.RUNNING,
         onBack = {}
     )
 }

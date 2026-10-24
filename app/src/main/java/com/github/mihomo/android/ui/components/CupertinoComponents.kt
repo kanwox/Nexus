@@ -922,8 +922,10 @@ fun <T> CupertinoSegmentedControl(
 ) {
     if (items.isEmpty()) return
     val haptic = rememberIosHaptic()
+    // -1 (selection not in the list, e.g. a persisted legacy value) must not be coerced to
+    // zero: highlighting the first segment would misrepresent the actual selection.
     val selectedIndex = remember(items, selectedItem) {
-        items.indexOf(selectedItem).coerceAtLeast(0)
+        items.indexOf(selectedItem)
     }
 
     BoxWithConstraints(
@@ -939,7 +941,7 @@ fun <T> CupertinoSegmentedControl(
 
         // iOS spring sliding indicator (Single physical Thumb)
         val thumbOffset by animateDpAsState(
-            targetValue = segmentWidth * selectedIndex,
+            targetValue = segmentWidth * selectedIndex.coerceAtLeast(0),
             animationSpec = spring(
                 dampingRatio = 0.84f,
                 stiffness = 380f
@@ -948,16 +950,18 @@ fun <T> CupertinoSegmentedControl(
         )
 
         // The Sliding White Pill Thumb with subtle iOS shadow & border
-        Box(
-            modifier = Modifier
-                .offset(x = thumbOffset)
-                .width(segmentWidth)
-                .fillMaxHeight()
-                .shadow(elevation = 2.dp, shape = RoundedCornerShape(7.dp), spotColor = Color(0x28000000))
-                .clip(RoundedCornerShape(7.dp))
-                .background(LoonCard)
-                .border(0.5.dp, LoonCardBorder.copy(alpha = 0.6f), RoundedCornerShape(7.dp))
-        )
+        if (selectedIndex >= 0) {
+            Box(
+                modifier = Modifier
+                    .offset(x = thumbOffset)
+                    .width(segmentWidth)
+                    .fillMaxHeight()
+                    .shadow(elevation = 2.dp, shape = RoundedCornerShape(7.dp), spotColor = Color(0x28000000))
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(LoonCard)
+                    .border(0.5.dp, LoonCardBorder.copy(alpha = 0.6f), RoundedCornerShape(7.dp))
+            )
+        }
 
         // Row of items & separators
         Row(
@@ -1487,7 +1491,7 @@ fun CupertinoModalBottomSheet(
 // =============================================================================
 
 data class CupertinoToastData(
-    val id: Long = System.currentTimeMillis(),
+    val id: Long,
     val message: String,
     val icon: ImageVector? = null,
     val isDestructive: Boolean = false,
@@ -1495,6 +1499,9 @@ data class CupertinoToastData(
 )
 
 object CupertinoToast {
+    // Monotonic counter: two toasts in the same millisecond must still differ, or the
+    // id-keyed LaunchedEffect in the host would not restart for the second one.
+    private val nextId = java.util.concurrent.atomic.AtomicLong(0)
     private val _currentToast = MutableStateFlow<CupertinoToastData?>(null)
     val currentToast: StateFlow<CupertinoToastData?> = _currentToast.asStateFlow()
 
@@ -1505,6 +1512,7 @@ object CupertinoToast {
         durationMs: Long = 2000L
     ) {
         _currentToast.value = CupertinoToastData(
+            id = nextId.incrementAndGet(),
             message = message,
             icon = icon,
             isDestructive = isDestructive,

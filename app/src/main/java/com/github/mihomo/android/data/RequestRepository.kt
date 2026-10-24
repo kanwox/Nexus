@@ -170,13 +170,14 @@ object RequestRepository {
                 val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
                 val isReject = outbound.equals("REJECT", ignoreCase = true)
 
-                // Ensure DNS repository captures domain resolution requests initiated through the client
-                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$"""))) {
-                    val ipForDns = if (resolvedIp != host) resolvedIp else "198.18.0.x (Proxy)"
+                // Only mirror genuinely resolved domains into the DNS view. Synthesizing a
+                // fake "198.18.0.x (Proxy)" entry polluted the DNS list with non-DNS data
+                // and poisoned the domain→IP map used to fill destinationIp elsewhere.
+                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$""")) && resolvedIp != host) {
                     DnsRepository.addRecord(
                         domain = host,
-                        ip = ipForDns,
-                        isFakeIp = ipForDns.startsWith("198.18.") || ipForDns.contains("Proxy"),
+                        ip = resolvedIp,
+                        isFakeIp = resolvedIp.startsWith("198.18.") || resolvedIp.startsWith("198.19."),
                         server = outbound
                     )
                 }
@@ -220,13 +221,13 @@ object RequestRepository {
                 val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
                 val isReject = outbound.equals("REJECT", ignoreCase = true)
 
-                // Ensure DNS repository captures domain resolution requests initiated through the client
-                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$"""))) {
-                    val ipForDns = if (resolvedIp != host) resolvedIp else "198.18.0.x (Proxy)"
+                // See the arrow-log branch above: only record real resolutions, never
+                // synthetic placeholder IPs.
+                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$""")) && resolvedIp != host) {
                     DnsRepository.addRecord(
                         domain = host,
-                        ip = ipForDns,
-                        isFakeIp = ipForDns.startsWith("198.18.") || ipForDns.contains("Proxy"),
+                        ip = resolvedIp,
+                        isFakeIp = resolvedIp.startsWith("198.18.") || resolvedIp.startsWith("198.19."),
                         server = outbound
                     )
                 }
@@ -249,6 +250,8 @@ object RequestRepository {
                     )
                 )
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.d("RequestRepository", "parseFromLog failed: ${e.message}")
+        }
     }
 }

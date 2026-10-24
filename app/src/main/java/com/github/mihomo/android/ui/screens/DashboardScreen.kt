@@ -57,7 +57,12 @@ data class ShortcutDef(
 @Composable
 fun DashboardScreen(
     scrollState: androidx.compose.foundation.ScrollState = rememberScrollState(),
-    vpnState: VpnState,
+    vpnStatus: VpnState.Status,
+    vpnError: String? = null,
+    coreVersion: String = "",
+    // Only the traffic cards read this state, so the once-per-second speed update
+    // recomposes just that row instead of the entire dashboard.
+    vpnTraffic: State<VpnState>,
     currentMode: TunnelMode,
     activeProfileName: String,
     mainGroupName: String,
@@ -70,7 +75,7 @@ fun DashboardScreen(
     onToggleVpn: () -> Unit,
     onModeSelected: (TunnelMode) -> Unit,
     onSelectProxy: (group: String, proxy: Proxy) -> Unit,
-    onHealthCheck: (group: String) -> Unit,
+    onHealthCheck: (group: String) -> kotlinx.coroutines.Job?,
     onNavigateToProfiles: () -> Unit,
     onNavigateToAppRouting: () -> Unit,
     onNavigateToRules: () -> Unit = {},
@@ -80,8 +85,8 @@ fun DashboardScreen(
     onUpdateVisibleShortcuts: (Set<String>) -> Unit,
     onUpdateShortcutOrder: (List<String>) -> Unit
 ) {
-    val isRunning = vpnState.status == VpnState.Status.RUNNING
-    val isStarting = vpnState.status == VpnState.Status.STARTING
+    val isRunning = vpnStatus == VpnState.Status.RUNNING
+    val isStarting = vpnStatus == VpnState.Status.STARTING
     var showModeBottomSheet by remember { mutableStateOf(false) }
     val modeSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -115,7 +120,7 @@ fun DashboardScreen(
     // All shortcut item definitions available across entire DashboardScreen (cached to eliminate recomposition lag)
     val allShortcutMap = remember(
         lang, activeProfileName, activeNodeName, totalNodes, totalRules,
-        vpnState.coreVersion, isRunning
+        coreVersion, isRunning
     ) {
         mapOf(
             "nodes" to ShortcutDef("nodes", AppStrings.get("shortcut_nodes", lang), activeNodeName.ifBlank { "$totalNodes" }, { NodesIllustration() }) {
@@ -136,9 +141,9 @@ fun DashboardScreen(
             "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), "规则与黑白名单", { AppRoutingIllustration() }) {
                 onNavigateToAppRouting()
             },
-            "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (vpnState.coreVersion.isNotBlank()) "v${vpnState.coreVersion.take(8)}" else "Nexus Core", { PluginsIllustration() }) {
+            "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (coreVersion.isNotBlank()) "v${coreVersion.take(8)}" else "Nexus Core", { PluginsIllustration() }) {
                 activeDialogTitle = "内核信息"
-                activeDialogContent = "内核版本: ${vpnState.coreVersion.ifBlank { "v1.18.x" }}\n" +
+                activeDialogContent = "内核版本: ${coreVersion.ifBlank { "v1.18.x" }}\n" +
                         "架构支持: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"}"
             },
             "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:7890", { NetworkShareIllustration() }) {
@@ -152,20 +157,23 @@ fun DashboardScreen(
     }
 
     val isDarkTheme = LocalLoonColors.current.isDark
-    val topBgBrush = if (isDarkTheme) {
-        Brush.verticalGradient(
-            colors = listOf(LoonBg, LoonBg)
-        )
-    } else {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFFFFF6EE),
-                Color(0xFFF9F9FD),
-                LoonBg
-            ),
-            startY = 0f,
-            endY = 550f
-        )
+    val bgColor = LoonBg
+    val topBgBrush = remember(isDarkTheme, bgColor) {
+        if (isDarkTheme) {
+            Brush.verticalGradient(
+                colors = listOf(bgColor, bgColor)
+            )
+        } else {
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFFFFF6EE),
+                    Color(0xFFF9F9FD),
+                    bgColor
+                ),
+                startY = 0f,
+                endY = 550f
+            )
+        }
     }
 
     // Stretch overscroll disabled specifically on DashboardScreen as requested
@@ -247,8 +255,7 @@ fun DashboardScreen(
                 // Dual Traffic Cards Row (Upload & Download - isolated to prevent whole dashboard recomposition)
                 DashboardTrafficRow(
                     isRunning = isRunning,
-                    upSpeed = vpnState.upSpeed,
-                    downSpeed = vpnState.downSpeed,
+                    traffic = vpnTraffic,
                     lang = lang
                 )
 
@@ -502,7 +509,7 @@ fun DashboardScreen(
                 }
             }
 
-            if (vpnState.error != null) {
+            if (vpnError != null) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Surface(
                     color = RedDanger.copy(alpha = 0.12f),
@@ -515,7 +522,7 @@ fun DashboardScreen(
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, tint = RedDanger, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = vpnState.error, color = RedDanger, fontSize = 13.sp)
+                        Text(text = vpnError, color = RedDanger, fontSize = 13.sp)
                     }
                 }
             }
@@ -542,8 +549,10 @@ fun DashboardScreen(
                                     if (mainGroupName.isNotBlank() && !isTestingQuickNodes) {
                                         isTestingQuickNodes = true
                                         coroutineScope.launch {
-                                            onHealthCheck(mainGroupName)
-                                            delay(1800.milliseconds)
+                                            // Tie the spinner to the real speed test instead
+                                            // of guessing its duration with a fixed delay.
+                                            val job = onHealthCheck(mainGroupName)
+                                            job?.join()
                                             isTestingQuickNodes = false
                                         }
                                     }
@@ -600,7 +609,10 @@ fun DashboardScreen(
                         ) {
                             cupertinoGroupedItems(
                                 items = filteredNodes,
-                                key = { idx, proxy -> "${idx}_${proxy.name}" },
+                                // Identity is the node name alone: mixing the index in meant
+                                // every keystroke in the search box shifted all indices and
+                                // rebuilt the entire visible list.
+                                key = { _, proxy -> proxy.name },
                                 dividerStartIndent = 16.dp
                             ) { _, proxy ->
                                 val isSelected = proxy.name == activeNodeName
@@ -847,10 +859,12 @@ fun DashboardScreen(
 @Composable
 private fun DashboardTrafficRow(
     isRunning: Boolean,
-    upSpeed: String,
-    downSpeed: String,
+    traffic: State<VpnState>,
     lang: String
 ) {
+    // Scoped read: only this row recomposes on the once-per-second speed update.
+    val upSpeed = traffic.value.upSpeed
+    val downSpeed = traffic.value.downSpeed
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -880,12 +894,17 @@ fun DashboardScreenPreview() {
     )
     MihomoTheme {
         DashboardScreen(
-            vpnState = VpnState(
-                status = VpnState.Status.RUNNING,
-                upSpeed = "128 KB/s",
-                downSpeed = "2.4 MB/s",
-                totalUp = "1.2 GB",
-                totalDown = "18.5 GB"
+            vpnStatus = VpnState.Status.RUNNING,
+            vpnError = null,
+            coreVersion = "v1.18.0-test",
+            vpnTraffic = androidx.compose.runtime.mutableStateOf(
+                VpnState(
+                    status = VpnState.Status.RUNNING,
+                    upSpeed = "128 KB/s",
+                    downSpeed = "2.4 MB/s",
+                    totalUp = "1.2 GB",
+                    totalDown = "18.5 GB"
+                )
             ),
             currentMode = TunnelMode.RULE,
             activeProfileName = "Premium Auto Sub",
@@ -899,7 +918,7 @@ fun DashboardScreenPreview() {
             onToggleVpn = {},
             onModeSelected = {},
             onSelectProxy = { _, _ -> },
-            onHealthCheck = {},
+            onHealthCheck = { null },
             onNavigateToProfiles = {},
             onNavigateToAppRouting = {},
             onNavigateToRules = {},

@@ -133,6 +133,9 @@ object ClashCore {
 
     suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            // The geo databases are extracted off the main thread at init; the core reads them
+            // while parsing the config, so wait for the extraction to finish first.
+            Bridge.assetsReady()
             val deferred = CompletableDeferred<Unit>()
             val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
             Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
@@ -291,6 +294,13 @@ object ClashCore {
         } finally {
             pollJob?.cancel()
             activeGroupChecks.remove(name, deferred)
+            // The deferred is normally completed by the native callback; if the health check
+            // timed out instead, drop the map entry here so a later check can start fresh
+            // instead of waiting on a check nobody will ever complete.
+            if (!deferred.isCompleted) {
+                deferred.cancel()
+                activeGroupChecks.remove(name, deferred)
+            }
         }
         val group = queryGroup(name)
         val result = mutableMapOf<String, Int>()

@@ -80,6 +80,7 @@ object ProfileParser {
         }
 
         var content = file.readText()
+        var scriptRewriteFailed = false
         if (context != null) {
             if (resolvedScriptIds.isNotEmpty()) {
                 content = runCatching {
@@ -90,6 +91,10 @@ object ProfileParser {
                         logToRepo = false
                     )
                 }.getOrElse {
+                    // The un-rewritten content below must not enter the cache: the cache key
+                    // (mtime/length/scriptIds) would then keep serving the stale result even
+                    // after the script starts working again.
+                    scriptRewriteFailed = true
                     Log.w(TAG, "ConfigScriptEngine execution in ProfileParser failed: ${it.message}")
                     content
                 }
@@ -193,12 +198,16 @@ object ProfileParser {
                 activeNode = activeNode,
                 rules = parsedRules
             )
-            parsedCache[path] = CacheEntry(lm, len, savedHash, scriptKey, result)
+            if (!scriptRewriteFailed) {
+                parsedCache[path] = CacheEntry(lm, len, savedHash, scriptKey, result)
+            }
             return result
         } catch (e: Throwable) {
             Log.w(TAG, "SnakeYAML failed, using robust line fallback: ${e.message}")
             val fallback = parseFallback(content, savedNodes)
-            parsedCache[path] = CacheEntry(lm, len, savedHash, scriptKey, fallback)
+            if (!scriptRewriteFailed) {
+                parsedCache[path] = CacheEntry(lm, len, savedHash, scriptKey, fallback)
+            }
             return fallback
         }
     }

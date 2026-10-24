@@ -18,6 +18,15 @@ object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
     private const val SCRIPT_TIMEOUT_MS = 5_000L
 
+    // Word-boundary detection of a JS entry point. A plain substring check for "main"
+    // misfired on YAML containing e.g. "maintain" or a node named "Domain-main", routing
+    // YAML into the JS engine (syntax error) or JS into the YAML merger (silently ignored).
+    private val JS_ENTRY_REGEX = Regex(
+        """\b(function\s+main\s*\(|\bmain\s*\(|module\.exports|export\s+default\b)"""
+    )
+
+    internal fun looksLikeJavaScript(code: String): Boolean = JS_ENTRY_REGEX.containsMatchIn(code)
+
     data class ScriptPreviewResult(
         val success: Boolean,
         val engineName: String,
@@ -203,9 +212,7 @@ object ConfigScriptEngine {
         }
 
         return try {
-            val isJs = code.contains("main") ||
-                code.contains("module.exports") ||
-                code.contains("export default") ||
+            val isJs = looksLikeJavaScript(code) ||
                 code.contains("function") ||
                 code.contains("=>")
 
@@ -373,11 +380,18 @@ object ConfigScriptEngine {
         val yamlParser = Yaml(dumperOptions)
 
         for (script in scripts) {
+            if (!ScriptManager.verifyScriptIntegrity(context, script)) {
+                Log.e(TAG, "Script ${script.name} content does not match its pinned fingerprint; skipping")
+                if (logToRepo) {
+                    LogRepository.addLog("warning", "脚本 [${script.name}] 内容与指纹不符，已跳过执行")
+                }
+                continue
+            }
             val code = ScriptManager.readScriptCode(context, script)
             if (code.isBlank()) continue
 
             try {
-                if (code.contains("main") || code.contains("module.exports") || code.contains("export default")) {
+                if (looksLikeJavaScript(code)) {
                     val configMap: Any? = runCatching { yamlParser.load<Any>(currentYaml) }.getOrNull()
                     if (configMap != null) {
                         val jsonStr = scriptJson.encodeToString(anyToJsonElement(configMap))
@@ -451,6 +465,13 @@ object ConfigScriptEngine {
                                 LogRepository.addLog("info", "已安全合并脚本 [${script.name}] YAML 片段")
                             }
                         }
+                    } else {
+                        // Neither a JS entry point nor a parsable YAML snippet: the script
+                        // does nothing, which used to pass by in complete silence.
+                        Log.w(TAG, "Script ${script.name} is neither JS nor a valid YAML snippet; ignored")
+                        if (logToRepo) {
+                            LogRepository.addLog("warning", "脚本 [${script.name}] 既不是 JS 也不是有效的 YAML 片段，已忽略")
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -503,6 +524,7 @@ object ConfigScriptEngine {
 
                 val escapedJson = jsonToJsStringLiteral(jsonStr)
                 val runnerCode = """
+                    var __promiseDropped = false;
                     (function() {
                         var __input = JSON.parse($escapedJson);
                         var inProxies = __input.proxies ? JSON.parse(JSON.stringify(__input.proxies)) :
@@ -518,6 +540,7 @@ object ConfigScriptEngine {
                             __res = __input;
                         }
                         if (__res && typeof __res.then === 'function') {
+                            __promiseDropped = true;
                             __res = __input;
                         }
                         if (Array.isArray(__res)) {
@@ -535,6 +558,13 @@ object ConfigScriptEngine {
                     })();
                 """.trimIndent()
                 val res = jsContext.executeStringScript(runnerCode, "runner.js")
+                val promiseDropped = runCatching {
+                    jsContext.executeStringScript("__promiseDropped === true ? '1' : '0'", "flag.js") == "1"
+                }.getOrDefault(false)
+                if (promiseDropped) {
+                    Log.w(TAG, "Script $scriptName returned a Promise; async main() is not supported and the rewrite was discarded")
+                    logSink?.add("[WARN] main() 返回了 Promise（异步脚本不支持），本次改写未生效")
+                }
                 if (logSink != null) {
                     runCatching {
                         val logsJson = jsContext.executeStringScript("JSON.stringify(__logs);", "logs.js")

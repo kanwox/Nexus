@@ -121,9 +121,13 @@ fun ProxiesScreen(
     val visibleGroups = remember(groups, groupMap) {
         groups.filter { gName -> groupMap[gName]?.hidden != true }
     }
+    // Stable membership signature: groupMap gets a new instance on every delay refresh, and
+    // keying the scroll effect on the list identity would re-run the scroll animation (and
+    // yank the user back to center) on every speed-test result.
+    val visibleGroupNamesKey = remember(visibleGroups) { visibleGroups.joinToString("\u0001") }
 
     // Automatically center/scroll the selected group tab in Tabs mode
-    LaunchedEffect(selectedGroupName, visibleGroups, isListMode) {
+    LaunchedEffect(selectedGroupName, visibleGroupNamesKey, isListMode) {
         if (!isListMode && selectedGroupName.isNotBlank()) {
             val targetIdx = visibleGroups.indexOf(selectedGroupName)
             if (targetIdx >= 0) {
@@ -470,7 +474,10 @@ fun ProxiesScreen(
                     ) {
                         itemsIndexed(
                             items = chunkedRows,
-                            key = { rowIndex, row -> "${targetGroupName}_grid_${cols}_${rowIndex}_${row.first().name}" }
+                            // Row identity must not depend on rowIndex: under DELAY sorting the
+                            // order shifts as results arrive, and index-based keys would
+                            // discard and recompose every node card.
+                            key = { _, row -> "${targetGroupName}_grid_${cols}_${row.first().name}" }
                         ) { _, rowProxies ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -533,10 +540,15 @@ fun ProxiesScreen(
                         val group = groupMap[groupName]
                         val isExpanded = expandedGroups[groupName] ?: false
                         val rawProxies = group?.proxies ?: emptyList()
-                        val proxies = sortProxies(rawProxies, nodeSortMode)
                         val iconUrl = groupIcons[groupName]
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
+                            // Sorting happens inside the item content so that collapsed groups
+                            // (and groups outside the viewport) never pay for it, and it is
+                            // remembered against the raw list + sort mode.
+                            val proxies = remember(rawProxies, nodeSortMode) {
+                                sortProxies(rawProxies, nodeSortMode)
+                            }
                             val isGroupTesting = testingNodes.contains("group:$groupName")
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 LoonGroupHeaderCard(

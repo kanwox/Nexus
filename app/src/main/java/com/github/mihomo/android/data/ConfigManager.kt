@@ -37,11 +37,47 @@ data class SubscriptionUserInfo(
 
 object ConfigManager {
     private const val TAG = "ConfigManager"
+    private const val MAX_SUBSCRIPTION_BYTES = 20L * 1024 * 1024
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        // A server that drips one byte per read timeout would otherwise stall an auto-update
+        // channel indefinitely; cap the total call duration as well.
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
+
+    /** Writes via a temp file + rename so a crash mid-write can never leave a truncated file. */
+    internal fun writeTextAtomic(file: File, content: String) {
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText(content)
+        if (!tmp.renameTo(file)) {
+            file.writeText(content)
+            tmp.delete()
+        }
+    }
+
+    /** Reads a response body fully but refuses payloads above [maxBytes] instead of OOMing. */
+    internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long, emptyError: String): String {
+        val body = response.body ?: error(emptyError)
+        val declared = body.contentLength()
+        if (declared > maxBytes) error("内容过大 (${declared / 1024 / 1024} MB, 上限 ${maxBytes / 1024 / 1024} MB)")
+        val out = java.io.StringWriter((declared.coerceAtMost(1024 * 1024)).toInt())
+        body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
+            val buf = CharArray(64 * 1024)
+            var total = 0L
+            while (true) {
+                val n = reader.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > maxBytes) error("内容超过 ${maxBytes / 1024 / 1024} MB 上限")
+                out.write(buf, 0, n)
+            }
+        }
+        val text = out.toString()
+        if (text.isBlank()) error(emptyError)
+        return text
+    }
 
     /** Top-level config keys that only the injected runtime header may set. */
     private val PROTECTED_TOP_LEVEL_KEYS = setOf(
@@ -179,10 +215,10 @@ object ConfigManager {
                     response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
                 )
 
-                val body = response.body?.string() ?: error("响应内容为空")
+                val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
                 val id = java.util.UUID.randomUUID().toString()
                 val file = getProfilesDir(context).resolve("$id.yaml")
-                file.writeText(body)
+                writeTextAtomic(file, body)
 
                 val resolvedName = extractProfileName(name, response, body, url)
                 val item = ProfileItem(
@@ -224,10 +260,12 @@ object ConfigManager {
                     response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
                 )
 
-                val body = response.body?.string() ?: error("响应内容为空")
+                // A capped, atomic replacement: a failed or oversized download must never
+                // destroy the currently working profile file.
+                val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
                 // Overwrite the EXISTING file without creating a duplicate ID!
                 val file = getProfilesDir(context).resolve("$id.yaml")
-                file.writeText(body)
+                writeTextAtomic(file, body)
 
                 val existing = getProfiles(context).find { it.id == id }
                 val item = ProfileItem(
@@ -255,7 +293,7 @@ object ConfigManager {
     fun saveLocalProfile(context: Context, name: String, content: String): ProfileItem {
         val id = java.util.UUID.randomUUID().toString()
         val file = getProfilesDir(context).resolve("$id.yaml")
-        file.writeText(content)
+        writeTextAtomic(file, content)
         val item = ProfileItem(id, name, null, file, System.currentTimeMillis())
         saveProfileMetadata(context, item)
         return item
@@ -284,7 +322,7 @@ object ConfigManager {
     private var cachedProfiles: List<ProfileItem>? = null
 
     fun invalidateProfilesCache() {
-        cachedProfiles = null
+        synchronized(storeLock) { cachedProfiles = null }
         ProfileParser.clearCache()
     }
 
@@ -318,23 +356,31 @@ object ConfigManager {
 
     private fun storeFile(context: Context): File = context.filesDir.resolve("profiles_meta.json")
 
+    private fun storeBackupFile(context: Context): File =
+        context.filesDir.resolve("profiles_meta.json.bak")
+
     private fun loadStore(context: Context): ProfilesStore {
         storeCache?.let { return it }
         synchronized(storeLock) {
             storeCache?.let { return it }
-            val file = storeFile(context)
-            val store = if (file.exists()) {
-                runCatching { storeJson.decodeFromString<ProfilesStore>(file.readText()) }
-                    .getOrElse {
-                        Log.w(TAG, "Failed to read profiles metadata store", it)
-                        ProfilesStore()
-                    }
-            } else {
-                migrateLegacyPrefsStore(context)
-            }
-            storeCache = store
-            return store
+            storeCache = readStoreFromDisk(context)
+            return storeCache!!
         }
+    }
+
+    private fun readStoreFromDisk(context: Context): ProfilesStore {
+        val file = storeFile(context)
+        if (!file.exists()) return migrateLegacyPrefsStore(context)
+        val parsed = runCatching { storeJson.decodeFromString<ProfilesStore>(file.readText()) }
+        if (parsed.isSuccess) return parsed.getOrThrow()
+        Log.w(TAG, "Failed to read profiles metadata store, trying backup", parsed.exceptionOrNull())
+        val backup = runCatching { storeJson.decodeFromString<ProfilesStore>(storeBackupFile(context).readText()) }
+        if (backup.isSuccess) {
+            Log.w(TAG, "Recovered profiles metadata from backup")
+            return backup.getOrThrow()
+        }
+        Log.w(TAG, "Profiles metadata unrecoverable; starting an empty store")
+        return ProfilesStore()
     }
 
     /** One-time migration from the legacy per-key SharedPreferences metadata store. */
@@ -362,17 +408,25 @@ object ConfigManager {
         val order = prefs.getString("custom_profile_order", null)
             ?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
         val store = ProfilesStore(profiles = metas, order = order)
-        runCatching { storeFile(context).writeText(storeJson.encodeToString(store)) }
+        val written = runCatching { writeTextAtomic(storeFile(context), storeJson.encodeToString(store)) }
+            .onFailure { Log.w(TAG, "Failed to persist migrated profiles metadata", it) }
+            .isSuccess
         // Only drop the legacy keys once the JSON store is durable on disk.
-        prefs.edit().clear().apply()
+        if (written) {
+            prefs.edit().clear().apply()
+        }
         return store
     }
 
     private fun persistStore(context: Context, store: ProfilesStore) {
         synchronized(storeLock) {
             storeCache = store
-            runCatching { storeFile(context).writeText(storeJson.encodeToString(store)) }
-                .onFailure { Log.w(TAG, "Failed to persist profiles metadata", it) }
+            runCatching {
+                val json = storeJson.encodeToString(store)
+                writeTextAtomic(storeFile(context), json)
+                // Keep the previous good copy around so a corrupted main file can be recovered.
+                writeTextAtomic(storeBackupFile(context), json)
+            }.onFailure { Log.w(TAG, "Failed to persist profiles metadata", it) }
         }
     }
 
@@ -380,46 +434,56 @@ object ConfigManager {
         if (!forceReload) {
             cachedProfiles?.let { return it }
         }
+        // Hold the store lock across the whole listing so a concurrent delete/save cannot
+        // slip in between the directory scan and the cache write, which resurrected ghost
+        // entries in the UI.
+        synchronized(storeLock) {
+            if (!forceReload) {
+                cachedProfiles?.let { return it }
+            }
 
-        val dir = getProfilesDir(context)
-        val files = dir.listFiles { f -> f.extension == "yaml" } ?: emptyArray()
-        val store = loadStore(context)
+            val dir = getProfilesDir(context)
+            val files = dir.listFiles { f -> f.extension == "yaml" } ?: emptyArray()
+            val store = loadStore(context)
 
-        val items = files.map { file ->
-            val id = file.nameWithoutExtension
-            val meta = store.profiles[id] ?: ProfileMeta(name = id, updated = file.lastModified())
-            ProfileItem(
-                id = id,
-                name = meta.name,
-                url = meta.url,
-                file = file,
-                lastUpdated = if (meta.updated > 0L) meta.updated else file.lastModified(),
-                scriptEnabled = meta.scriptEnabled,
-                scriptIds = meta.scriptIds,
-                autoUpdate = meta.autoUpdate,
-                autoUpdateInterval = meta.autoUpdateInterval,
-                uploadBytes = meta.uploadBytes,
-                downloadBytes = meta.downloadBytes,
-                totalBytes = meta.totalBytes,
-                expireTimestamp = meta.expireTimestamp
-            )
+            val items = files.map { file ->
+                val id = file.nameWithoutExtension
+                val meta = store.profiles[id] ?: ProfileMeta(name = id, updated = file.lastModified())
+                ProfileItem(
+                    id = id,
+                    name = meta.name,
+                    url = meta.url,
+                    file = file,
+                    lastUpdated = if (meta.updated > 0L) meta.updated else file.lastModified(),
+                    scriptEnabled = meta.scriptEnabled,
+                    scriptIds = meta.scriptIds,
+                    autoUpdate = meta.autoUpdate,
+                    autoUpdateInterval = meta.autoUpdateInterval,
+                    uploadBytes = meta.uploadBytes,
+                    downloadBytes = meta.downloadBytes,
+                    totalBytes = meta.totalBytes,
+                    expireTimestamp = meta.expireTimestamp
+                )
+            }
+
+            val result = if (store.order.isNotEmpty()) {
+                items.sortedWith(compareBy {
+                    val idx = store.order.indexOf(it.id)
+                    if (idx != -1) idx else Int.MAX_VALUE
+                })
+            } else {
+                items.sortedByDescending { it.lastUpdated }
+            }
+            cachedProfiles = result
+            return result
         }
-
-        val result = if (store.order.isNotEmpty()) {
-            items.sortedWith(compareBy {
-                val idx = store.order.indexOf(it.id)
-                if (idx != -1) idx else Int.MAX_VALUE
-            })
-        } else {
-            items.sortedByDescending { it.lastUpdated }
-        }
-        cachedProfiles = result
-        return result
     }
 
     fun saveProfileOrder(context: Context, orderIds: List<String>) {
-        val store = loadStore(context)
-        persistStore(context, store.copy(order = orderIds))
+        synchronized(storeLock) {
+            val store = loadStore(context)
+            persistStore(context, store.copy(order = orderIds))
+        }
         invalidateProfilesCache()
     }
 
@@ -431,10 +495,12 @@ object ConfigManager {
     fun saveProfileContent(context: Context, id: String, content: String): Boolean {
         return runCatching {
             val file = getProfilesDir(context).resolve("$id.yaml")
-            file.writeText(content)
-            val store = loadStore(context)
-            store.profiles[id]?.let { meta ->
-                persistStore(context, store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis()))))
+            writeTextAtomic(file, content)
+            synchronized(storeLock) {
+                val store = loadStore(context)
+                store.profiles[id]?.let { meta ->
+                    persistStore(context, store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis()))))
+                }
             }
             invalidateProfilesCache()
             true
@@ -442,30 +508,34 @@ object ConfigManager {
     }
 
     private fun saveProfileMetadata(context: Context, item: ProfileItem) {
-        val store = loadStore(context)
-        val meta = ProfileMeta(
-            name = item.name,
-            url = item.url,
-            updated = item.lastUpdated,
-            scriptEnabled = item.scriptEnabled,
-            scriptIds = item.scriptIds,
-            autoUpdate = item.autoUpdate,
-            autoUpdateInterval = item.autoUpdateInterval,
-            uploadBytes = item.uploadBytes,
-            downloadBytes = item.downloadBytes,
-            totalBytes = item.totalBytes,
-            expireTimestamp = item.expireTimestamp
-        )
-        persistStore(context, store.copy(profiles = store.profiles + (item.id to meta)))
+        synchronized(storeLock) {
+            val store = loadStore(context)
+            val meta = ProfileMeta(
+                name = item.name,
+                url = item.url,
+                updated = item.lastUpdated,
+                scriptEnabled = item.scriptEnabled,
+                scriptIds = item.scriptIds,
+                autoUpdate = item.autoUpdate,
+                autoUpdateInterval = item.autoUpdateInterval,
+                uploadBytes = item.uploadBytes,
+                downloadBytes = item.downloadBytes,
+                totalBytes = item.totalBytes,
+                expireTimestamp = item.expireTimestamp
+            )
+            persistStore(context, store.copy(profiles = store.profiles + (item.id to meta)))
+        }
     }
 
     fun deleteProfile(context: Context, id: String) {
         getProfilesDir(context).resolve("$id.yaml").delete()
-        val store = loadStore(context)
-        persistStore(
-            context,
-            store.copy(profiles = store.profiles - id, order = store.order.filter { it != id })
-        )
+        synchronized(storeLock) {
+            val store = loadStore(context)
+            persistStore(
+                context,
+                store.copy(profiles = store.profiles - id, order = store.order.filter { it != id })
+            )
+        }
         invalidateProfilesCache()
     }
 
@@ -599,8 +669,8 @@ $fallbackYaml
     }
 
     fun prepareConfig(context: Context, sourceFile: File?): File {
-        val targetFile = getConfigFile(context)
         val settings = SettingsManager(context)
+        val finalContent: String
 
         val formatDnsList = { raw: String, fallback: List<String> ->
             val items = raw.split(',', '\n')
@@ -655,7 +725,7 @@ $fallbackYaml
             }
             val userContent = sanitizeUserConfig(rawContent)
             // Cleanly prepend runtime settings without mangling proxies, rules or formatting
-            targetFile.writeText("$header\n$userContent")
+            finalContent = "$header\n$userContent"
             Log.i(TAG, "Prepared synthesized config with user profile: ${sourceFile.name}")
         } else {
             val defaultBody = """
@@ -668,14 +738,17 @@ $fallbackYaml
                 rules:
                   - MATCH,DIRECT
             """.trimIndent()
-            targetFile.writeText("$header\n$defaultBody")
+            finalContent = "$header\n$defaultBody"
             Log.i(TAG, "Prepared default fallback config")
         }
 
+        val targetFile = getConfigFile(context)
+        writeTextAtomic(targetFile, finalContent)
         runCatching {
             com.github.kr328.clash.core.bridge.Bridge.init(context)
             val clashHomeConfig = context.filesDir.resolve("clash").apply { mkdirs() }.resolve("config.yaml")
-            clashHomeConfig.writeText(targetFile.readText())
+            // Write the same content to the core's home copy without reading it back.
+            writeTextAtomic(clashHomeConfig, finalContent)
         }
 
         return targetFile

@@ -15,6 +15,14 @@ object Bridge {
     private const val TAG = "Bridge"
     private var isInitialized = false
 
+    // Completed once the geo database assets have been extracted to the clash home directory.
+    // Extraction is tens of MB on first launch and runs off the main thread; config loading
+    // (the first consumer of these files) awaits it via assetsReady().
+    private val assetsExtracted = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** Suspends until the geo assets have been extracted (or extraction has failed and given up). */
+    suspend fun assetsReady() = assetsExtracted.await()
+
     @Synchronized
     fun init(context: Context) {
         if (isInitialized) return
@@ -40,7 +48,18 @@ object Bridge {
             }
 
             val homeDir = context.filesDir.resolve("clash").apply { mkdirs() }
-            extractAssets(context, homeDir)
+            // nativeInit only takes the home path and does not read the geo databases, so the
+            // extraction can proceed on a background thread while the (fast) native init stays
+            // on the calling thread.
+            Thread {
+                runCatching { extractAssets(context, homeDir) }
+                    .onFailure { Log.w(TAG, "Asset extraction failed: ${it.message}") }
+                assetsExtracted.complete(Unit)
+            }.apply {
+                name = "geo-assets-extract"
+                isDaemon = true
+                start()
+            }
             val home = homeDir.absolutePath
             val versionName = try {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
@@ -63,17 +82,22 @@ object Bridge {
         val assetFiles = listOf("geoip.metadb", "Country.mmdb", "geosite.dat")
         for (fileName in assetFiles) {
             val destFile = targetDir.resolve(fileName)
-            if (!destFile.exists() || (destFile.length() == 0L)) {
-                runCatching {
-                    context.assets.open(fileName).use { input ->
-                        destFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
+            if (destFile.exists() && destFile.length() > 0L) continue
+            runCatching {
+                // Extract to a temp file and rename so a crash mid-copy cannot leave a
+                // truncated database that the core would then load as if it were valid.
+                val tmpFile = targetDir.resolve("$fileName.tmp")
+                context.assets.open(fileName).use { input ->
+                    tmpFile.outputStream().use { output ->
+                        input.copyTo(output)
                     }
-                    Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
-                }.onFailure { e ->
-                    Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
                 }
+                check(tmpFile.length() > 0L) { "extracted file is empty" }
+                check(tmpFile.renameTo(destFile)) { "rename to $fileName failed" }
+                Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
+            }.onFailure { e ->
+                targetDir.resolve("$fileName.tmp").delete()
+                Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
             }
         }
     }

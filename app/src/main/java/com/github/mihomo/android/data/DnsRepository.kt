@@ -3,15 +3,24 @@ package com.github.mihomo.android.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 object DnsRepository {
+    private const val TAG = "DnsRepository"
     private const val MAX_RECORDS = 500
+    private const val MAX_DOMAIN_IP_ENTRIES = 2000
     private const val PUBLISH_INTERVAL_MS = 400L
     private val nextId = AtomicLong(1)
     private val recordList = ArrayDeque<DnsRecord>(MAX_RECORDS)
-    private val domainToIpMap = ConcurrentHashMap<String, String>()
+
+    // Bounded insertion-order map: a long VPN session resolves unbounded unique domains, so
+    // the oldest entries fall out instead of the map growing forever (records above have a
+    // 500 cap; this map used to be the one unbounded structure in the process).
+    private val domainToIpMap = object : LinkedHashMap<String, String>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean {
+            return size > MAX_DOMAIN_IP_ENTRIES
+        }
+    }
 
     private val _recordsFlow = MutableStateFlow<List<DnsRecord>>(emptyList())
     val recordsFlow: StateFlow<List<DnsRecord>> = _recordsFlow.asStateFlow()
@@ -107,11 +116,13 @@ object DnsRepository {
         publisher.publishNow()
     }
 
+    @Synchronized
     fun findIpForDomain(domain: String): String? {
         val clean = domain.trim().lowercase()
         return domainToIpMap[clean]
     }
 
+    @Synchronized
     fun parseFromLog(message: String) {
         try {
             if (!message.contains("[DNS]", ignoreCase = true)) return
@@ -135,6 +146,8 @@ object DnsRepository {
                     addRecord(domain = domain, ip = "Resolving...", type = recordType, server = server)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.d(TAG, "parseFromLog failed: ${e.message}")
+        }
     }
 }

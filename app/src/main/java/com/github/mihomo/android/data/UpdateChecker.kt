@@ -112,6 +112,9 @@ object UpdateChecker {
 
         val cNums = parseVersionNumbers(cBase)
         val curNums = parseVersionNumbers(curBase)
+        // An unparsable installed version (e.g. the "unknown" fallback) must never compare
+        // as older, otherwise the app nags about an update on every check.
+        if (curNums.isEmpty()) return false
         for (i in 0 until maxOf(cNums.size, curNums.size)) {
             val cv = cNums.getOrElse(i) { 0 }
             val curv = curNums.getOrElse(i) { 0 }
