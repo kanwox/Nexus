@@ -2,9 +2,11 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import android.util.Log
-import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -286,6 +288,94 @@ object ConfigManager {
         ProfileParser.clearCache()
     }
 
+    @Serializable
+    private data class ProfileMeta(
+        val name: String = "",
+        val url: String? = null,
+        val updated: Long = 0L,
+        val scriptEnabled: Boolean = false,
+        val scriptIds: List<String> = emptyList(),
+        val autoUpdate: Boolean = false,
+        val autoUpdateInterval: Int = 1440,
+        val uploadBytes: Long = 0L,
+        val downloadBytes: Long = 0L,
+        val totalBytes: Long = 0L,
+        val expireTimestamp: Long = 0L
+    )
+
+    /** Single durable store for all profile metadata plus the manual ordering. */
+    @Serializable
+    private data class ProfilesStore(
+        val profiles: Map<String, ProfileMeta> = emptyMap(),
+        val order: List<String> = emptyList()
+    )
+
+    private val storeLock = Any()
+    private val storeJson = Json { ignoreUnknownKeys = true }
+
+    @Volatile
+    private var storeCache: ProfilesStore? = null
+
+    private fun storeFile(context: Context): File = context.filesDir.resolve("profiles_meta.json")
+
+    private fun loadStore(context: Context): ProfilesStore {
+        storeCache?.let { return it }
+        synchronized(storeLock) {
+            storeCache?.let { return it }
+            val file = storeFile(context)
+            val store = if (file.exists()) {
+                runCatching { storeJson.decodeFromString<ProfilesStore>(file.readText()) }
+                    .getOrElse {
+                        Log.w(TAG, "Failed to read profiles metadata store", it)
+                        ProfilesStore()
+                    }
+            } else {
+                migrateLegacyPrefsStore(context)
+            }
+            storeCache = store
+            return store
+        }
+    }
+
+    /** One-time migration from the legacy per-key SharedPreferences metadata store. */
+    private fun migrateLegacyPrefsStore(context: Context): ProfilesStore {
+        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
+        val metas = mutableMapOf<String, ProfileMeta>()
+        val files = getProfilesDir(context).listFiles { f -> f.extension == "yaml" } ?: emptyArray()
+        for (file in files) {
+            val id = file.nameWithoutExtension
+            metas[id] = ProfileMeta(
+                name = prefs.getString("${id}_name", null) ?: id,
+                url = prefs.getString("${id}_url", null),
+                updated = prefs.getLong("${id}_updated", file.lastModified()),
+                scriptEnabled = prefs.getBoolean("${id}_script_enabled", false),
+                scriptIds = prefs.getString("${id}_script_ids", "")
+                    ?.split(",")?.filter { it.isNotBlank() } ?: emptyList(),
+                autoUpdate = prefs.getBoolean("${id}_auto_update", false),
+                autoUpdateInterval = prefs.getInt("${id}_auto_update_interval", 1440),
+                uploadBytes = prefs.getLong("${id}_upload_bytes", 0L),
+                downloadBytes = prefs.getLong("${id}_download_bytes", 0L),
+                totalBytes = prefs.getLong("${id}_total_bytes", 0L),
+                expireTimestamp = prefs.getLong("${id}_expire_timestamp", 0L)
+            )
+        }
+        val order = prefs.getString("custom_profile_order", null)
+            ?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+        val store = ProfilesStore(profiles = metas, order = order)
+        runCatching { storeFile(context).writeText(storeJson.encodeToString(store)) }
+        // Only drop the legacy keys once the JSON store is durable on disk.
+        prefs.edit().clear().apply()
+        return store
+    }
+
+    private fun persistStore(context: Context, store: ProfilesStore) {
+        synchronized(storeLock) {
+            storeCache = store
+            runCatching { storeFile(context).writeText(storeJson.encodeToString(store)) }
+                .onFailure { Log.w(TAG, "Failed to persist profiles metadata", it) }
+        }
+    }
+
     fun getProfiles(context: Context, forceReload: Boolean = false): List<ProfileItem> {
         if (!forceReload) {
             cachedProfiles?.let { return it }
@@ -293,33 +383,31 @@ object ConfigManager {
 
         val dir = getProfilesDir(context)
         val files = dir.listFiles { f -> f.extension == "yaml" } ?: emptyArray()
-        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
+        val store = loadStore(context)
 
         val items = files.map { file ->
             val id = file.nameWithoutExtension
-            val name = prefs.getString("${id}_name", file.nameWithoutExtension) ?: file.nameWithoutExtension
-            val url = prefs.getString("${id}_url", null)
-            val updated = prefs.getLong("${id}_updated", file.lastModified())
-            val scriptEnabled = prefs.getBoolean("${id}_script_enabled", false)
-            val scriptIdsRaw = prefs.getString("${id}_script_ids", "") ?: ""
-            val scriptIds = if (scriptIdsRaw.isBlank()) emptyList() else scriptIdsRaw.split(",").filter { it.isNotBlank() }
-            val autoUpdate = prefs.getBoolean("${id}_auto_update", false)
-            val autoUpdateInterval = prefs.getInt("${id}_auto_update_interval", 1440)
-            val uploadBytes = prefs.getLong("${id}_upload_bytes", 0L)
-            val downloadBytes = prefs.getLong("${id}_download_bytes", 0L)
-            val totalBytes = prefs.getLong("${id}_total_bytes", 0L)
-            val expireTimestamp = prefs.getLong("${id}_expire_timestamp", 0L)
+            val meta = store.profiles[id] ?: ProfileMeta(name = id, updated = file.lastModified())
             ProfileItem(
-                id, name, url, file, updated, scriptEnabled, scriptIds, autoUpdate, autoUpdateInterval,
-                uploadBytes, downloadBytes, totalBytes, expireTimestamp
+                id = id,
+                name = meta.name,
+                url = meta.url,
+                file = file,
+                lastUpdated = if (meta.updated > 0L) meta.updated else file.lastModified(),
+                scriptEnabled = meta.scriptEnabled,
+                scriptIds = meta.scriptIds,
+                autoUpdate = meta.autoUpdate,
+                autoUpdateInterval = meta.autoUpdateInterval,
+                uploadBytes = meta.uploadBytes,
+                downloadBytes = meta.downloadBytes,
+                totalBytes = meta.totalBytes,
+                expireTimestamp = meta.expireTimestamp
             )
         }
 
-        val orderRaw = prefs.getString("custom_profile_order", null)
-        val result = if (!orderRaw.isNullOrBlank()) {
-            val orderList = orderRaw.split(",").filter { it.isNotBlank() }
+        val result = if (store.order.isNotEmpty()) {
             items.sortedWith(compareBy {
-                val idx = orderList.indexOf(it.id)
+                val idx = store.order.indexOf(it.id)
                 if (idx != -1) idx else Int.MAX_VALUE
             })
         } else {
@@ -330,8 +418,8 @@ object ConfigManager {
     }
 
     fun saveProfileOrder(context: Context, orderIds: List<String>) {
-        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        prefs.edit { putString("custom_profile_order", orderIds.joinToString(",")) }
+        val store = loadStore(context)
+        persistStore(context, store.copy(order = orderIds))
         invalidateProfilesCache()
     }
 
@@ -344,48 +432,40 @@ object ConfigManager {
         return runCatching {
             val file = getProfilesDir(context).resolve("$id.yaml")
             file.writeText(content)
-            val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-            prefs.edit { putLong("${id}_updated", System.currentTimeMillis()) }
+            val store = loadStore(context)
+            store.profiles[id]?.let { meta ->
+                persistStore(context, store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis()))))
+            }
             invalidateProfilesCache()
             true
         }.getOrDefault(defaultValue = false)
     }
 
     private fun saveProfileMetadata(context: Context, item: ProfileItem) {
-        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        prefs.edit {
-            putString("${item.id}_name", item.name)
-            putString("${item.id}_url", item.url)
-            putLong("${item.id}_updated", item.lastUpdated)
-            putBoolean("${item.id}_script_enabled", item.scriptEnabled)
-            putString("${item.id}_script_ids", item.scriptIds.joinToString(","))
-            putBoolean("${item.id}_auto_update", item.autoUpdate)
-            putInt("${item.id}_auto_update_interval", item.autoUpdateInterval)
-            putLong("${item.id}_upload_bytes", item.uploadBytes)
-            putLong("${item.id}_download_bytes", item.downloadBytes)
-            putLong("${item.id}_total_bytes", item.totalBytes)
-            putLong("${item.id}_expire_timestamp", item.expireTimestamp)
-        }
-        invalidateProfilesCache()
+        val store = loadStore(context)
+        val meta = ProfileMeta(
+            name = item.name,
+            url = item.url,
+            updated = item.lastUpdated,
+            scriptEnabled = item.scriptEnabled,
+            scriptIds = item.scriptIds,
+            autoUpdate = item.autoUpdate,
+            autoUpdateInterval = item.autoUpdateInterval,
+            uploadBytes = item.uploadBytes,
+            downloadBytes = item.downloadBytes,
+            totalBytes = item.totalBytes,
+            expireTimestamp = item.expireTimestamp
+        )
+        persistStore(context, store.copy(profiles = store.profiles + (item.id to meta)))
     }
 
     fun deleteProfile(context: Context, id: String) {
-        val file = getProfilesDir(context).resolve("$id.yaml")
-        if (file.exists()) file.delete()
-        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        prefs.edit()
-            .remove("${id}_name")
-            .remove("${id}_url")
-            .remove("${id}_updated")
-            .remove("${id}_script_enabled")
-            .remove("${id}_script_ids")
-            .remove("${id}_auto_update")
-            .remove("${id}_auto_update_interval")
-            .remove("${id}_upload_bytes")
-            .remove("${id}_download_bytes")
-            .remove("${id}_total_bytes")
-            .remove("${id}_expire_timestamp")
-            .apply()
+        getProfilesDir(context).resolve("$id.yaml").delete()
+        val store = loadStore(context)
+        persistStore(
+            context,
+            store.copy(profiles = store.profiles - id, order = store.order.filter { it != id })
+        )
         invalidateProfilesCache()
     }
 
@@ -435,36 +515,51 @@ object ConfigManager {
         return builder.toString()
     }
 
-    fun prepareConfig(context: Context, sourceFile: File?): File {
-        val targetFile = getConfigFile(context)
-        val settings = SettingsManager(context)
+    /** Options injected into the runtime header; pulled out so the template is unit-testable. */
+    internal data class RuntimeHeaderOptions(
+        val tunnelMode: String,
+        val logLevel: String,
+        val ipv6Enabled: Boolean,
+        val allowLan: Boolean,
+        val lanPassword: String,
+        val dnsIpv6Enabled: Boolean,
+        val fakeIpEnabled: Boolean
+    )
 
-        val formatDnsList = { raw: String, fallback: List<String> ->
-            val items = raw.split(',', '\n')
-                .asSequence()
-                .map { it.trim().trim('"', '\'') }
-                .filter { it.isNotBlank() }
-                .toList()
-            val effective = items.ifEmpty { fallback }
-            effective.joinToString("\n") { "                - $it" }
-        }
+    /**
+     * LAN sharing with an access password: HTTP/SOCKS clients must authenticate, while
+     * loopback stays exempt so the phone itself is never prompted. These keys are in
+     * PROTECTED_TOP_LEVEL_KEYS, so subscriptions cannot override the injected auth.
+     *
+     * Lines are pre-indented by 12 spaces to survive the header template's trimIndent(),
+     * which computes its common indent AFTER interpolation (same trick as the DNS lists).
+     */
+    internal fun buildLanAuthBlock(allowLan: Boolean, lanPassword: String): String {
+        if (!allowLan || lanPassword.isBlank()) return ""
+        val safePassword = lanPassword.replace("\\", "\\\\").replace("\"", "\\\"")
+        return listOf(
+            "authentication:",
+            "  - \"nexus:$safePassword\"",
+            "skip-auth-prefixes:",
+            "  - 127.0.0.1",
+            "  - ::1"
+        ).joinToString("\n") { "            $it" } + "\n"
+    }
 
-        val nameserversYaml = formatDnsList(
-            settings.dnsNameservers,
-            listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
-        )
-        val fallbackYaml = formatDnsList(
-            settings.dnsFallbackServers,
-            listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "1.1.1.1", "8.8.8.8")
-        )
-
-        val header = """
+    internal fun buildRuntimeHeader(
+        options: RuntimeHeaderOptions,
+        nameserversYaml: String,
+        fallbackYaml: String
+    ): String {
+        val lanAuthYaml = buildLanAuthBlock(options.allowLan, options.lanPassword)
+        return """
             # Mihomo Android Injected Runtime Config
-            mode: ${settings.tunnelMode}
-            log-level: ${settings.logLevel}
-            ipv6: false
+            mode: ${options.tunnelMode}
+            log-level: ${options.logLevel}
+            ipv6: ${options.ipv6Enabled}
             mixed-port: 7890
-            allow-lan: ${settings.allowLan}
+            allow-lan: ${options.allowLan}
+$lanAuthYaml
             geodata-mode: false
             geo-auto-update: false
             geox-url:
@@ -474,8 +569,8 @@ object ConfigManager {
             dns:
               enable: true
               listen: 127.0.0.1:1053
-              ipv6: ${settings.dnsIpv6Enabled}
-              enhanced-mode: ${if (settings.fakeIpEnabled) "fake-ip" else "redir-host"}
+              ipv6: ${options.dnsIpv6Enabled}
+              enhanced-mode: ${if (options.fakeIpEnabled) "fake-ip" else "redir-host"}
               fake-ip-range: 198.18.0.1/16
               default-nameserver:
                 - 223.5.5.5
@@ -501,6 +596,44 @@ $fallbackYaml
                 - "+.xiaomi.com"
 
         """.trimIndent()
+    }
+
+    fun prepareConfig(context: Context, sourceFile: File?): File {
+        val targetFile = getConfigFile(context)
+        val settings = SettingsManager(context)
+
+        val formatDnsList = { raw: String, fallback: List<String> ->
+            val items = raw.split(',', '\n')
+                .asSequence()
+                .map { it.trim().trim('"', '\'') }
+                .filter { it.isNotBlank() }
+                .toList()
+            val effective = items.ifEmpty { fallback }
+            effective.joinToString("\n") { "                - $it" }
+        }
+
+        val nameserversYaml = formatDnsList(
+            settings.dnsNameservers,
+            listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
+        )
+        val fallbackYaml = formatDnsList(
+            settings.dnsFallbackServers,
+            listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "1.1.1.1", "8.8.8.8")
+        )
+
+        val header = buildRuntimeHeader(
+            RuntimeHeaderOptions(
+                tunnelMode = settings.tunnelMode,
+                logLevel = settings.logLevel,
+                ipv6Enabled = settings.ipv6Enabled,
+                allowLan = settings.allowLan,
+                lanPassword = settings.allowLanPassword,
+                dnsIpv6Enabled = settings.dnsIpv6Enabled,
+                fakeIpEnabled = settings.fakeIpEnabled
+            ),
+            nameserversYaml,
+            fallbackYaml
+        )
 
         if ((sourceFile != null) && sourceFile.exists()) {
             var rawContent = sourceFile.readText()

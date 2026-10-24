@@ -56,6 +56,23 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("fake_ip_enabled", true)
         set(value) = prefs.edit { putBoolean("fake_ip_enabled", value) }
 
+    /**
+     * Master IPv6 switch. Drives both the core's top-level `ipv6` key and whether the
+     * VPN interface routes ::/0 — the two must stay in lockstep or IPv6 traffic either
+     * bypasses the tunnel or dies inside it.
+     */
+    var ipv6Enabled: Boolean
+        get() = prefs.getBoolean("ipv6_enabled", false)
+        set(value) = prefs.edit { putBoolean("ipv6_enabled", value) }
+
+    /**
+     * Access password for LAN proxy clients; the username is fixed to "nexus". Empty means
+     * the mixed port is open without authentication. Only injected when allow-lan is on.
+     */
+    var allowLanPassword: String
+        get() = prefs.getString("allow_lan_password", "") ?: ""
+        set(value) = prefs.edit { putString("allow_lan_password", value.trim()) }
+
     var dnsIpv6Enabled: Boolean
         get() = prefs.getBoolean("dns_ipv6_enabled", false)
         set(value) = prefs.edit { putBoolean("dns_ipv6_enabled", value) }

@@ -315,76 +315,63 @@ object ClashCore {
         if (proxyName.equals("COMPATIBLE", ignoreCase = true)) return@withContext -2
 
         val allGroups = queryGroupNames()
-        val isProxyItselfGroup = allGroups.contains(proxyName)
 
-        if (isProxyItselfGroup) {
+        // Testing a group means health-checking the group itself.
+        if (allGroups.contains(proxyName)) {
             val deferred = getOrStartGroupHealthCheck(proxyName)
             try {
-                withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
-                    deferred.await()
-                }
+                withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) { deferred.await() }
             } catch (_: Throwable) {
             } finally {
                 activeGroupChecks.remove(proxyName, deferred)
             }
             val subGroup = queryGroup(proxyName) ?: return@withContext -2
             val activeProxy = subGroup.proxies.find { it.name == subGroup.now }
-            if (activeProxy != null && activeProxy.delay in 1..65534) {
-                return@withContext activeProxy.delay
-            }
-            val bestValid = subGroup.proxies.map { it.delay }.filter { it in 1..65534 }.minOrNull()
-            return@withContext bestValid ?: -2
+            return@withContext activeProxy?.delay?.takeIf { it in 1..65534 }
+                ?: subGroup.proxies.map { it.delay }.filter { it in 1..65534 }.minOrNull()
+                ?: -2
         }
 
         val targetGroup = when {
             !groupName.isNullOrBlank() && allGroups.contains(groupName) -> groupName
             else -> allGroups.firstOrNull { g ->
                 queryGroup(g)?.proxies?.any { it.name == proxyName } == true
-            } ?: groupName
+            } ?: return@withContext -2
         }
 
-        if (targetGroup.isNullOrBlank()) return@withContext -2
-
-        val initialGroup = queryGroup(targetGroup)
-        val initialDelay = initialGroup?.proxies?.find { it.name == proxyName }?.delay ?: -1
+        val initialDelay = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay ?: -1
         val deferred = getOrStartGroupHealthCheck(targetGroup)
-
+        var result = -1
         try {
+            // Poll for the target proxy's fresh delay so a single node reports before the
+            // whole group finishes; the post-completion snapshot below covers the rest.
             withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
-                while (isActive && !deferred.isCompleted) {
-                    delay(80L.milliseconds)
-                    val curGroup = queryGroup(targetGroup)
-                    val curProxy = curGroup?.proxies?.find { it.name == proxyName }
-                    if (curProxy != null && curProxy.delay in 1..65534 && curProxy.delay != initialDelay) {
-                        return@withTimeout curProxy.delay
+                while (deferred.isActive) {
+                    delay(150L.milliseconds)
+                    val current = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay
+                    if (current != null && current in 1..65534 && current != initialDelay) {
+                        result = current
+                        break
                     }
                 }
-                deferred.await()
-                -1
-            }.let { earlyDelay ->
-                if (earlyDelay in 1..65534) return@withContext earlyDelay
             }
         } catch (_: Throwable) {
         } finally {
+            // Only remove completed checks: other waiters may still await a running one.
             if (deferred.isCompleted) {
                 activeGroupChecks.remove(targetGroup, deferred)
             }
         }
 
-        val finalGroup = queryGroup(targetGroup)
-        val finalProxy = finalGroup?.proxies?.find { it.name == proxyName }
-        if (finalProxy != null && finalProxy.delay in 1..65534) {
-            return@withContext finalProxy.delay
+        if (result !in 1..65534) {
+            result = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay
+                ?.takeIf { it in 1..65534 }
+                ?: allGroups.firstNotNullOfOrNull { g ->
+                    queryGroup(g)?.proxies?.find { it.name == proxyName }?.delay?.takeIf { it in 1..65534 }
+                }
+                ?: -2
         }
-
-        for (g in allGroups) {
-            val group = queryGroup(g)
-            val p = group?.proxies?.find { it.name == proxyName }
-            if (p != null && p.delay in 1..65534) {
-                return@withContext p.delay
-            }
-        }
-        -2
+        result
     }
 
     @Suppress("unused")

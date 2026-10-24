@@ -23,7 +23,6 @@ import com.github.mihomo.android.ui.theme.*
 fun AppearanceScreen(
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
-    onLanguageChanged: (String) -> Unit,
     onBack: () -> Unit,
     appFont: AppFont = LocalAppFont.current,
     onAppFontChanged: (AppFont) -> Unit = {}
@@ -31,7 +30,6 @@ fun AppearanceScreen(
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
     val lang = LocalAppLanguage.current
-    var currentLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
     var currentFont by remember(appFont) { mutableStateOf(appFont) }
 
     Column(
@@ -124,52 +122,6 @@ fun AppearanceScreen(
                     }
                 }
             }
-
-            // Section 3: 界面语言
-            val langs = listOf(
-                "SYSTEM" to AppStrings.get("theme_system", lang),
-                "zh" to "简体中文",
-                "en" to "English",
-                "ru" to "Русский"
-            )
-
-            CupertinoGroupedSection(
-                title = AppStrings.get("settings_language", lang)
-            ) {
-                langs.forEachIndexed { index, (code, label) ->
-                    val isSelected = currentLanguage == code
-                    CupertinoCell(
-                        title = label,
-                        trailing = {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = IosBlue,
-                                    modifier = Modifier.size(19.dp)
-                                )
-                            }
-                        },
-                        onClick = {
-                            currentLanguage = code
-                            settingsManager.appLanguage = code
-                            onLanguageChanged(code)
-                            CupertinoToast.show("${AppStrings.get("language_updated", code)}: $label")
-                            @Suppress("DEPRECATION")
-                            runCatching {
-                                val locale = if (code == "SYSTEM") java.util.Locale.getDefault() else java.util.Locale.forLanguageTag(code)
-                                java.util.Locale.setDefault(locale)
-                                val config = context.resources.configuration
-                                config.setLocale(locale)
-                                context.resources.updateConfiguration(config, context.resources.displayMetrics)
-                            }
-                        }
-                    )
-                    if (index < langs.size - 1) {
-                        CupertinoIndentedDivider(startIndent = 16.dp)
-                    }
-                }
-            }
         }
     }
 }
@@ -181,7 +133,6 @@ fun AppearanceScreenPreview() {
         AppearanceScreen(
             themeMode = ThemeMode.LIGHT,
             onThemeModeChanged = {},
-            onLanguageChanged = {},
             onBack = {}
         )
     }

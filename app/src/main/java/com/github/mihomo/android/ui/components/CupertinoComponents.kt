@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
@@ -1260,6 +1261,7 @@ fun CupertinoTextField(
     placeholder: String = "",
     singleLine: Boolean = true,
     maxLines: Int = 1,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null
 ) {
@@ -1296,6 +1298,7 @@ fun CupertinoTextField(
                     onValueChange = onValueChange,
                     singleLine = singleLine,
                     maxLines = maxLines,
+                    visualTransformation = visualTransformation,
                     textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
                         fontSize = 14.5.sp,

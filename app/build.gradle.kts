@@ -123,8 +123,6 @@ dependencies {
     // Network & Config
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.yaml:snakeyaml:2.2")
-    implementation("com.google.code.gson:gson:2.11.0")
-    implementation("org.mozilla:rhino:1.7.15")
     implementation("io.github.taoweiji.quickjs:quickjs-android:1.4.6")
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.5")

@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -36,6 +37,8 @@ import java.util.*
 fun NetworkShareScreen(
     allowLan: Boolean,
     onAllowLanChanged: (Boolean) -> Unit,
+    allowLanPassword: String,
+    onAllowLanPasswordChanged: (String) -> Unit,
     vpnState: VpnState,
     onBack: () -> Unit
 ) {
@@ -110,6 +113,30 @@ fun NetworkShareScreen(
                                 onAllowLanChanged(checked)
                             }
                         )
+                    }
+                }
+            }
+
+            // Access Authentication Section
+            if (allowLan) {
+                item {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    CupertinoGroupedSection(
+                        header = "访问鉴权",
+                        footer = "设置访问密码后，局域网设备接入代理需输入用户名 nexus 与此密码，防止同网络下的陌生设备滥用代理出口。留空则不鉴权；修改密码后重新加载配置生效。"
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                        ) {
+                            CupertinoTextField(
+                                value = allowLanPassword,
+                                onValueChange = onAllowLanPasswordChanged,
+                                placeholder = "留空表示无需鉴权",
+                                visualTransformation = PasswordVisualTransformation()
+                            )
+                        }
                     }
                 }
             }
@@ -206,6 +233,14 @@ fun NetworkShareScreen(
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         ShareParamRow(
+                            label = "接入鉴权",
+                            value = if (allowLanPassword.isNotBlank()) "用户名 nexus · 已设密码" else "无鉴权",
+                            onCopy = null
+                        )
+
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+
+                        ShareParamRow(
                             label = "支持协议",
                             value = "HTTP / HTTPS / SOCKS5",
                             onCopy = null
@@ -233,7 +268,12 @@ fun NetworkShareScreen(
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
-                        val curlCmd = "export http_proxy=\"http://$fullProxyAddress\" && export https_proxy=\"http://$fullProxyAddress\""
+                        val proxyUrlForCurl = if (allowLanPassword.isNotBlank()) {
+                            "http://nexus:${android.net.Uri.encode(allowLanPassword)}@$fullProxyAddress"
+                        } else {
+                            "http://$fullProxyAddress"
+                        }
+                        val curlCmd = "export http_proxy=\"$proxyUrlForCurl\" && export https_proxy=\"$proxyUrlForCurl\""
                         GuideRow(
                             title = "命令行终端代理 (Terminal)",
                             steps = curlCmd,
@@ -394,6 +434,8 @@ fun NetworkShareScreenPreview() {
     NetworkShareScreen(
         allowLan = true,
         onAllowLanChanged = {},
+        allowLanPassword = "",
+        onAllowLanPasswordChanged = {},
         vpnState = VpnState(VpnState.Status.RUNNING),
         onBack = {}
     )

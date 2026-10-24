@@ -33,7 +33,6 @@ import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.content.pm.PackageManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,10 +42,12 @@ fun SettingsScreen(
     bootOnStartup: Boolean,
     allowLan: Boolean,
     fakeIpEnabled: Boolean,
+    ipv6Enabled: Boolean,
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     onTunStackChanged: (String) -> Unit,
     onBootOnStartupChanged: (Boolean) -> Unit,
     onAllowLanChanged: (Boolean) -> Unit,
+    onIpv6EnabledChanged: (Boolean) -> Unit = {},
     onNavigateToScripts: () -> Unit = {},
     onNavigateToProfiles: () -> Unit,
     onNavigateToAppRouting: () -> Unit,
@@ -74,11 +75,7 @@ fun SettingsScreen(
     var showUpdateDialog by remember { mutableStateOf(false) }
 
     val installedVersion = remember {
-        try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: UpdateChecker.CURRENT_VERSION
-        } catch (_: PackageManager.NameNotFoundException) {
-            UpdateChecker.CURRENT_VERSION
-        }
+        UpdateChecker.installedVersion(context)
     }
 
     LaunchedEffect(Unit) {
@@ -161,6 +158,19 @@ fun SettingsScreen(
                         )
                     },
                     onClick = { onAllowLanChanged(!allowLan) }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = "IPv6",
+                    icon = Icons.Default.Router,
+                    iconBg = Color(0xFF00C7BE),
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = ipv6Enabled,
+                            onCheckedChange = onIpv6EnabledChanged
+                        )
+                    },
+                    onClick = { onIpv6EnabledChanged(!ipv6Enabled) }
                 )
                 CupertinoDivider()
                 CupertinoCell(
@@ -289,7 +299,7 @@ fun SettingsScreen(
                             isCheckingUpdate = true
                             updateResult = null
                             scope.launch {
-                                val result = UpdateChecker.checkForUpdate()
+                                val result = UpdateChecker.checkForUpdate(context)
                                 updateResult = result
                                 isCheckingUpdate = false
                                 showUpdateDialog = true
@@ -565,6 +575,7 @@ fun SettingsScreenPreview() {
             bootOnStartup = true,
             allowLan = false,
             fakeIpEnabled = true,
+            ipv6Enabled = false,
             themeMode = ThemeMode.SYSTEM,
             onTunStackChanged = {},
             onBootOnStartupChanged = {},

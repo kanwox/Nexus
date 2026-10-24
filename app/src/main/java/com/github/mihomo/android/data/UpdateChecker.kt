@@ -1,10 +1,13 @@
 package com.github.mihomo.android.data
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
@@ -12,9 +15,6 @@ import java.util.concurrent.TimeUnit
  * Repository: https://github.com/kanwox/Nexus
  */
 object UpdateChecker {
-
-    // Current app version — must match versionName in build.gradle.kts
-    const val CURRENT_VERSION = "1.0.3"
 
     private const val RELEASES_API =
         "https://api.github.com/repos/kanwox/Nexus/releases/latest"
@@ -25,6 +25,8 @@ object UpdateChecker {
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
     }
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     data class UpdateInfo(
         /** Latest tag name, e.g. "v1.0.2" */
@@ -45,15 +47,26 @@ object UpdateChecker {
     }
 
     /**
-     * Fetches the latest release from GitHub and compares against [CURRENT_VERSION].
+     * Reads the installed version from the package manager instead of a hand-maintained
+     * constant, so bumping versionName in the build script can never drift from it.
+     */
+    fun installedVersion(context: Context): String {
+        return runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "unknown"
+    }
+
+    /**
+     * Fetches the latest release from GitHub and compares against the installed version.
      * Must be called from a coroutine (runs on [Dispatchers.IO] internally).
      */
-    suspend fun checkForUpdate(): CheckResult = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdate(context: Context): CheckResult = withContext(Dispatchers.IO) {
+        val currentVersion = installedVersion(context)
         try {
             val request = Request.Builder()
                 .url(RELEASES_API)
                 .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "Nexus-Android/$CURRENT_VERSION")
+                .header("User-Agent", "Nexus-Android/$currentVersion")
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
@@ -64,14 +77,14 @@ object UpdateChecker {
                 val body = response.body?.string()
                     ?: return@withContext CheckResult.Error("Empty response")
 
-                val json = JSONObject(body)
-                val tagName = json.optString("tag_name", "")
-                val releaseName = json.optString("name", tagName)
-                val releaseNotes = json.optString("body", "").take(1000)
-                val htmlUrl = json.optString("html_url", "")
+                val obj = json.parseToJsonElement(body).jsonObject
+                val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
+                val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
+                val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(1000)
+                val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
 
                 val latestVersion = tagName.trimStart('v', 'V')
-                val isNewer = isVersionNewer(latestVersion, CURRENT_VERSION)
+                val isNewer = isVersionNewer(latestVersion, currentVersion)
 
                 CheckResult.Success(
                     UpdateInfo(

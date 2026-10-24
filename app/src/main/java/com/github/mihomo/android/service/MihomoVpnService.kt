@@ -226,8 +226,14 @@ class MihomoVpnService : VpnService() {
             ACTION_START -> startVpn()
             ACTION_STOP -> stopVpn()
             ACTION_RESTART -> restartVpn()
+            // START_STICKY restart after the process was killed: no intent is delivered. The
+            // system still expects startForeground() promptly, then the tunnel is rebuilt.
+            else -> {
+                startForegroundServiceNotification(getString(R.string.notification_restoring))
+                startVpn()
+            }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun restartVpn() {
@@ -290,11 +296,15 @@ class MihomoVpnService : VpnService() {
                     addRoute("198.18.0.0", 16) // Explicit route for Fake-IP range!
                     addDnsServer("172.19.0.2")
 
-                    // Route IPv6 to prevent IPv6 traffic bypassing VPN on cellular / Wi-Fi
-                    runCatching {
-                        addAddress("fdfe:dcba:9876::1", 126)
-                        addRoute("::", 0)
-                        addDnsServer("fdfe:dcba:9876::2")
+                    // Route IPv6 only when the user enabled it: the injected config sets the
+                    // core's top-level `ipv6` from the same switch, so a disabled switch keeps
+                    // IPv6 traffic on the physical network instead of failing inside the TUN.
+                    if (settings.ipv6Enabled) {
+                        runCatching {
+                            addAddress("fdfe:dcba:9876::1", 126)
+                            addRoute("::", 0)
+                            addDnsServer("fdfe:dcba:9876::2")
+                        }
                     }
 
                     // Per-App routing

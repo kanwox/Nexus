@@ -2,13 +2,21 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import android.util.Log
-import com.google.gson.Gson
-import com.google.gson.GsonBuilder
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.yaml.snakeyaml.Yaml
 
 object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
-    private const val RHINO_TIMEOUT_MS = 5_000L
+    private const val SCRIPT_TIMEOUT_MS = 5_000L
 
     data class ScriptPreviewResult(
         val success: Boolean,
@@ -86,6 +94,74 @@ object ConfigScriptEngine {
         return Triple(proxies?.size ?: 0, groups?.size ?: 0, rules?.size ?: 0)
     }
 
+    /** SnakeYAML produces plain Java collections; scripts consume JSON, so bridge the two. */
+    private fun anyToJsonElement(value: Any?): JsonElement = when (value) {
+        null -> JsonNull
+        is Map<*, *> -> buildJsonObject {
+            for ((k, v) in value) {
+                if (k != null) put(k.toString(), anyToJsonElement(v))
+            }
+        }
+        is List<*> -> buildJsonArray {
+            for (item in value) add(anyToJsonElement(item))
+        }
+        is Boolean -> JsonPrimitive(value)
+        is Number -> JsonPrimitive(value)
+        else -> JsonPrimitive(value.toString())
+    }
+
+    /**
+     * Numbers become Long when integral and Double otherwise, matching the previous
+     * Gson LONG_OR_NUMBER round-trip so YAML output stays free of trailing ".0".
+     */
+    private fun jsonElementToPlainValue(element: JsonElement): Any? = when (element) {
+        is JsonNull -> null
+        is JsonPrimitive -> if (element.isString) {
+            element.content
+        } else {
+            element.content.toLongOrNull()
+                ?: element.content.toDoubleOrNull()
+                ?: element.content.toBooleanStrictOrNull()
+                ?: element.content
+        }
+        is JsonArray -> element.map { jsonElementToPlainValue(it) }
+        is JsonObject -> {
+            val map = LinkedHashMap<String, Any?>()
+            for ((k, v) in element) map[k] = jsonElementToPlainValue(v)
+            map
+        }
+    }
+
+    private fun parseResultMap(resultJson: String?): Map<String, Any?>? {
+        if (resultJson.isNullOrBlank() || resultJson == "undefined" || resultJson == "null") return null
+        val element = runCatching { scriptJson.parseToJsonElement(resultJson) }.getOrNull() ?: return null
+        if (element !is JsonObject) return null
+        val map = LinkedHashMap<String, Any?>()
+        for ((k, v) in element) map[k] = jsonElementToPlainValue(v)
+        return map
+    }
+
+    /** Embeds a JSON document into generated JS source as a string literal. */
+    private fun jsonToJsStringLiteral(json: String): String {
+        val sb = StringBuilder(json.length + 16)
+        sb.append('"')
+        for (ch in json) {
+            when (ch) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                // Other control characters (including form feed) fall through to the
+                // generic \uXXXX form below, which is valid in both JSON and JS strings.
+                else -> if (ch < ' ') sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+            }
+        }
+        sb.append('"')
+        return sb.toString()
+    }
+
     /**
      * Execute a single script in sandbox preview mode against [rawYaml] (or fallback sample config),
      * capturing console output, structural diffs (nodes/groups/rules), execution time, and output YAML.
@@ -104,10 +180,6 @@ object ConfigScriptEngine {
             indent = 2
         }
         val yamlParser = Yaml(dumperOptions)
-        val gson = GsonBuilder()
-            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
-            .setPrettyPrinting()
-            .create()
 
         val baseMap = runCatching { yamlParser.load<Any>(effectiveInputYaml) as? Map<*, *> }.getOrNull()
         val (beforeP, beforeG, beforeR) = countMapStats(baseMap)
@@ -156,56 +228,47 @@ object ConfigScriptEngine {
                         afterRules = beforeR
                     )
                 }
-                val jsonStr = gson.toJson(baseMap)
-                var engineUsed = "QuickJS (ES2020)"
+                val jsonStr = scriptJson.encodeToString(anyToJsonElement(baseMap))
                 val resultJson: String? = try {
-                    executeWithQuickJS(code, jsonStr, scriptName, gson, logs)
-                } catch (qjsErr: Throwable) {
-                    logs.add("[INFO] QuickJS 切换至 Rhino 兼容引擎: ${qjsErr.message}")
-                    engineUsed = "Rhino (ES6)"
-                    try {
-                        executeWithRhino(code, jsonStr, scriptName, gson, logs)
-                    } catch (rhinoErr: Throwable) {
-                        val errMsg = rhinoErr.message ?: qjsErr.message ?: "语法或运行时错误"
-                        val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
-                        logs.add("[ERROR] $errMsg")
-                        return ScriptPreviewResult(
-                            success = false,
-                            engineName = "Rhino (ES6)",
-                            durationMs = elapsed,
-                            outputYaml = effectiveInputYaml,
-                            consoleLogs = logs,
-                            errorMessage = errMsg,
-                            beforeProxies = beforeP,
-                            afterProxies = beforeP,
-                            beforeGroups = beforeG,
-                            afterGroups = beforeG,
-                            beforeRules = beforeR,
-                            afterRules = beforeR
-                        )
-                    }
+                    executeWithQuickJS(code, jsonStr, scriptName, logs)
+                } catch (e: Throwable) {
+                    val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                    val errMsg = e.message ?: "语法或运行时错误"
+                    logs.add("[ERROR] $errMsg")
+                    return ScriptPreviewResult(
+                        success = false,
+                        engineName = "QuickJS (ES2020)",
+                        durationMs = elapsed,
+                        outputYaml = effectiveInputYaml,
+                        consoleLogs = logs,
+                        errorMessage = errMsg,
+                        beforeProxies = beforeP,
+                        afterProxies = beforeP,
+                        beforeGroups = beforeG,
+                        afterGroups = beforeG,
+                        beforeRules = beforeR,
+                        afterRules = beforeR
+                    )
                 }
 
                 val finalMap = LinkedHashMap<String, Any?>()
                 for ((k, v) in baseMap) {
                     if (k != null) finalMap[k.toString()] = v
                 }
-                if (!resultJson.isNullOrBlank() && resultJson != "undefined" && resultJson != "null") {
-                    val modifiedMap = gson.fromJson(resultJson, Map::class.java)
-                    if (modifiedMap != null && modifiedMap.isNotEmpty()) {
-                        for ((k, v) in modifiedMap) {
-                            if (k != null) finalMap[k.toString()] = v
-                        }
+                val modifiedMap = parseResultMap(resultJson)
+                if (modifiedMap != null) {
+                    for ((k, v) in modifiedMap) {
+                        finalMap[k] = v
                     }
                 }
                 val normalized = normalizeYamlData(finalMap) as? Map<*, *>
                 val (afterP, afterG, afterR) = countMapStats(normalized)
                 val outYaml = yamlParser.dump(normalized ?: finalMap)
                 val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
-                logs.add(0, "[OK] 使用 $engineUsed 执行完成 (${elapsed}ms)")
+                logs.add(0, "[OK] 使用 QuickJS (ES2020) 执行完成 (${elapsed}ms)")
                 ScriptPreviewResult(
                     success = true,
-                    engineName = engineUsed,
+                    engineName = "QuickJS (ES2020)",
                     durationMs = elapsed,
                     outputYaml = outYaml,
                     consoleLogs = logs,
@@ -308,10 +371,6 @@ object ConfigScriptEngine {
             indent = 2
         }
         val yamlParser = Yaml(dumperOptions)
-        val gson = GsonBuilder()
-            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
-            .setPrettyPrinting()
-            .create()
 
         for (script in scripts) {
             val code = ScriptManager.readScriptCode(context, script)
@@ -321,60 +380,51 @@ object ConfigScriptEngine {
                 if (code.contains("main") || code.contains("module.exports") || code.contains("export default")) {
                     val configMap: Any? = runCatching { yamlParser.load<Any>(currentYaml) }.getOrNull()
                     if (configMap != null) {
-                        val jsonStr = gson.toJson(configMap)
-                        var resultJson: String?
+                        val jsonStr = scriptJson.encodeToString(anyToJsonElement(configMap))
 
-                        // 1. Primary Engine: QuickJS (Full ES2020+ support for ?., ??, { ...obj }, for-of-const, arrow functions, etc.)
-                        try {
-                            resultJson = executeWithQuickJS(code, jsonStr, script.name, gson)
-                            Log.i(TAG, "QuickJS executed script: ${script.name}")
-                        } catch (qjsErr: Throwable) {
-                            Log.w(TAG, "QuickJS execution failed, falling back to Rhino: ${qjsErr.message}")
-                            // 2. Fallback Engine: Rhino with ES6 + syntax preprocessor
-                            try {
-                                resultJson = executeWithRhino(code, jsonStr, script.name, gson)
-                                Log.i(TAG, "Rhino fallback executed script: ${script.name}")
-                            } catch (rhinoErr: Throwable) {
-                                throw Exception("QuickJS: ${qjsErr.message ?: qjsErr.javaClass.simpleName}; Rhino: ${rhinoErr.message ?: rhinoErr.javaClass.simpleName}")
-                            }
+                        // Single engine: QuickJS (full ES2020+ support for ?., ??, { ...obj },
+                        // for-of-const, arrow functions, etc.). A syntax or runtime error is a
+                        // script error — there is no second engine to fall back to.
+                        val resultJson: String? = try {
+                            executeWithQuickJS(code, jsonStr, script.name)
+                        } catch (e: Throwable) {
+                            throw Exception("QuickJS: ${e.message ?: e.javaClass.simpleName}")
                         }
 
-                        if (!resultJson.isNullOrBlank() && resultJson != "undefined" && resultJson != "null") {
-                            val modifiedMap = gson.fromJson(resultJson, Map::class.java)
-                            if (!modifiedMap.isNullOrEmpty()) {
-                                // Merge defense: ensure proxies and proxy-groups are NEVER dropped
-                                val finalMap = LinkedHashMap<String, Any?>()
-                                if (configMap is Map<*, *>) {
-                                    for ((k, v) in configMap) {
-                                        if (k != null) finalMap[k.toString()] = v
-                                    }
-                                }
-                                for ((k, v) in modifiedMap) {
+                        val modifiedMap = parseResultMap(resultJson)
+                        if (modifiedMap != null && modifiedMap.isNotEmpty()) {
+                            // Merge defense: ensure proxies and proxy-groups are NEVER dropped
+                            val finalMap = LinkedHashMap<String, Any?>()
+                            if (configMap is Map<*, *>) {
+                                for ((k, v) in configMap) {
                                     if (k != null) finalMap[k.toString()] = v
                                 }
-                                if (configMap is Map<*, *>) {
-                                    val origProxies = configMap["proxies"] ?: configMap["Proxy"] ?: configMap["Proxies"]
-                                    if (origProxies is List<*> && origProxies.isNotEmpty()) {
-                                        val curProxies = finalMap["proxies"] ?: finalMap["Proxy"] ?: finalMap["Proxies"]
-                                        if (curProxies !is List<*> || curProxies.isEmpty()) {
-                                            finalMap["proxies"] = origProxies
-                                        }
-                                    }
-                                    val origGroups = configMap["proxy-groups"] ?: configMap["proxy-providers"] ?: configMap["Proxy Group"]
-                                    if (origGroups is List<*> && origGroups.isNotEmpty()) {
-                                        val curGroups = finalMap["proxy-groups"] ?: finalMap["Proxy Group"]
-                                        if (curGroups !is List<*> || curGroups.isEmpty()) {
-                                            finalMap["proxy-groups"] = origGroups
-                                        }
-                                    }
-                                }
-                                val normalized = normalizeYamlData(finalMap)
-                                currentYaml = yamlParser.dump(normalized)
-                                if (logToRepo) {
-                                    LogRepository.addLog("info", "JS 脚本 [${script.name}] 成功复写配置")
-                                }
-                                Log.i(TAG, "Successfully applied script: ${script.name}")
                             }
+                            for ((k, v) in modifiedMap) {
+                                finalMap[k] = v
+                            }
+                            if (configMap is Map<*, *>) {
+                                val origProxies = configMap["proxies"] ?: configMap["Proxy"] ?: configMap["Proxies"]
+                                if (origProxies is List<*> && origProxies.isNotEmpty()) {
+                                    val curProxies = finalMap["proxies"] ?: finalMap["Proxy"] ?: finalMap["Proxies"]
+                                    if (curProxies !is List<*> || curProxies.isEmpty()) {
+                                        finalMap["proxies"] = origProxies
+                                    }
+                                }
+                                val origGroups = configMap["proxy-groups"] ?: configMap["proxy-providers"] ?: configMap["Proxy Group"]
+                                if (origGroups is List<*> && origGroups.isNotEmpty()) {
+                                    val curGroups = finalMap["proxy-groups"] ?: finalMap["Proxy Group"]
+                                    if (curGroups !is List<*> || curGroups.isEmpty()) {
+                                        finalMap["proxy-groups"] = origGroups
+                                    }
+                                }
+                            }
+                            val normalized = normalizeYamlData(finalMap)
+                            currentYaml = yamlParser.dump(normalized)
+                            if (logToRepo) {
+                                LogRepository.addLog("info", "JS 脚本 [${script.name}] 成功复写配置")
+                            }
+                            Log.i(TAG, "Successfully applied script: ${script.name}")
                         }
                     }
                 } else {
@@ -417,7 +467,6 @@ object ConfigScriptEngine {
         code: String,
         jsonStr: String,
         scriptName: String,
-        gson: Gson,
         logSink: MutableList<String>? = null
     ): String? {
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -427,7 +476,7 @@ object ConfigScriptEngine {
             try {
                 val envPolyfill = """
                     var __logs = [];
-                    function __ pushLog(level, args) {
+                    function __pushLog(level, args) {
                         if (__logs.length >= 100) return;
                         var parts = [];
                         for (var i = 0; i < args.length; i++) {
@@ -448,11 +497,11 @@ object ConfigScriptEngine {
                     };
                     var module = { exports: {} };
                     var exports = module.exports;
-                """.trimIndent().replace("function __ pushLog", "function __pushLog")
+                """.trimIndent()
                 jsContext.executeVoidScript(envPolyfill, "polyfill.js")
                 jsContext.executeVoidScript(code, scriptName)
 
-                val escapedJson = gson.toJson(jsonStr)
+                val escapedJson = jsonToJsStringLiteral(jsonStr)
                 val runnerCode = """
                     (function() {
                         var __input = JSON.parse($escapedJson);
@@ -489,9 +538,9 @@ object ConfigScriptEngine {
                 if (logSink != null) {
                     runCatching {
                         val logsJson = jsContext.executeStringScript("JSON.stringify(__logs);", "logs.js")
-                        val parsedLogs = gson.fromJson(logsJson, Array<String>::class.java)
+                        val parsedLogs = scriptJson.parseToJsonElement(logsJson) as? JsonArray
                         if (parsedLogs != null) {
-                            logSink.addAll(parsedLogs)
+                            logSink.addAll(parsedLogs.map { it.jsonPrimitive.content })
                         }
                     }
                 }
@@ -502,120 +551,14 @@ object ConfigScriptEngine {
             }
         }
         return try {
-            future.get(RHINO_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            future.get(SCRIPT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: java.util.concurrent.TimeoutException) {
             future.cancel(true)
-            throw RuntimeException("脚本执行超时（超过 ${RHINO_TIMEOUT_MS / 1000}s）")
+            throw RuntimeException("脚本执行超时（超过 ${SCRIPT_TIMEOUT_MS / 1000}s）")
         } catch (e: java.util.concurrent.ExecutionException) {
             throw (e.cause ?: e)
         } finally {
             executor.shutdownNow()
-        }
-    }
-
-    /**
-     * Rhino runs without any Java bridge: [org.mozilla.javascript.Context.initSafeStandardObjects]
-     * removes the `Packages`/`JavaAdapter`/`getClass` reachability that `initStandardObjects`
-     * exposes, and a denying ClassShutter is layered on top as defence in depth. Scripts are
-     * pulled from remote subscriptions, so an unrestricted bridge here is remote code execution.
-     * A ContextFactory-based instruction observer also bounds runaway scripts.
-     */
-    internal fun executeWithRhino(
-        code: String,
-        jsonStr: String,
-        scriptName: String,
-        gson: Gson,
-        logSink: MutableList<String>? = null
-    ): String? {
-        val deadline = System.currentTimeMillis() + RHINO_TIMEOUT_MS
-        val factory = object : org.mozilla.javascript.ContextFactory() {
-            override fun observeInstructionCount(cx: org.mozilla.javascript.Context, instructionCount: Int) {
-                if (System.currentTimeMillis() > deadline) {
-                    throw org.mozilla.javascript.EvaluatorException("脚本执行超时（超过 ${RHINO_TIMEOUT_MS / 1000}s）")
-                }
-            }
-        }
-
-        return factory.call { rhinoCtx ->
-            rhinoCtx.optimizationLevel = -1
-            rhinoCtx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
-            rhinoCtx.instructionObserverThreshold = 10_000
-            rhinoCtx.setClassShutter { false }
-
-            val scope = rhinoCtx.initSafeStandardObjects()
-            val envPolyfill = """
-                var __logs = [];
-                function __pushLog(level, args) {
-                    if (__logs.length >= 100) return;
-                    var parts = [];
-                    for (var i = 0; i < args.length; i++) {
-                        var a = args[i];
-                        if (typeof a === 'object' && a !== null) {
-                            try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
-                        } else {
-                            parts.push(String(a));
-                        }
-                    }
-                    __logs.push('[' + level + '] ' + parts.join(' '));
-                }
-                var console = {
-                    log: function() { __pushLog('LOG', arguments); },
-                    info: function() { __pushLog('INFO', arguments); },
-                    warn: function() { __pushLog('WARN', arguments); },
-                    error: function() { __pushLog('ERROR', arguments); }
-                };
-                var module = { exports: {} };
-                var exports = module.exports;
-            """.trimIndent()
-            rhinoCtx.evaluateString(scope, envPolyfill, "polyfill.js", 1, null)
-
-            val preprocessedCode = code
-                .replace(Regex("""for\s*\(\s*(const|let)\s+"""), "for (var ")
-
-            rhinoCtx.evaluateString(scope, preprocessedCode, scriptName, 1, null)
-            val escapedJson = gson.toJson(jsonStr)
-            val runnerCode = """
-                (function() {
-                    var __input = JSON.parse($escapedJson);
-                    var inProxies = __input.proxies ? JSON.parse(JSON.stringify(__input.proxies)) :
-                                    (__input.Proxies ? JSON.parse(JSON.stringify(__input.Proxies)) :
-                                    (__input.Proxy ? JSON.parse(JSON.stringify(__input.Proxy)) : null));
-                    var inGroups = __input['proxy-groups'] ? JSON.parse(JSON.stringify(__input['proxy-groups'])) : null;
-                    var __fn = (typeof main === 'function') ? main :
-                               (typeof module !== 'undefined' && typeof module.exports === 'function') ? module.exports :
-                               (typeof module !== 'undefined' && module.exports && typeof module.exports.main === 'function') ? module.exports.main :
-                               null;
-                    var __res = __fn ? __fn(__input) : __input;
-                    if (typeof __res === 'undefined' || __res === null) {
-                        __res = __input;
-                    }
-                    if (__res && typeof __res.then === 'function') {
-                        __res = __input;
-                    }
-                    var outProxies = __res.proxies || __res.Proxies || __res.Proxy;
-                    if (inProxies && inProxies.length > 0 && (!outProxies || !Array.isArray(outProxies) || outProxies.length === 0)) {
-                        __res.proxies = inProxies;
-                    }
-                    if (inGroups && inGroups.length > 0 && (!__res['proxy-groups'] || !Array.isArray(__res['proxy-groups']) || __res['proxy-groups'].length === 0)) {
-                        __res['proxy-groups'] = inGroups;
-                    }
-                    return JSON.stringify(__res);
-                })();
-            """.trimIndent()
-            val resultObj = rhinoCtx.evaluateString(scope, runnerCode, "runner.js", 1, null)
-            if (logSink != null) {
-                runCatching {
-                    val logsObj = rhinoCtx.evaluateString(scope, "JSON.stringify(__logs);", "logs.js", 1, null)
-                    if (logsObj != null) {
-                        val logsJson = org.mozilla.javascript.Context.toString(logsObj)
-                        val parsedLogs = gson.fromJson(logsJson, Array<String>::class.java)
-                        if (parsedLogs != null) {
-                            logSink.addAll(parsedLogs)
-                        }
-                    }
-                }
-            }
-            if (resultObj != null) org.mozilla.javascript.Context.toString(resultObj) else null
         }
     }
 
@@ -653,6 +596,9 @@ object ConfigScriptEngine {
             else -> data
         }
     }
+
+    private val scriptJson = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
 }
-
-

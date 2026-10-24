@@ -1,14 +1,9 @@
 package com.github.mihomo.android.data
 
-import com.google.gson.GsonBuilder
 import org.junit.Assert.*
 import org.junit.Test
 
 class ConfigScriptEngineTest {
-
-    private val gson = GsonBuilder()
-        .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
-        .create()
 
     @Test
     fun `normalizeYamlData converts whole numbers and expected-status correctly`() {
@@ -40,71 +35,45 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `executeWithRhino runs main function and transforms configuration`() {
-        val jsCode = """
-            function main(config) {
-                config.mode = "global";
-                config.proxies.push({ name: "Custom-Node", type: "ss" });
-                return config;
-            }
-        """.trimIndent()
-
-        val jsonInput = """
-            {
-                "mode": "rule",
-                "proxies": [{ "name": "Node-1", "type": "vmess" }],
-                "proxy-groups": [{ "name": "PROXY", "type": "select" }]
-            }
-        """.trimIndent()
-
-        val resultJson = ConfigScriptEngine.executeWithRhino(jsCode, jsonInput, "test.js", gson)
-        assertNotNull(resultJson)
-        assertTrue(resultJson!!.contains("\"mode\":\"global\"") || resultJson.contains("\"mode\": \"global\""))
-        assertTrue(resultJson.contains("Custom-Node"))
-        assertTrue(resultJson.contains("Node-1"))
+    fun `previewScript rejects blank script code`() {
+        val result = ConfigScriptEngine.previewScript(
+            rawYaml = "proxies: []",
+            code = "   "
+        )
+        assertFalse(result.success)
+        assertEquals("脚本代码不能为空", result.errorMessage)
     }
 
     @Test
-    fun `executeWithRhino merge defense prevents dropping proxies`() {
-        val jsCode = """
-            function main(config) {
-                // Malicious or buggy script attempting to wipe out proxies
-                config.proxies = [];
-                return config;
-            }
-        """.trimIndent()
-
-        val jsonInput = """
-            {
-                "proxies": [{ "name": "Important-Node", "type": "ss" }],
-                "proxy-groups": [{ "name": "PROXY", "type": "select" }]
-            }
-        """.trimIndent()
-
-        val resultJson = ConfigScriptEngine.executeWithRhino(jsCode, jsonInput, "wipe.js", gson)
-        assertNotNull(resultJson)
-        // Merge defense in runnerCode restores the input proxies!
-        assertTrue(resultJson!!.contains("Important-Node"))
+    fun `previewScript rejects invalid YAML input for JS scripts`() {
+        val result = ConfigScriptEngine.previewScript(
+            rawYaml = "\t::not yaml[[[",
+            code = "function main(config) { return config; }"
+        )
+        assertFalse(result.success)
+        assertEquals("输入配置不是合法的 YAML 格式", result.errorMessage)
     }
 
     @Test
-    fun `executeWithRhino blocks access to java reflection and dangerous classes`() {
-        val maliciousJs = """
-            function main(config) {
-                var file = java.lang.System.getProperty("user.home");
-                config.secret = file;
-                return config;
-            }
+    fun `previewScript merges YAML override snippets without an engine`() {
+        val baseYaml = """
+            mode: rule
+            rules:
+              - MATCH,DIRECT
         """.trimIndent()
 
-        val jsonInput = """{"proxies":[],"proxy-groups":[]}"""
+        val snippet = """
+            mode: global
+            rules:
+              - DOMAIN-SUFFIX,example.com,DIRECT
+        """.trimIndent()
 
-        try {
-            ConfigScriptEngine.executeWithRhino(maliciousJs, jsonInput, "exploit.js", gson)
-            fail("Expected security exception when accessing Java classes")
-        } catch (e: Throwable) {
-            // ClassShutter denies access to Java classes
-            assertTrue(e is org.mozilla.javascript.EcmaError || e is org.mozilla.javascript.EvaluatorException)
-        }
+        val result = ConfigScriptEngine.previewScript(rawYaml = baseYaml, code = snippet)
+        assertTrue(result.success)
+        assertEquals("YAML Merge", result.engineName)
+        assertTrue(result.outputYaml.contains("global"))
+        // List values are appended, not replaced.
+        assertTrue(result.outputYaml.contains("MATCH,DIRECT"))
+        assertTrue(result.outputYaml.contains("example.com"))
     }
 }
