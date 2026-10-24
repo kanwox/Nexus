@@ -154,9 +154,9 @@ fun ProfileOverrideScreen(
                             val isChecked = selectedScriptIds.contains(script.id)
                             CupertinoCell(
                                 title = script.name,
-                                subtitle = if (script.enabled) script.type.uppercase() else "${script.type.uppercase()} · 已在脚本中心停用",
+                                subtitle = if (script.url.isNotBlank()) "远程脚本" else "本地脚本",
                                 icon = Icons.Default.Javascript,
-                                iconBg = if (isChecked && script.enabled) IosBlue else Color(0xFF8E8E93),
+                                iconBg = if (isChecked) IosBlue else Color(0xFF8E8E93),
                                 trailing = {
                                     CupertinoSwitch(
                                         checked = isChecked,

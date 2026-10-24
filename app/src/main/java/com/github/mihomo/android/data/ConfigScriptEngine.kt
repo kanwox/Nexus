@@ -297,7 +297,7 @@ object ConfigScriptEngine {
     ): String {
         if (targetScriptIds.isNullOrEmpty()) return rawYaml
         val allScripts = ScriptManager.getScripts(context)
-        val scripts = allScripts.filter { it.enabled && targetScriptIds.contains(it.id) }
+        val scripts = allScripts.filter { targetScriptIds.contains(it.id) }
         if (scripts.isEmpty()) return rawYaml
 
         var currentYaml = rawYaml

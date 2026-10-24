@@ -1,20 +1,25 @@
 package com.github.mihomo.android.ui.screens
 
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -25,10 +30,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.Redo
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,7 +65,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.ConfigManager
-import com.github.mihomo.android.data.ConfigScriptEngine
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.ui.components.*
@@ -63,38 +73,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class ScriptBuildMode(val label: String) {
-    NEW("新建脚本"),
-    URL("URL 导入"),
-    LOCAL("本地导入")
-}
-
-private enum class WorkbenchTab(val label: String) {
-    EDITOR("代码编辑"),
-    PREVIEW("运行预览")
-}
-
-private enum class PreviewSubTab(val label: String) {
-    YAML("输出 YAML"),
-    CONSOLE("控制台")
-}
-
-private data class ScriptWorkspaceState(
-    val existingScript: ScriptItem? = null,
-    val initialMode: ScriptBuildMode = ScriptBuildMode.NEW
+private data class ScriptEditorTarget(
+    val existingScript: ScriptItem? = null
 )
 
 private val DEFAULT_NEW_SCRIPT_CODE = """
-// Mihomo 配置覆写脚本 (ES2020 / QuickJS)
 function main(config) {
-  const proxies = config.proxies || [];
-  console.log("当前订阅节点数量:", proxies.length);
-
-  // 示例：注入高优先级自定义分流规则
-  const customRules = [
-    "DOMAIN-SUFFIX,openai.com,DIRECT"
-  ];
-  config.rules = customRules.concat(config.rules || []);
   return config;
 }
 """.trimIndent()
@@ -105,17 +89,30 @@ private fun formatRelativeTime(timestamp: Long): String {
     val seconds = diff / 1000
     if (seconds < 60) return "刚刚"
     val minutes = seconds / 60
-    if (minutes < 60) return "${minutes} 分钟前"
+    if (minutes < 60) return "${minutes}分钟前"
     val hours = minutes / 60
-    if (hours < 24) return "${hours} 小时前"
+    if (hours < 24) return "${hours}小时前"
     val days = hours / 24
-    if (days < 30) return "${days} 天前"
+    if (days < 30) return "${days}天前"
     val months = days / 30
-    if (months < 12) return "${months} 个月前"
+    if (months < 12) return "${months}个月前"
     val years = months / 12
-    return "${years} 年前"
+    return "${years}年前"
 }
 
+private fun linkScriptToEnabledProfiles(context: Context, scriptId: String) {
+    val profiles = ConfigManager.getProfiles(context)
+    profiles.forEach { profile ->
+        if (profile.scriptEnabled && !profile.scriptIds.contains(scriptId)) {
+            ConfigManager.updateProfile(
+                context,
+                profile.copy(scriptIds = profile.scriptIds + scriptId)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ScriptsScreen(
     onBack: () -> Unit,
@@ -127,7 +124,24 @@ fun ScriptsScreen(
 
     var scripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
     var updatingScriptIds by remember { mutableStateOf(setOf<String>()) }
-    var workspaceState by remember { mutableStateOf<ScriptWorkspaceState?>(null) }
+    var isUpdatingAll by remember { mutableStateOf(false) }
+
+    var editorTarget by remember { mutableStateOf<ScriptEditorTarget?>(null) }
+
+    // Top-right "+" Action Sheet (3 options: 新建脚本, URL 导入, 本地导入)
+    var showAddSheet by remember { mutableStateOf(false) }
+
+    // URL Import Alert Dialog state
+    var showUrlImportDialog by remember { mutableStateOf(false) }
+    var importUrlName by remember { mutableStateOf("") }
+    var importUrlValue by remember { mutableStateOf("") }
+    var isImportingUrl by remember { mutableStateOf(false) }
+
+    // Long-press Action Sheet & Dialog states for a script item
+    var actionSheetScript by remember { mutableStateOf<ScriptItem?>(null) }
+    var editingInfoScript by remember { mutableStateOf<ScriptItem?>(null) }
+    var editInfoName by remember { mutableStateOf("") }
+    var editInfoUrl by remember { mutableStateOf("") }
     var deleteConfirmScript by remember { mutableStateOf<ScriptItem?>(null) }
 
     LaunchedEffect(Unit) {
@@ -139,8 +153,102 @@ fun ScriptsScreen(
         onScriptsChanged()
     }
 
+    val localFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    val (displayName, content) = withContext(Dispatchers.IO) {
+                        var name = "local_script.js"
+                        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (nameIdx != -1 && cursor.moveToFirst()) {
+                                name = cursor.getString(nameIdx) ?: name
+                            }
+                        }
+                        val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                            ?: error("无法读取文件内容")
+                        val cleanName = name
+                            .removeSuffix(".js")
+                            .removeSuffix(".yaml")
+                            .removeSuffix(".yml")
+                            .removeSuffix(".txt")
+                            .ifBlank { "本地脚本" }
+                        cleanName to text
+                    }
+                    withContext(Dispatchers.IO) {
+                        val saved = ScriptManager.saveScript(
+                            context = context,
+                            name = displayName,
+                            code = content,
+                            enabled = true
+                        )
+                        linkScriptToEnabledProfiles(context, saved.id)
+                    }
+                    refresh()
+                    CupertinoToast.show("已导入 $displayName")
+                }.onFailure { e ->
+                    CupertinoToast.show("导入失败: ${e.message}", isDestructive = true)
+                }
+            }
+        }
+    }
+
+    fun updateAllRemoteScripts() {
+        if (isUpdatingAll) return
+        val remoteScripts = scripts.filter { it.url.isNotBlank() }
+        if (remoteScripts.isEmpty()) {
+            CupertinoToast.show("暂无可更新的远程脚本")
+            return
+        }
+        isUpdatingAll = true
+        updatingScriptIds = updatingScriptIds + remoteScripts.map { it.id }
+        scope.launch {
+            var successCount = 0
+            var failCount = 0
+            for (script in remoteScripts) {
+                val res = ScriptManager.updateScriptFromRemote(context, script)
+                updatingScriptIds = updatingScriptIds - script.id
+                if (res.isSuccess) {
+                    successCount++
+                } else {
+                    failCount++
+                }
+            }
+            isUpdatingAll = false
+            refresh()
+            if (failCount == 0) {
+                CupertinoToast.show("已更新 $successCount 个远程脚本")
+            } else {
+                CupertinoToast.show(
+                    "更新完成: 成功 $successCount 个, 失败 $failCount 个",
+                    isDestructive = successCount == 0
+                )
+            }
+        }
+    }
+
+    fun updateSingleScript(script: ScriptItem) {
+        if (updatingScriptIds.contains(script.id)) return
+        updatingScriptIds = updatingScriptIds + script.id
+        scope.launch {
+            val res = ScriptManager.updateScriptFromRemote(context, script)
+            updatingScriptIds = updatingScriptIds - script.id
+            if (res.isSuccess) {
+                refresh()
+                CupertinoToast.show("已更新 ${script.name}")
+            } else {
+                CupertinoToast.show(
+                    "更新失败: ${res.exceptionOrNull()?.message}",
+                    isDestructive = true
+                )
+            }
+        }
+    }
+
     AnimatedContent(
-        targetState = workspaceState,
+        targetState = editorTarget,
         transitionSpec = {
             if (targetState != null) {
                 (slideInHorizontally(
@@ -161,14 +269,14 @@ fun ScriptsScreen(
             }
         },
         label = "scripts_page_transition"
-    ) { activeWorkspace ->
-        if (activeWorkspace != null) {
-            ScriptWorkspaceScreen(
-                workspaceState = activeWorkspace,
-                onBack = { workspaceState = null },
+    ) { activeEditor ->
+        if (activeEditor != null) {
+            ScriptEditorScreen(
+                existingScript = activeEditor.existingScript,
+                onBack = { editorTarget = null },
                 onSaved = {
                     refresh()
-                    workspaceState = null
+                    editorTarget = null
                 }
             )
         } else {
@@ -180,287 +288,166 @@ fun ScriptsScreen(
             ) {
                 CupertinoNavBar(
                     title = "脚本",
-                    subtitle = if (scripts.isEmpty()) null else "${scripts.count { it.enabled }} / ${scripts.size} 已启用",
                     showBackButton = true,
                     onBack = onBack,
                     actions = {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .iosPressable {
-                                    haptic.selection()
-                                    workspaceState = ScriptWorkspaceState(
-                                        existingScript = null,
-                                        initialMode = ScriptBuildMode.NEW
-                                    )
-                                },
-                            contentAlignment = Alignment.Center
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "构建脚本",
-                                tint = IosBlue,
-                                modifier = Modifier.size(22.dp)
-                            )
+                            // Top-right Update Option
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .iosPressable(enabled = !isUpdatingAll) {
+                                        haptic.selection()
+                                        updateAllRemoteScripts()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isUpdatingAll) {
+                                    CupertinoActivityIndicator(size = 18.dp, color = IosBlue)
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "更新脚本",
+                                        tint = IosBlue,
+                                        modifier = Modifier.size(21.dp)
+                                    )
+                                }
+                            }
+
+                            // Top-right Add Option (opens popup with 3 options)
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .iosPressable {
+                                        haptic.selection()
+                                        showAddSheet = true
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "添加脚本",
+                                    tint = IosBlue,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                         }
                     }
                 )
 
-                // Quick 3-Way Build Entry Bar (iOS Inset Card Row)
-                Row(
+                LazyColumn(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(top = 8.dp, bottom = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        .fillMaxSize()
+                        .bounceOverscroll(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    ScriptQuickBuildPill(
-                        title = "新建脚本",
-                        icon = Icons.Default.Code,
-                        tint = IosBlue,
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            haptic.selection()
-                            workspaceState = ScriptWorkspaceState(null, ScriptBuildMode.NEW)
-                        }
-                    )
-                    ScriptQuickBuildPill(
-                        title = "URL 导入",
-                        icon = Icons.Default.Link,
-                        tint = Color(0xFF5856D6),
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            haptic.selection()
-                            workspaceState = ScriptWorkspaceState(null, ScriptBuildMode.URL)
-                        }
-                    )
-                    ScriptQuickBuildPill(
-                        title = "本地导入",
-                        icon = Icons.Default.FolderOpen,
-                        tint = IosOrange,
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            haptic.selection()
-                            workspaceState = ScriptWorkspaceState(null, ScriptBuildMode.LOCAL)
-                        }
-                    )
-                }
-
-                if (scripts.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (scripts.isEmpty()) {
+                        item {
                             Box(
                                 modifier = Modifier
-                                    .size(64.dp)
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(LoonCard)
-                                    .border(0.5.dp, LoonCardBorder, RoundedCornerShape(18.dp)),
+                                    .fillMaxWidth()
+                                    .padding(top = 100.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Terminal,
-                                    contentDescription = null,
-                                    tint = IosBlue,
-                                    modifier = Modifier.size(30.dp)
-                                )
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = Icons.Default.Code,
+                                        contentDescription = null,
+                                        tint = LoonTextMuted.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(44.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "暂无脚本",
+                                        color = LoonTextSecondary,
+                                        fontSize = 14.sp
+                                    )
+                                }
                             }
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Text(
-                                text = "暂无配置覆写脚本",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = LoonTextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "支持通过新建、URL 导入或本地文件导入脚本\n在订阅解析与启动时动态重写节点、策略组与分流规则",
-                                fontSize = 12.5.sp,
-                                lineHeight = 18.sp,
-                                color = LoonTextSecondary,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 20.dp)
-                            )
-                            Spacer(modifier = Modifier.height(18.dp))
-                            CupertinoButton(
-                                text = "进入脚本构建台",
-                                onClick = {
-                                    haptic.selection()
-                                    workspaceState = ScriptWorkspaceState(null, ScriptBuildMode.NEW)
-                                },
-                                style = CupertinoButtonStyle.Filled,
-                                icon = Icons.Default.Add
-                            )
                         }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .bounceOverscroll(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        item {
+                    } else {
+                        items(scripts, key = { it.id }) { script ->
+                            val isRemote = script.url.isNotBlank()
+                            val isUpdating = updatingScriptIds.contains(script.id)
+
                             Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = LoonCard,
+                                border = BorderStroke(0.5.dp, LoonCardBorder),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp)),
-                                border = BorderStroke(0.5.dp, LoonCardBorder),
-                                color = LoonCard,
-                                shape = RoundedCornerShape(14.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .combinedClickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                        onClick = {
+                                            haptic.selection()
+                                            editorTarget = ScriptEditorTarget(existingScript = script)
+                                        },
+                                        onLongClick = {
+                                            haptic.impact()
+                                            actionSheetScript = script
+                                        }
+                                    )
                             ) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    scripts.forEachIndexed { index, script ->
-                                        val isUpdating = updatingScriptIds.contains(script.id)
-                                        val isRemote = script.url.isNotBlank()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (isRemote) IosBlue.copy(alpha = 0.12f)
+                                                else IosOrange.copy(alpha = 0.12f)
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isRemote) Icons.Default.CloudDownload else Icons.Default.Code,
+                                            contentDescription = null,
+                                            tint = if (isRemote) IosBlue else IosOrange,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
 
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    haptic.selection()
-                                                    workspaceState = ScriptWorkspaceState(
-                                                        existingScript = script,
-                                                        initialMode = if (isRemote) ScriptBuildMode.URL else ScriptBuildMode.NEW
-                                                    )
-                                                }
-                                                .padding(horizontal = 16.dp, vertical = 13.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .padding(end = 10.dp)
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(34.dp)
-                                                        .clip(RoundedCornerShape(9.dp))
-                                                        .background(
-                                                            if (isRemote) Color(0xFF5856D6).copy(alpha = 0.12f)
-                                                            else IosBlue.copy(alpha = 0.12f)
-                                                        ),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(
-                                                        imageVector = if (isRemote) Icons.Default.CloudDownload else Icons.Default.Code,
-                                                        contentDescription = null,
-                                                        tint = if (isRemote) Color(0xFF5856D6) else IosBlue,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
+                                    Spacer(modifier = Modifier.width(13.dp))
 
-                                                Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = script.name,
+                                            color = LoonTextPrimary,
+                                            fontSize = 15.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = buildString {
+                                                append(if (isRemote) "远程脚本" else "本地脚本")
+                                                append(" · ")
+                                                append(formatRelativeTime(script.updatedAt))
+                                            },
+                                            color = LoonTextSecondary,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
 
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = script.name,
-                                                        fontSize = 15.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = LoonTextPrimary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Spacer(modifier = Modifier.height(2.dp))
-                                                    Text(
-                                                        text = buildString {
-                                                            append(if (isRemote) "远程脚本" else "本地脚本")
-                                                            append(" · ")
-                                                            append(formatRelativeTime(script.updatedAt))
-                                                        },
-                                                        fontSize = 11.5.sp,
-                                                        color = LoonTextSecondary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                            }
-
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                if (isRemote) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(30.dp)
-                                                            .clip(CircleShape)
-                                                            .iosPressable(enabled = !isUpdating) {
-                                                                haptic.selection()
-                                                                updatingScriptIds = updatingScriptIds + script.id
-                                                                scope.launch {
-                                                                    val res = ScriptManager.updateScriptFromRemote(context, script)
-                                                                    updatingScriptIds = updatingScriptIds - script.id
-                                                                    if (res.isSuccess) {
-                                                                        refresh()
-                                                                        CupertinoToast.show("脚本已同步最新远程版本")
-                                                                    } else {
-                                                                        CupertinoToast.show(
-                                                                            "同步失败: ${res.exceptionOrNull()?.message}",
-                                                                            isDestructive = true
-                                                                        )
-                                                                    }
-                                                                }
-                                                            },
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        if (isUpdating) {
-                                                            CupertinoActivityIndicator(size = 14.dp, color = IosBlue)
-                                                        } else {
-                                                            Icon(
-                                                                Icons.Default.Refresh,
-                                                                contentDescription = "同步远程脚本",
-                                                                tint = LoonTextSecondary,
-                                                                modifier = Modifier.size(16.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                CupertinoSwitch(
-                                                    checked = script.enabled,
-                                                    onCheckedChange = { checked ->
-                                                        ScriptManager.toggleScript(context, script.id, checked)
-                                                        refresh()
-                                                    }
-                                                )
-
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(28.dp)
-                                                        .clip(CircleShape)
-                                                        .iosPressable {
-                                                            haptic.selection()
-                                                            deleteConfirmScript = script
-                                                        },
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.DeleteOutline,
-                                                        contentDescription = "删除",
-                                                        tint = LoonTextSecondary,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        if (index < scripts.lastIndex) {
-                                            HorizontalDivider(
-                                                color = LoonCardBorder,
-                                                thickness = 0.5.dp,
-                                                modifier = Modifier.padding(start = 62.dp, end = 16.dp)
-                                            )
-                                        }
+                                    if (isUpdating) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        CupertinoActivityIndicator(size = 16.dp, color = IosBlue)
                                     }
                                 }
                             }
@@ -471,11 +458,227 @@ fun ScriptsScreen(
         }
     }
 
+    // 1. Popup with the 3 options: 新建脚本, URL 导入, 本地导入
+    if (showAddSheet) {
+        CupertinoActionSheet(
+            onDismissRequest = { showAddSheet = false },
+            actions = listOf(
+                CupertinoActionSheetItem(
+                    text = "新建脚本",
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = false
+                        editorTarget = ScriptEditorTarget(existingScript = null)
+                    }
+                ),
+                CupertinoActionSheetItem(
+                    text = "URL 导入",
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        val clipText = clipboard?.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+                        importUrlName = ""
+                        importUrlValue = if (clipText.startsWith("http://") || clipText.startsWith("https://")) clipText else ""
+                        showUrlImportDialog = true
+                    }
+                ),
+                CupertinoActionSheetItem(
+                    text = "本地导入",
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = false
+                        localFileLauncher.launch("*/*")
+                    }
+                )
+            ),
+            cancelText = "取消"
+        )
+    }
+
+    // 2. URL Import Dialog
+    if (showUrlImportDialog) {
+        CupertinoAlertDialog(
+            title = "URL 导入",
+            confirmText = if (isImportingUrl) "导入中..." else "导入",
+            dismissText = "取消",
+            onConfirm = {
+                if (isImportingUrl) return@CupertinoAlertDialog
+                val cleanUrl = importUrlValue.trim()
+                if (cleanUrl.isBlank()) {
+                    CupertinoToast.show("请输入脚本链接", isDestructive = true)
+                    return@CupertinoAlertDialog
+                }
+                isImportingUrl = true
+                scope.launch {
+                    val res = ScriptManager.downloadScript(
+                        context = context,
+                        url = cleanUrl,
+                        name = importUrlName.trim(),
+                        pattern = "",
+                        type = "config"
+                    )
+                    isImportingUrl = false
+                    if (res.isSuccess) {
+                        val item = res.getOrThrow()
+                        withContext(Dispatchers.IO) {
+                            linkScriptToEnabledProfiles(context, item.id)
+                        }
+                        showUrlImportDialog = false
+                        refresh()
+                        CupertinoToast.show("已导入 ${item.name}")
+                    } else {
+                        CupertinoToast.show(
+                            "导入失败: ${res.exceptionOrNull()?.message}",
+                            isDestructive = true
+                        )
+                    }
+                }
+            },
+            onDismiss = {
+                if (!isImportingUrl) showUrlImportDialog = false
+            },
+            onDismissRequest = {
+                if (!isImportingUrl) showUrlImportDialog = false
+            }
+        ) {
+            Spacer(modifier = Modifier.height(14.dp))
+            CupertinoTextField(
+                value = importUrlName,
+                onValueChange = { importUrlName = it },
+                placeholder = "名称 (选填)",
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            CupertinoTextField(
+                value = importUrlValue,
+                onValueChange = { importUrlValue = it },
+                placeholder = "脚本链接 (URL)",
+                singleLine = true
+            )
+        }
+    }
+
+    // 3. Long-Press Popup Action Sheet for Script Item
+    if (actionSheetScript != null) {
+        val target = actionSheetScript!!
+        val isRemote = target.url.isNotBlank()
+
+        val actions = buildList {
+            if (isRemote) {
+                add(
+                    CupertinoActionSheetItem(
+                        text = "更新",
+                        onClick = {
+                            haptic.lightTick()
+                            actionSheetScript = null
+                            updateSingleScript(target)
+                        }
+                    )
+                )
+            }
+            add(
+                CupertinoActionSheetItem(
+                    text = "编辑代码",
+                    onClick = {
+                        haptic.selection()
+                        actionSheetScript = null
+                        editorTarget = ScriptEditorTarget(existingScript = target)
+                    }
+                )
+            )
+            add(
+                CupertinoActionSheetItem(
+                    text = "编辑信息",
+                    onClick = {
+                        haptic.selection()
+                        actionSheetScript = null
+                        editInfoName = target.name
+                        editInfoUrl = target.url
+                        editingInfoScript = target
+                    }
+                )
+            )
+            add(
+                CupertinoActionSheetItem(
+                    text = "删除",
+                    isDestructive = true,
+                    onClick = {
+                        haptic.impact()
+                        actionSheetScript = null
+                        deleteConfirmScript = target
+                    }
+                )
+            )
+        }
+
+        CupertinoActionSheet(
+            onDismissRequest = { actionSheetScript = null },
+            title = target.name,
+            actions = actions,
+            cancelText = "取消"
+        )
+    }
+
+    // 4. Edit Script Name / URL Dialog
+    if (editingInfoScript != null) {
+        val target = editingInfoScript!!
+        val isRemote = target.url.isNotBlank()
+
+        CupertinoAlertDialog(
+            title = "编辑信息",
+            confirmText = "保存",
+            dismissText = "取消",
+            onConfirm = {
+                val finalName = editInfoName.trim().ifBlank { target.name }
+                val finalUrl = if (isRemote) editInfoUrl.trim() else target.url
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        val code = ScriptManager.readScriptCode(context, target)
+                        ScriptManager.saveScript(
+                            context = context,
+                            existingId = target.id,
+                            name = finalName,
+                            url = finalUrl,
+                            pattern = target.pattern,
+                            type = target.type,
+                            code = code,
+                            enabled = true
+                        )
+                    }
+                    editingInfoScript = null
+                    refresh()
+                    CupertinoToast.show("已保存")
+                }
+            },
+            onDismiss = { editingInfoScript = null },
+            onDismissRequest = { editingInfoScript = null }
+        ) {
+            Spacer(modifier = Modifier.height(14.dp))
+            CupertinoTextField(
+                value = editInfoName,
+                onValueChange = { editInfoName = it },
+                placeholder = "名称",
+                singleLine = true
+            )
+            if (isRemote) {
+                Spacer(modifier = Modifier.height(10.dp))
+                CupertinoTextField(
+                    value = editInfoUrl,
+                    onValueChange = { editInfoUrl = it },
+                    placeholder = "脚本链接 (URL)",
+                    singleLine = true
+                )
+            }
+        }
+    }
+
+    // 5. Delete Confirmation Dialog
     if (deleteConfirmScript != null) {
         val target = deleteConfirmScript!!
         CupertinoAlertDialog(
             title = "删除脚本",
-            message = "确定要删除脚本「${target.name}」吗？此操作不可撤销。",
+            message = "确定要删除脚本「${target.name}」吗？",
             confirmText = "删除",
             dismissText = "取消",
             isDestructive = true,
@@ -485,59 +688,18 @@ fun ScriptsScreen(
                 deleteConfirmScript = null
                 CupertinoToast.show("已删除脚本")
             },
+            onDismiss = { deleteConfirmScript = null },
             onDismissRequest = { deleteConfirmScript = null }
         )
     }
 }
 
-@Composable
-private fun ScriptQuickBuildPill(
-    title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    tint: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        modifier = modifier
-            .height(42.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .iosPressable(pressedScale = 0.96f, onClick = onClick),
-        color = LoonCard,
-        border = BorderStroke(0.5.dp, LoonCardBorder),
-        shape = RoundedCornerShape(11.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = tint,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = title,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = LoonTextPrimary,
-                maxLines = 1
-            )
-        }
-    }
-}
-
 // =============================================================================
-// Standalone Full-Screen Script Builder & VS Code Workbench Page
+// Standard Clean Mobile Code Editor Screen
 // =============================================================================
 @Composable
-private fun ScriptWorkspaceScreen(
-    workspaceState: ScriptWorkspaceState,
+private fun ScriptEditorScreen(
+    existingScript: ScriptItem?,
     onBack: () -> Unit,
     onSaved: () -> Unit
 ) {
@@ -546,49 +708,37 @@ private fun ScriptWorkspaceScreen(
     val haptic = rememberIosHaptic()
     val isDark = LocalLoonColors.current.isDark
 
-    val existing = workspaceState.existingScript
-    val isEditingExisting = existing != null
+    val isEditingExisting = existingScript != null
 
-    var buildMode by remember(workspaceState) {
-        mutableStateOf(workspaceState.initialMode)
+    var scriptName by remember(existingScript) {
+        mutableStateOf(existingScript?.name ?: "")
     }
-    var workbenchTab by remember { mutableStateOf(WorkbenchTab.EDITOR) }
-    var previewSubTab by remember { mutableStateOf(PreviewSubTab.YAML) }
+    var showNameDialog by remember { mutableStateOf(false) }
+    var tempNameInput by remember { mutableStateOf("") }
 
-    var scriptName by remember(existing) {
-        mutableStateOf(existing?.name ?: "")
-    }
-    var scriptUrl by remember(existing) {
-        mutableStateOf(existing?.url ?: "")
-    }
-    var localFileLabel by remember { mutableStateOf("") }
-
-    val initialCode = remember(existing) {
-        if (existing != null) {
-            ScriptManager.readScriptCode(context, existing)
-        } else if (workspaceState.initialMode == ScriptBuildMode.NEW) {
-            DEFAULT_NEW_SCRIPT_CODE
+    val initialCode = remember(existingScript) {
+        if (existingScript != null) {
+            ScriptManager.readScriptCode(context, existingScript)
         } else {
-            ""
+            DEFAULT_NEW_SCRIPT_CODE
         }
     }
 
-    var textFieldValue by remember(existing) {
+    var textFieldValue by remember(existingScript) {
         mutableStateOf(TextFieldValue(text = initialCode, selection = TextRange(initialCode.length)))
     }
 
-    // Undo / Redo History Stack for VS Code Editor experience
-    val undoStack = remember(existing) { mutableStateListOf(initialCode) }
-    var undoIndex by remember(existing) { mutableIntStateOf(0) }
+    val undoStack = remember(existingScript) { mutableStateListOf(initialCode) }
+    var undoIndex by remember(existingScript) { mutableIntStateOf(0) }
 
-    fun updateCodeWithHistory(newValue: TextFieldValue) {
+    fun updateCode(newValue: TextFieldValue) {
         val oldText = textFieldValue.text
         textFieldValue = newValue
         if (newValue.text != oldText) {
             while (undoStack.size > undoIndex + 1) {
                 undoStack.removeAt(undoStack.lastIndex)
             }
-            if (undoStack.size >= 40) {
+            if (undoStack.size >= 50) {
                 undoStack.removeAt(0)
             } else {
                 undoIndex++
@@ -598,139 +748,41 @@ private fun ScriptWorkspaceScreen(
         }
     }
 
-    fun insertSnippet(snippet: String, cursorOffsetBack: Int = 0) {
+    fun insertSymbol(symbol: String, cursorOffsetBack: Int = 0) {
         val current = textFieldValue.text
         val start = textFieldValue.selection.min.coerceIn(0, current.length)
         val end = textFieldValue.selection.max.coerceIn(0, current.length)
-        val updated = current.substring(0, start) + snippet + current.substring(end)
-        val newCursor = (start + snippet.length - cursorOffsetBack).coerceIn(0, updated.length)
-        updateCodeWithHistory(TextFieldValue(text = updated, selection = TextRange(newCursor)))
+        val updated = current.substring(0, start) + symbol + current.substring(end)
+        val newCursor = (start + symbol.length - cursorOffsetBack).coerceIn(0, updated.length)
+        updateCode(TextFieldValue(text = updated, selection = TextRange(newCursor)))
     }
 
-    var isFetchingUrl by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
-    var isRunningPreview by remember { mutableStateOf(false) }
-    var previewResult by remember { mutableStateOf<ConfigScriptEngine.ScriptPreviewResult?>(null) }
-    var activeProfileTitle by remember { mutableStateOf("内置示例订阅") }
 
-    val localFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                var displayName = "local_script.js"
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIdx != -1 && cursor.moveToFirst()) {
-                        displayName = cursor.getString(nameIdx) ?: displayName
-                    }
-                }
-                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    ?: error("无法读取文件内容")
-                localFileLabel = displayName
-                if (scriptName.isBlank()) {
-                    scriptName = displayName.removeSuffix(".js").removeSuffix(".yaml").removeSuffix(".yml").removeSuffix(".txt")
-                }
-                updateCodeWithHistory(TextFieldValue(text = content, selection = TextRange(content.length)))
-                CupertinoToast.show("已载入本地文件: $displayName")
-            }.onFailure { e ->
-                CupertinoToast.show("读取文件失败: ${e.message}", isDestructive = true)
-            }
-        }
-    }
-
-    fun triggerPreview() {
-        if (isRunningPreview) return
-        val codeToRun = textFieldValue.text
-        isRunningPreview = true
-        workbenchTab = WorkbenchTab.PREVIEW
-        scope.launch {
-            val (profileName, rawYaml) = withContext(Dispatchers.IO) {
-                val profiles = ConfigManager.getProfiles(context)
-                val first = profiles.firstOrNull { it.file.exists() }
-                if (first != null) {
-                    first.name to runCatching { first.file.readText() }.getOrDefault("")
-                } else {
-                    "内置示例配置" to ""
-                }
-            }
-            activeProfileTitle = profileName
-            val res = withContext(Dispatchers.IO) {
-                ConfigScriptEngine.previewScript(
-                    rawYaml = rawYaml,
-                    code = codeToRun,
-                    scriptName = scriptName.ifBlank { "script.js" }
-                )
-            }
-            previewResult = res
-            isRunningPreview = false
-            if (!res.success) {
-                previewSubTab = PreviewSubTab.CONSOLE
-            }
-        }
-    }
-
-    fun handleSave() {
+    fun commitSave(finalName: String) {
         if (isSaving) return
+        val codeToSave = textFieldValue.text
+        if (codeToSave.isBlank()) {
+            CupertinoToast.show("脚本内容不能为空", isDestructive = true)
+            return
+        }
+        isSaving = true
         scope.launch {
-            isSaving = true
             try {
-                var finalCode = textFieldValue.text
-                val cleanUrl = scriptUrl.trim()
-
-                if (buildMode == ScriptBuildMode.URL && finalCode.isBlank()) {
-                    if (cleanUrl.isBlank()) {
-                        CupertinoToast.show("请输入脚本 URL 链接", isDestructive = true)
-                        return@launch
-                    }
-                    val fetched = ScriptManager.fetchRemoteScriptContent(cleanUrl)
-                    if (fetched.isFailure) {
-                        CupertinoToast.show(
-                            "拉取远程脚本失败: ${fetched.exceptionOrNull()?.message}",
-                            isDestructive = true
-                        )
-                        return@launch
-                    }
-                    finalCode = fetched.getOrDefault("")
-                }
-
-                if (finalCode.isBlank()) {
-                    CupertinoToast.show("脚本代码不能为空", isDestructive = true)
-                    return@launch
-                }
-
-                val resolvedName = scriptName.trim().ifBlank {
-                    when {
-                        cleanUrl.isNotBlank() -> cleanUrl.substringAfterLast("/").substringBefore("?").removeSuffix(".js").ifBlank { "远程脚本" }
-                        localFileLabel.isNotBlank() -> localFileLabel.removeSuffix(".js").removeSuffix(".txt")
-                        else -> "自定义脚本"
-                    }
-                }
-
                 withContext(Dispatchers.IO) {
-                    val savedItem = ScriptManager.saveScript(
+                    val saved = ScriptManager.saveScript(
                         context = context,
-                        existingId = existing?.id,
-                        name = resolvedName,
-                        url = if (buildMode == ScriptBuildMode.URL || existing?.url?.isNotBlank() == true) cleanUrl else "",
-                        pattern = existing?.pattern ?: "",
-                        type = existing?.type ?: "config",
-                        code = finalCode,
-                        enabled = existing?.enabled ?: true
+                        existingId = existingScript?.id,
+                        name = finalName.trim().ifBlank { "自定义脚本" },
+                        url = existingScript?.url ?: "",
+                        pattern = existingScript?.pattern ?: "",
+                        type = existingScript?.type ?: "config",
+                        code = codeToSave,
+                        enabled = true
                     )
-                    // Also link to profiles that have script override enabled so new scripts take effect seamlessly
-                    val profiles = ConfigManager.getProfiles(context)
-                    profiles.forEach { profile ->
-                        if (profile.scriptEnabled && !profile.scriptIds.contains(savedItem.id)) {
-                            ConfigManager.updateProfile(
-                                context,
-                                profile.copy(scriptIds = profile.scriptIds + savedItem.id)
-                            )
-                        }
-                    }
+                    linkScriptToEnabledProfiles(context, saved.id)
                 }
-
-                CupertinoToast.show(if (isEditingExisting) "脚本已保存" else "脚本构建完成")
+                CupertinoToast.show("已保存")
                 onSaved()
             } finally {
                 isSaving = false
@@ -740,910 +792,276 @@ private fun ScriptWorkspaceScreen(
 
     BackHandler(onBack = onBack)
 
+    val codeScrollState = rememberScrollState()
+    val codeHorizontalScroll = rememberScrollState()
+    val lineCount = remember(textFieldValue.text) {
+        textFieldValue.text.count { it == '\n' } + 1
+    }
+    val syntaxVisualTransformation = remember(isDark) {
+        CodeSyntaxVisualTransformation(isDark = isDark)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(LoonBg)
+            .background(LoonCard)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .imePadding()
     ) {
-        // 1. Top Navigation Bar
+        // 1. Standard iOS Navigation Bar
         CupertinoNavBar(
-            title = if (isEditingExisting) "编辑脚本" else "构建脚本",
-            subtitle = if (isEditingExisting) existing?.name else buildMode.label,
+            title = scriptName.ifBlank { "新建脚本" },
             showBackButton = true,
             onBack = onBack,
             actions = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .iosPressable(enabled = !isRunningPreview) {
-                                haptic.selection()
-                                triggerPreview()
+                Box(
+                    modifier = Modifier
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable(enabled = !isSaving) {
+                            haptic.lightTick()
+                            if (scriptName.isBlank()) {
+                                tempNameInput = ""
+                                showNameDialog = true
+                            } else {
+                                commitSave(scriptName)
                             }
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = "运行预览",
-                                tint = IosGreen,
-                                modifier = Modifier.size(17.dp)
-                            )
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text(
-                                text = "运行",
-                                color = IosGreen,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
                         }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .iosPressable(enabled = !isSaving) {
-                                haptic.impact()
-                                handleSave()
-                            }
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (isSaving) "保存中" else "保存",
-                            color = IosBlue,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "保存",
+                        color = IosBlue,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         )
 
-        // 2. Build Method Selector & Compact Metadata Configuration Card
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(top = 6.dp, bottom = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (!isEditingExisting) {
-                CupertinoSegmentedControl(
-                    items = ScriptBuildMode.entries,
-                    selectedItem = buildMode,
-                    onItemSelected = { mode ->
-                        buildMode = mode
-                        if (mode == ScriptBuildMode.NEW && textFieldValue.text.isBlank()) {
-                            updateCodeWithHistory(
-                                TextFieldValue(
-                                    text = DEFAULT_NEW_SCRIPT_CODE,
-                                    selection = TextRange(DEFAULT_NEW_SCRIPT_CODE.length)
-                                )
-                            )
-                        }
-                    },
-                    labelProvider = { it.label }
-                )
-            }
-
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = LoonCard,
-                border = BorderStroke(0.5.dp, LoonCardBorder),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Script Name Row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "名称",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = LoonTextSecondary,
-                            modifier = Modifier.width(44.dp)
-                        )
-                        BasicTextField(
-                            value = scriptName,
-                            onValueChange = { scriptName = it },
-                            singleLine = true,
-                            textStyle = TextStyle(
-                                color = LoonTextPrimary,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            cursorBrush = SolidColor(IosBlue),
-                            modifier = Modifier.weight(1f),
-                            decorationBox = { innerTextField ->
-                                Box(contentAlignment = Alignment.CenterStart) {
-                                    if (scriptName.isEmpty()) {
-                                        Text(
-                                            text = "输入脚本名称 (选填，可自动识别)",
-                                            color = LoonTextMuted,
-                                            fontSize = 13.5.sp
-                                        )
-                                    }
-                                    innerTextField()
-                                }
-                            }
-                        )
-                    }
-
-                    // Mode-Specific Source Row (URL Import or Local Import)
-                    if (buildMode == ScriptBuildMode.URL || (isEditingExisting && scriptUrl.isNotBlank())) {
-                        HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "链接",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = LoonTextSecondary,
-                                modifier = Modifier.width(44.dp)
-                            )
-                            BasicTextField(
-                                value = scriptUrl,
-                                onValueChange = { scriptUrl = it },
-                                singleLine = true,
-                                textStyle = TextStyle(
-                                    color = LoonTextPrimary,
-                                    fontSize = 13.sp,
-                                    fontFamily = FontFamily.Monospace
-                                ),
-                                cursorBrush = SolidColor(IosBlue),
-                                modifier = Modifier.weight(1f),
-                                decorationBox = { innerTextField ->
-                                    Box(contentAlignment = Alignment.CenterStart) {
-                                        if (scriptUrl.isEmpty()) {
-                                            Text(
-                                                text = "https://raw.githubusercontent.com/.../script.js",
-                                                color = LoonTextMuted,
-                                                fontSize = 12.5.sp
-                                            )
-                                        }
-                                        innerTextField()
-                                    }
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(7.dp))
-                                    .iosPressable(enabled = !isFetchingUrl && scriptUrl.isNotBlank()) {
-                                        haptic.selection()
-                                        isFetchingUrl = true
-                                        scope.launch {
-                                            val res = ScriptManager.fetchRemoteScriptContent(scriptUrl)
-                                            isFetchingUrl = false
-                                            if (res.isSuccess) {
-                                                val body = res.getOrDefault("")
-                                                updateCodeWithHistory(
-                                                    TextFieldValue(text = body, selection = TextRange(0))
-                                                )
-                                                if (scriptName.isBlank()) {
-                                                    scriptName = scriptUrl.trim()
-                                                        .substringAfterLast("/")
-                                                        .substringBefore("?")
-                                                        .removeSuffix(".js")
-                                                }
-                                                CupertinoToast.show("已拉取远程脚本到编辑器")
-                                            } else {
-                                                CupertinoToast.show(
-                                                    "拉取失败: ${res.exceptionOrNull()?.message}",
-                                                    isDestructive = true
-                                                )
-                                            }
-                                        }
-                                    },
-                                color = IosBlue.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(7.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (isFetchingUrl) {
-                                        CupertinoActivityIndicator(size = 11.dp, color = IosBlue)
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-                                    Text(
-                                        text = if (isFetchingUrl) "拉取中" else "拉取代码",
-                                        color = IosBlue,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                        }
-                    } else if (buildMode == ScriptBuildMode.LOCAL) {
-                        HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    haptic.selection()
-                                    localFileLauncher.launch("*/*")
-                                }
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(
-                                    text = "文件",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextSecondary,
-                                    modifier = Modifier.width(44.dp)
-                                )
-                                Text(
-                                    text = localFileLabel.ifBlank { "点击选择本地 .js / .yaml / .txt 脚本文件" },
-                                    color = if (localFileLabel.isNotBlank()) LoonTextPrimary else LoonTextMuted,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Surface(
-                                color = IosOrange.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(7.dp)
-                            ) {
-                                Text(
-                                    text = "选择文件",
-                                    color = IosOrange,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. VS Code Workbench Container (Tab Bar + Editor / Preview Canvas + Status Bar)
-        val editorBg = if (isDark) Color(0xFF161618) else Color(0xFFFDFDFE)
-        val gutterBg = if (isDark) Color(0xFF1D1D20) else Color(0xFFF3F4F7)
-        val tabBarBg = if (isDark) Color(0xFF202024) else Color(0xFFEBEDF2)
-        val statusBarBg = if (isDark) Color(0xFF1F2430) else Color(0xFF007AFF)
-
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 10.dp),
-            color = editorBg,
-            border = BorderStroke(0.5.dp, LoonCardBorder),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // 3.1 VS Code File Tab Header Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp)
-                        .background(tabBarBg)
-                        .padding(horizontal = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        WorkbenchTab.entries.forEach { tab ->
-                            val selected = workbenchTab == tab
-                            val tabSurfaceColor = if (selected) editorBg else Color.Transparent
-                            val tabTextColor = if (selected) LoonTextPrimary else LoonTextSecondary
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .padding(top = 4.dp)
-                                    .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp))
-                                    .background(tabSurfaceColor)
-                                    .clickable {
-                                        haptic.selection()
-                                        if (tab == WorkbenchTab.PREVIEW && previewResult == null) {
-                                            triggerPreview()
-                                        } else {
-                                            workbenchTab = tab
-                                        }
-                                    }
-                                    .padding(horizontal = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (tab == WorkbenchTab.EDITOR) Icons.Default.Description else Icons.Default.Terminal,
-                                    contentDescription = null,
-                                    tint = if (tab == WorkbenchTab.EDITOR) IosBlue else IosGreen,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = if (tab == WorkbenchTab.EDITOR) {
-                                        (scriptName.ifBlank { "script" }.take(14)) + ".js"
-                                    } else {
-                                        "预览与诊断"
-                                    },
-                                    fontSize = 12.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = tabTextColor,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-
-                    // Undo / Redo / Copy Actions in Tab Header
-                    if (workbenchTab == WorkbenchTab.EDITOR) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    if (undoIndex > 0) {
-                                        undoIndex--
-                                        val prev = undoStack[undoIndex]
-                                        textFieldValue = TextFieldValue(prev, TextRange(prev.length))
-                                    }
-                                },
-                                enabled = undoIndex > 0,
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Undo,
-                                    contentDescription = "撤销",
-                                    tint = if (undoIndex > 0) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    if (undoIndex < undoStack.lastIndex) {
-                                        undoIndex++
-                                        val next = undoStack[undoIndex]
-                                        textFieldValue = TextFieldValue(next, TextRange(next.length))
-                                    }
-                                },
-                                enabled = undoIndex < undoStack.lastIndex,
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.Redo,
-                                    contentDescription = "重做",
-                                    tint = if (undoIndex < undoStack.lastIndex) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                    cm?.setPrimaryClip(ClipData.newPlainText("script_code", textFieldValue.text))
-                                    CupertinoToast.show("代码已复制到剪贴板")
-                                },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "复制代码",
-                                    tint = LoonTextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-
-                // 3.2 Main Workbench Body: Editor or Preview
-                if (workbenchTab == WorkbenchTab.EDITOR) {
-                    val codeScrollState = rememberScrollState()
-                    val codeHorizontalScroll = rememberScrollState()
-                    val codeLines = remember(textFieldValue.text) {
-                        val lines = textFieldValue.text.split('\n')
-                        if (lines.isEmpty()) listOf("") else lines
-                    }
-                    val syntaxVisualTransformation = remember(isDark) {
-                        CodeSyntaxVisualTransformation(isDark = isDark)
-                    }
-
-                    // Editor Canvas with Synchronized Line Number Gutter
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ) {
-                        // Line Number Gutter
-                        Column(
-                            modifier = Modifier
-                                .width(42.dp)
-                                .fillMaxHeight()
-                                .background(gutterBg)
-                                .verticalScroll(codeScrollState)
-                                .padding(vertical = 12.dp, horizontal = 6.dp),
-                            horizontalAlignment = Alignment.End
-                        ) {
-                            for (lineNum in 1..codeLines.size) {
-                                Text(
-                                    text = lineNum.toString(),
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 19.sp,
-                                    color = LoonTextMuted,
-                                    textAlign = TextAlign.End
-                                )
-                            }
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .width(0.5.dp)
-                                .fillMaxHeight()
-                                .background(LoonCardBorder)
-                        )
-
-                        // Code Editing Area
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .verticalScroll(codeScrollState)
-                                .horizontalScroll(codeHorizontalScroll)
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                        ) {
-                            BasicTextField(
-                                value = textFieldValue,
-                                onValueChange = { updateCodeWithHistory(it) },
-                                visualTransformation = syntaxVisualTransformation,
-                                cursorBrush = SolidColor(IosBlue),
-                                textStyle = TextStyle(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 19.sp,
-                                    color = LoonTextPrimary
-                                ),
-                                modifier = Modifier
-                                    .defaultMinSize(minWidth = 300.dp, minHeight = 240.dp)
-                                    .fillMaxWidth(),
-                                decorationBox = { innerTextField ->
-                                    Box {
-                                        if (textFieldValue.text.isEmpty()) {
-                                            Text(
-                                                text = "// 在此编写 function main(config) { ... } 或 YAML 覆写片段",
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 12.5.sp,
-                                                lineHeight = 19.sp,
-                                                color = LoonTextMuted
-                                            )
-                                        }
-                                        innerTextField()
-                                    }
-                                }
-                            )
-                        }
-                    }
-
-                    HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-
-                    // Quick Symbol & Snippet Bar (VS Code Mobile Accessory Bar)
-                    val quickSnippets = remember {
-                        listOf(
-                            "Tab" to ("  " to 0),
-                            "{ }" to ("{}" to 1),
-                            "( )" to ("()" to 1),
-                            "[ ]" to ("[]" to 1),
-                            "=>" to ("=> " to 0),
-                            "\" \"" to ("\"\"" to 1),
-                            "main(config)" to ("function main(config) {\n  \n  return config;\n}" to 18),
-                            "config.proxies" to ("config.proxies" to 0),
-                            "config.rules" to ("config.rules" to 0),
-                            "console.log" to ("console.log()" to 1)
-                        )
-                    }
-                    LazyRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(gutterBg)
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        items(quickSnippets) { (label, pair) ->
-                            val (insertText, backOffset) = pair
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
-                                        haptic.lightTick()
-                                        insertSnippet(insertText, backOffset)
-                                    },
-                                color = LoonCard,
-                                border = BorderStroke(0.5.dp, LoonCardBorder),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = label,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextPrimary,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    // 3.3 VS Code Preview & Diagnostics Workbench
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ) {
-                        val res = previewResult
-                        if (isRunningPreview) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    CupertinoActivityIndicator(size = 24.dp, color = IosBlue)
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Text(
-                                        text = "正在沙箱中执行脚本并生成配置预览...",
-                                        fontSize = 13.sp,
-                                        color = LoonTextSecondary
-                                    )
-                                }
-                            }
-                        } else if (res == null) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CupertinoButton(
-                                    text = "立即运行脚本预览",
-                                    onClick = { triggerPreview() },
-                                    style = CupertinoButtonStyle.Filled,
-                                    icon = Icons.Default.PlayArrow
-                                )
-                            }
-                        } else {
-                            // Diff Summary Header Bar
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(gutterBg)
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = if (res.success) Icons.Default.CheckCircle else Icons.Default.Error,
-                                            contentDescription = null,
-                                            tint = if (res.success) IosGreen else IosRed,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = if (res.success) "执行成功 · ${res.engineName}" else "执行异常",
-                                            fontSize = 12.5.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (res.success) IosGreen else IosRed
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "${res.durationMs} ms · 基准: $activeProfileTitle",
-                                            fontSize = 11.5.sp,
-                                            color = LoonTextSecondary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-
-                                    Surface(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .clickable {
-                                                haptic.selection()
-                                                triggerPreview()
-                                            },
-                                        color = IosBlue.copy(alpha = 0.14f),
-                                        shape = RoundedCornerShape(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "重新运行",
-                                            color = IosBlue,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                }
-
-                                // Structural Diff Counters (Proxies / Groups / Rules)
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    DiffStatPill(
-                                        label = "节点",
-                                        before = res.beforeProxies,
-                                        after = res.afterProxies,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    DiffStatPill(
-                                        label = "策略组",
-                                        before = res.beforeGroups,
-                                        after = res.afterGroups,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    DiffStatPill(
-                                        label = "分流规则",
-                                        before = res.beforeRules,
-                                        after = res.afterRules,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-
-                                // Sub-tab switcher: YAML Output vs Console Logs
-                                CupertinoSegmentedControl(
-                                    items = PreviewSubTab.entries,
-                                    selectedItem = previewSubTab,
-                                    onItemSelected = { previewSubTab = it },
-                                    labelProvider = { tab ->
-                                        if (tab == PreviewSubTab.CONSOLE) {
-                                            "控制台 (${res.consoleLogs.size})"
-                                        } else {
-                                            tab.label
-                                        }
-                                    }
-                                )
-                            }
-
-                            HorizontalDivider(color = LoonCardBorder, thickness = 0.5.dp)
-
-                            if (previewSubTab == PreviewSubTab.YAML) {
-                                val previewScroll = rememberScrollState()
-                                val previewHorizScroll = rememberScrollState()
-                                val yamlLines = remember(res.outputYaml) {
-                                    res.outputYaml.lines().take(500)
-                                }
-                                val highlightedYaml = remember(res.outputYaml, isDark) {
-                                    highlightCodeSnippet(
-                                        res.outputYaml.lineSequence().take(500).joinToString("\n"),
-                                        isDark
-                                    )
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .width(42.dp)
-                                            .fillMaxHeight()
-                                            .background(gutterBg)
-                                            .verticalScroll(previewScroll)
-                                            .padding(vertical = 10.dp, horizontal = 6.dp),
-                                        horizontalAlignment = Alignment.End
-                                    ) {
-                                        for (idx in 1..yamlLines.size) {
-                                            Text(
-                                                text = idx.toString(),
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 12.sp,
-                                                lineHeight = 18.sp,
-                                                color = LoonTextMuted
-                                            )
-                                        }
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .width(0.5.dp)
-                                            .fillMaxHeight()
-                                            .background(LoonCardBorder)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .verticalScroll(previewScroll)
-                                            .horizontalScroll(previewHorizScroll)
-                                            .padding(10.dp)
-                                    ) {
-                                        Text(
-                                            text = highlightedYaml,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp,
-                                            lineHeight = 18.sp
-                                        )
-                                    }
-                                }
-                            } else {
-                                // Console Output & Error Diagnostics View
-                                LazyColumn(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .weight(1f)
-                                        .padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    items(res.consoleLogs) { logLine ->
-                                        val lineColor = when {
-                                            logLine.startsWith("[ERROR]") -> IosRed
-                                            logLine.startsWith("[WARN]") -> IosOrange
-                                            logLine.startsWith("[OK]") -> IosGreen
-                                            else -> LoonTextPrimary
-                                        }
-                                        Text(
-                                            text = logLine,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp,
-                                            lineHeight = 17.sp,
-                                            color = lineColor
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 3.4 VS Code Bottom Status Bar
-                val (cursorLine, cursorCol) = remember(textFieldValue.text, textFieldValue.selection) {
-                    val offset = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
-                    val before = textFieldValue.text.substring(0, offset)
-                    val ln = before.count { it == '\n' } + 1
-                    val lastNewline = before.lastIndexOf('\n')
-                    val col = if (lastNewline == -1) offset + 1 else offset - lastNewline
-                    ln to col
-                }
-                val totalLines = remember(textFieldValue.text) {
-                    textFieldValue.text.count { it == '\n' } + 1
-                }
-                val isYamlContent = remember(textFieldValue.text) {
-                    val t = textFieldValue.text
-                    !t.contains("main") && !t.contains("function") && !t.contains("=>") && t.contains(":")
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(24.dp)
-                        .background(statusBarBg)
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "Ln $cursorLine, Col $cursorCol",
-                            color = Color.White,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.5.sp
-                        )
-                        Text(
-                            text = "$totalLines 行 · ${textFieldValue.text.length} 字符",
-                            color = Color.White.copy(alpha = 0.85f),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.5.sp
-                        )
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "UTF-8",
-                            color = Color.White.copy(alpha = 0.85f),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.5.sp
-                        )
-                        Text(
-                            text = if (isYamlContent) "YAML" else "JavaScript (ES2020)",
-                            color = Color.White,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 10.5.sp
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiffStatPill(
-    label: String,
-    before: Int,
-    after: Int,
-    modifier: Modifier = Modifier
-) {
-    val delta = after - before
-    val deltaText = when {
-        delta > 0 -> "+$delta"
-        delta < 0 -> "$delta"
-        else -> "±0"
-    }
-    val deltaColor = when {
-        delta > 0 -> IosGreen
-        delta < 0 -> IosOrange
-        else -> LoonTextSecondary
-    }
-    Surface(
-        modifier = modifier,
-        color = LoonCard,
-        border = BorderStroke(0.5.dp, LoonCardBorder),
-        shape = RoundedCornerShape(8.dp)
-    ) {
+        // 2. Full-Screen Edge-to-Edge Code Editor Area (No outer boxes or shells)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .weight(1f)
+                .background(LoonCard)
         ) {
-            Text(
-                text = label,
-                fontSize = 11.sp,
-                color = LoonTextSecondary
+            // Line Number Gutter
+            Column(
+                modifier = Modifier
+                    .width(42.dp)
+                    .fillMaxHeight()
+                    .verticalScroll(codeScrollState)
+                    .padding(vertical = 12.dp, horizontal = 6.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                for (lineNum in 1..lineCount) {
+                    Text(
+                        text = lineNum.toString(),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        color = LoonTextMuted,
+                        textAlign = TextAlign.End
+                    )
+                }
+            }
+
+            // Hairline separator between line numbers and code
+            Box(
+                modifier = Modifier
+                    .width(0.5.dp)
+                    .fillMaxHeight()
+                    .background(LoonSeparator)
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "$after",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = LoonTextPrimary
-                )
-                Spacer(modifier = Modifier.width(3.dp))
-                Text(
-                    text = "($deltaText)",
-                    fontSize = 10.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = deltaColor
+
+            // Code Input Canvas
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(codeScrollState)
+                    .horizontalScroll(codeHorizontalScroll)
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
+            ) {
+                BasicTextField(
+                    value = textFieldValue,
+                    onValueChange = { updateCode(it) },
+                    visualTransformation = syntaxVisualTransformation,
+                    cursorBrush = SolidColor(IosBlue),
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        color = LoonTextPrimary
+                    ),
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 300.dp, minHeight = 300.dp)
+                        .fillMaxWidth(),
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (textFieldValue.text.isEmpty()) {
+                                Text(
+                                    text = "// 在此输入脚本代码",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp,
+                                    lineHeight = 20.sp,
+                                    color = LoonTextMuted
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
                 )
             }
+        }
+
+        // 3. Standard Mobile Keyboard Accessory Toolbar (Flat, borderless symbol keys + Undo/Redo)
+        HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+
+        val quickSymbols = remember {
+            listOf(
+                "Tab" to ("  " to 0),
+                "{" to ("{}" to 1),
+                "}" to ("}" to 0),
+                "(" to ("()" to 1),
+                ")" to (")" to 0),
+                "[" to ("[]" to 1),
+                "]" to ("]" to 0),
+                "=" to ("=" to 0),
+                ";" to (";" to 0),
+                ":" to (":" to 0),
+                "\"" to ("\"\"" to 1),
+                "'" to ("''" to 1),
+                "/" to ("/" to 0),
+                "." to ("." to 0)
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(42.dp)
+                .background(LoonCard)
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Undo
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .iosHighlightPressable(enabled = undoIndex > 0) {
+                        if (undoIndex > 0) {
+                            haptic.lightTick()
+                            undoIndex--
+                            val prev = undoStack[undoIndex]
+                            textFieldValue = TextFieldValue(prev, TextRange(prev.length))
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Undo,
+                    contentDescription = "撤销",
+                    tint = if (undoIndex > 0) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.35f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            // Redo
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .iosHighlightPressable(enabled = undoIndex < undoStack.lastIndex) {
+                        if (undoIndex < undoStack.lastIndex) {
+                            haptic.lightTick()
+                            undoIndex++
+                            val next = undoStack[undoIndex]
+                            textFieldValue = TextFieldValue(next, TextRange(next.length))
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Redo,
+                    contentDescription = "重做",
+                    tint = if (undoIndex < undoStack.lastIndex) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.35f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 4.dp)
+                    .width(0.5.dp)
+                    .height(18.dp)
+                    .background(LoonSeparator)
+            )
+
+            LazyRow(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(quickSymbols) { (label, pair) ->
+                    val (insertText, backOffset) = pair
+                    Box(
+                        modifier = Modifier
+                            .height(36.dp)
+                            .widthIn(min = 34.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .iosHighlightPressable {
+                                haptic.lightTick()
+                                insertSymbol(insertText, backOffset)
+                            }
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = LoonTextPrimary
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showNameDialog) {
+        CupertinoAlertDialog(
+            title = if (isEditingExisting) "脚本名称" else "保存脚本",
+            confirmText = "保存",
+            dismissText = "取消",
+            onConfirm = {
+                val resolved = tempNameInput.trim().ifBlank { "自定义脚本" }
+                scriptName = resolved
+                showNameDialog = false
+                commitSave(resolved)
+            },
+            onDismiss = { showNameDialog = false },
+            onDismissRequest = { showNameDialog = false }
+        ) {
+            Spacer(modifier = Modifier.height(14.dp))
+            CupertinoTextField(
+                value = tempNameInput,
+                onValueChange = { tempNameInput = it },
+                placeholder = "输入脚本名称",
+                singleLine = true
+            )
         }
     }
 }
 
 // =============================================================================
-// VS Code-Inspired Syntax Highlighting for JavaScript & YAML
+// Syntax Highlighting for JavaScript & YAML
 // =============================================================================
 private class CodeSyntaxVisualTransformation(
     private val isDark: Boolean
