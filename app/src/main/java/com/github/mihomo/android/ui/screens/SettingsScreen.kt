@@ -10,7 +10,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
@@ -110,7 +109,7 @@ fun SettingsScreen(
                 color = LoonTextPrimary,
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.6).sp
+                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.6).sp else 0.sp
             )
         }
 

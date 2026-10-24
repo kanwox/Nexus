@@ -11,6 +11,10 @@ enum class ThemeMode {
     SYSTEM, LIGHT, DARK
 }
 
+enum class AppFont {
+    SYSTEM, IOS
+}
+
 class SettingsManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("mihomo_settings", Context.MODE_PRIVATE)
 
@@ -143,4 +147,11 @@ class SettingsManager(context: Context) {
     var appLanguage: String
         get() = prefs.getString("app_language", "SYSTEM") ?: "SYSTEM"
         set(value) = prefs.edit().putString("app_language", value).apply()
+
+    var appFont: AppFont
+        get() {
+            val raw = prefs.getString("app_font", AppFont.SYSTEM.name)
+            return runCatching { AppFont.valueOf(raw!!) }.getOrDefault(AppFont.SYSTEM)
+        }
+        set(value) = prefs.edit().putString("app_font", value.name).apply()
 }

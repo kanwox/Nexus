@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicLong
 object DnsRepository {
     private const val MAX_RECORDS = 500
     private val nextId = AtomicLong(1)
-    private val recordList = mutableListOf<DnsRecord>()
+    private val recordList = ArrayDeque<DnsRecord>(MAX_RECORDS)
     private val _recordsFlow = MutableStateFlow<List<DnsRecord>>(emptyList())
     val recordsFlow: StateFlow<List<DnsRecord>> = _recordsFlow.asStateFlow()
 
@@ -37,10 +37,10 @@ object DnsRepository {
             timestamp = System.currentTimeMillis(),
             type = type
         )
-        recordList.add(0, record)
-        if (recordList.size > MAX_RECORDS) {
-            recordList.removeAt(recordList.lastIndex)
+        if (recordList.size >= MAX_RECORDS) {
+            recordList.removeLast()
         }
+        recordList.addFirst(record)
         _recordsFlow.value = recordList.toList()
     }
 

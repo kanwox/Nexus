@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -162,7 +161,7 @@ fun ProxiesScreen(
                 color = LoonTextPrimary,
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.6).sp
+                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.6).sp else 0.sp
             )
 
             Box(
@@ -815,27 +814,17 @@ private fun LoonProxyItemCard(
     onTestSingleNode: () -> Unit = {}
 ) {
     val isDark = LocalLoonColors.current.isDark
-    val cardBg by animateColorAsState(
-        targetValue = if (isSelected) {
-            if (isDark) Color(0xFF12233A) else Color(0xFFEFF6FF)
-        } else LoonCard,
-        animationSpec = tween(180),
-        label = "node_card_bg"
-    )
-    val borderColor by animateColorAsState(
-        targetValue = if (isSelected) IosBlue.copy(alpha = 0.65f) else LoonCardBorder,
-        animationSpec = tween(180),
-        label = "node_card_border"
-    )
-    val titleColor by animateColorAsState(
-        targetValue = if (isSelected) IosBlue else LoonTextPrimary,
-        animationSpec = tween(180),
-        label = "node_card_title"
-    )
+    val cardBg = if (isSelected) {
+        if (isDark) Color(0xFF12233A) else Color(0xFFEFF6FF)
+    } else {
+        LoonCard
+    }
+    val borderColor = if (isSelected) IosBlue.copy(alpha = 0.65f) else LoonCardBorder
+    val titleColor = if (isSelected) IosBlue else LoonTextPrimary
 
     val isSingleCol = columns == 1
     val isCompact3Col = columns >= 3
-    val cardShape = RoundedCornerShape(if (isCompact3Col) 11.dp else 13.dp)
+    val cardShape = remember(isCompact3Col) { RoundedCornerShape(if (isCompact3Col) 11.dp else 13.dp) }
 
     Surface(
         modifier = Modifier

@@ -26,7 +26,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -44,11 +45,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -724,11 +729,15 @@ private fun ScriptEditorScreen(
         }
     }
 
-    var textFieldValue by remember(existingScript) {
-        mutableStateOf(TextFieldValue(text = initialCode, selection = TextRange(initialCode.length)))
+    val initialValue = remember(existingScript) {
+        TextFieldValue(text = initialCode, selection = TextRange.Zero)
     }
 
-    val undoStack = remember(existingScript) { mutableStateListOf(initialCode) }
+    var textFieldValue by remember(existingScript) {
+        mutableStateOf(initialValue)
+    }
+
+    val undoStack = remember(existingScript) { mutableStateListOf(initialValue) }
     var undoIndex by remember(existingScript) { mutableIntStateOf(0) }
 
     fun updateCode(newValue: TextFieldValue) {
@@ -743,7 +752,7 @@ private fun ScriptEditorScreen(
             } else {
                 undoIndex++
             }
-            undoStack.add(newValue.text)
+            undoStack.add(newValue)
             undoIndex = undoStack.lastIndex
         }
     }
@@ -794,8 +803,14 @@ private fun ScriptEditorScreen(
 
     val codeScrollState = rememberScrollState()
     val codeHorizontalScroll = rememberScrollState()
+    var isEditorFocused by remember { mutableStateOf(false) }
+    var codeTextLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+
     val lineCount = remember(textFieldValue.text) {
         textFieldValue.text.count { it == '\n' } + 1
+    }
+    val lineNumbersText = remember(lineCount) {
+        (1..lineCount).joinToString("\n")
     }
     val syntaxVisualTransformation = remember(isDark) {
         CodeSyntaxVisualTransformation(isDark = isDark)
@@ -841,32 +856,29 @@ private fun ScriptEditorScreen(
             }
         )
 
-        // 2. Full-Screen Edge-to-Edge Code Editor Area (No outer boxes or shells)
+        // 2. Full-Screen Edge-to-Edge Code Editor Area (Single verticalScroll for gutter + code)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
                 .background(LoonCard)
+                .verticalScroll(codeScrollState)
         ) {
-            // Line Number Gutter
-            Column(
+            // Line Number Gutter (Single Text composable for O(1) layout nodes)
+            Box(
                 modifier = Modifier
-                    .width(42.dp)
-                    .fillMaxHeight()
-                    .verticalScroll(codeScrollState)
+                    .width(44.dp)
                     .padding(vertical = 12.dp, horizontal = 6.dp),
-                horizontalAlignment = Alignment.End
+                contentAlignment = Alignment.TopEnd
             ) {
-                for (lineNum in 1..lineCount) {
-                    Text(
-                        text = lineNum.toString(),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        color = LoonTextMuted,
-                        textAlign = TextAlign.End
-                    )
-                }
+                Text(
+                    text = lineNumbersText,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    color = LoonTextMuted,
+                    textAlign = TextAlign.End
+                )
             }
 
             // Hairline separator between line numbers and code
@@ -881,14 +893,13 @@ private fun ScriptEditorScreen(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
-                    .verticalScroll(codeScrollState)
                     .horizontalScroll(codeHorizontalScroll)
                     .padding(horizontal = 12.dp, vertical = 12.dp)
             ) {
                 BasicTextField(
                     value = textFieldValue,
                     onValueChange = { updateCode(it) },
+                    onTextLayout = { codeTextLayoutResult = it },
                     visualTransformation = syntaxVisualTransformation,
                     cursorBrush = SolidColor(IosBlue),
                     textStyle = TextStyle(
@@ -899,7 +910,29 @@ private fun ScriptEditorScreen(
                     ),
                     modifier = Modifier
                         .defaultMinSize(minWidth = 300.dp, minHeight = 300.dp)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .onFocusChanged { isEditorFocused = it.isFocused }
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(
+                                    requireUnconsumed = false,
+                                    pass = PointerEventPass.Initial
+                                )
+                                if (!isEditorFocused) {
+                                    codeTextLayoutResult?.let { layout ->
+                                        val tappedOffset = layout.getOffsetForPosition(down.position)
+                                            .coerceIn(0, textFieldValue.text.length)
+                                        if (textFieldValue.selection.collapsed &&
+                                            textFieldValue.selection.start != tappedOffset
+                                        ) {
+                                            textFieldValue = textFieldValue.copy(
+                                                selection = TextRange(tappedOffset)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        },
                     decorationBox = { innerTextField ->
                         Box {
                             if (textFieldValue.text.isEmpty()) {
@@ -957,8 +990,7 @@ private fun ScriptEditorScreen(
                         if (undoIndex > 0) {
                             haptic.lightTick()
                             undoIndex--
-                            val prev = undoStack[undoIndex]
-                            textFieldValue = TextFieldValue(prev, TextRange(prev.length))
+                            textFieldValue = undoStack[undoIndex]
                         }
                     },
                 contentAlignment = Alignment.Center
@@ -980,8 +1012,7 @@ private fun ScriptEditorScreen(
                         if (undoIndex < undoStack.lastIndex) {
                             haptic.lightTick()
                             undoIndex++
-                            val next = undoStack[undoIndex]
-                            textFieldValue = TextFieldValue(next, TextRange(next.length))
+                            textFieldValue = undoStack[undoIndex]
                         }
                     },
                 contentAlignment = Alignment.Center
@@ -1061,16 +1092,29 @@ private fun ScriptEditorScreen(
 }
 
 // =============================================================================
-// Syntax Highlighting for JavaScript & YAML
+// Syntax Highlighting for JavaScript & YAML (Cached to avoid re-running on cursor moves)
 // =============================================================================
+private const val MAX_HIGHLIGHT_CHARS = 40_000
+
 private class CodeSyntaxVisualTransformation(
     private val isDark: Boolean
 ) : VisualTransformation {
+    private var cachedRaw: String? = null
+    private var cachedTransformed: TransformedText? = null
+
     override fun filter(text: AnnotatedString): TransformedText {
-        return TransformedText(
-            text = highlightCodeSnippet(text.text, isDark),
+        val raw = text.text
+        val existing = cachedTransformed
+        if (raw == cachedRaw && existing != null) {
+            return existing
+        }
+        val transformed = TransformedText(
+            text = highlightCodeSnippet(raw, isDark),
             offsetMapping = OffsetMapping.Identity
         )
+        cachedRaw = raw
+        cachedTransformed = transformed
+        return transformed
     }
 }
 
@@ -1099,6 +1143,7 @@ private fun highlightCodeSnippet(raw: String, isDark: Boolean): AnnotatedString 
         if (raw.isEmpty()) return@buildAnnotatedString
 
         addStyle(SpanStyle(color = baseColor), 0, raw.length)
+        if (raw.length > MAX_HIGHLIGHT_CHARS) return@buildAnnotatedString
 
         YAML_KEY_REGEX.findAll(raw).forEach { match ->
             val keyGroup = match.groups[2]

@@ -116,16 +116,35 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var themeMode by remember { mutableStateOf(settingsManager.themeMode) }
-            MihomoTheme(themeMode = themeMode) {
+            var appFont by remember { mutableStateOf(settingsManager.appFont) }
+            MihomoTheme(
+                themeMode = themeMode,
+                appFont = appFont
+            ) {
                 MainAppScreen(
                     currentThemeMode = themeMode,
+                    currentAppFont = appFont,
                     onThemeModeChanged = { newMode ->
                         settingsManager.themeMode = newMode
                         themeMode = newMode
+                    },
+                    onAppFontChanged = { newFont ->
+                        settingsManager.appFont = newFont
+                        appFont = newFont
                     }
                 )
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        MihomoVpnService.isUiInForeground = true
+    }
+
+    override fun onStop() {
+        MihomoVpnService.isUiInForeground = false
+        super.onStop()
     }
 
     private fun handleToggleVpn() {
@@ -145,7 +164,9 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainAppScreen(
         currentThemeMode: ThemeMode,
-        onThemeModeChanged: (ThemeMode) -> Unit
+        currentAppFont: AppFont,
+        onThemeModeChanged: (ThemeMode) -> Unit,
+        onAppFontChanged: (AppFont) -> Unit
     ) {
         // Primary Tabs: 0: 仪表, 1: 策略, 2: 配置
         var currentTab by rememberSaveable { mutableStateOf(0) }
@@ -758,14 +779,25 @@ class MainActivity : ComponentActivity() {
 
         val lifecycleOwner = LocalLifecycleOwner.current
 
-        // Dynamic refresh when VPN is connected (only while Activity is in foreground)
-        LaunchedEffect(vpnState.status, lifecycleOwner) {
+        // Trigger initial auto speed test once when VPN transitions to RUNNING
+        LaunchedEffect(vpnState.status) {
             if (vpnState.status == VpnState.Status.RUNNING) {
                 triggerAutoSpeedTest()
+                refreshProxiesOnline()
+            }
+        }
+
+        // Dynamic refresh when VPN is connected and user is actively viewing Dashboard or Proxies tab
+        val shouldPollProxies = vpnState.status == VpnState.Status.RUNNING &&
+            currentSubScreen == null &&
+            (currentTab == 0 || currentTab == 1)
+
+        LaunchedEffect(shouldPollProxies, lifecycleOwner) {
+            if (shouldPollProxies) {
                 lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                     while (isActive) {
+                        delay(5000)
                         refreshProxiesOnline()
-                        delay(3000)
                     }
                 }
             }
@@ -1359,7 +1391,9 @@ class MainActivity : ComponentActivity() {
                                     themeMode = currentThemeMode,
                                     onThemeModeChanged = onThemeModeChanged,
                                     onLanguageChanged = { code -> appLanguage = code },
-                                    onBack = { currentSubScreen = null }
+                                    onBack = { currentSubScreen = null },
+                                    appFont = currentAppFont,
+                                    onAppFontChanged = onAppFontChanged
                                 )
                             }
                         }

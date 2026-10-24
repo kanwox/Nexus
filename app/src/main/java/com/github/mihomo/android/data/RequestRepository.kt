@@ -8,8 +8,10 @@ import java.util.concurrent.atomic.AtomicLong
 object RequestRepository {
     private const val MAX_RECORDS = 500
     private const val ACTIVE_CONNECTION_TTL_MS = 120_000L
+    private const val TTL_SWEEP_INTERVAL_MS = 10_000L
     private val nextId = AtomicLong(1)
-    private val recordList = mutableListOf<RequestRecord>()
+    private val recordList = ArrayDeque<RequestRecord>(MAX_RECORDS)
+    private var lastSweepTimestamp = 0L
     private val _recordsFlow = MutableStateFlow<List<RequestRecord>>(emptyList())
     val recordsFlow: StateFlow<List<RequestRecord>> = _recordsFlow.asStateFlow()
 
@@ -29,19 +31,22 @@ object RequestRepository {
     @Synchronized
     fun addRecord(record: RequestRecord) {
         val now = record.timestamp
-        for (i in recordList.indices) {
-            val existing = recordList[i]
-            if (existing.isActive && now - existing.timestamp > ACTIVE_CONNECTION_TTL_MS) {
-                recordList[i] = existing.copy(
-                    isActive = false,
-                    durationMs = now - existing.timestamp
-                )
+        if (now - lastSweepTimestamp >= TTL_SWEEP_INTERVAL_MS) {
+            lastSweepTimestamp = now
+            for (i in recordList.indices) {
+                val existing = recordList[i]
+                if (existing.isActive && now - existing.timestamp > ACTIVE_CONNECTION_TTL_MS) {
+                    recordList[i] = existing.copy(
+                        isActive = false,
+                        durationMs = now - existing.timestamp
+                    )
+                }
             }
         }
-        recordList.add(0, record)
-        if (recordList.size > MAX_RECORDS) {
-            recordList.removeAt(recordList.lastIndex)
+        if (recordList.size >= MAX_RECORDS) {
+            recordList.removeLast()
         }
+        recordList.addFirst(record)
         _recordsFlow.value = recordList.toList()
     }
 

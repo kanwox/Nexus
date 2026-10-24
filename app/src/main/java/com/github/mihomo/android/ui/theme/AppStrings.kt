@@ -327,7 +327,11 @@ object AppStrings {
         "tile_connected" to "已连接",
         "tile_connecting" to "连接中…",
         "tile_disconnecting" to "断开中…",
-        "tile_disconnected" to "已断开"
+        "tile_disconnected" to "已断开",
+        "settings_font" to "界面字体",
+        "font_system" to "系统默认 (Roboto / Noto Sans)",
+        "font_ios" to "SF Pro / 苹方 (PingFang SC)",
+        "font_updated" to "字体样式已更新"
     )
 
     private val enExtra = mapOf(
@@ -414,7 +418,11 @@ object AppStrings {
         "tile_connected" to "Connected",
         "tile_connecting" to "Connecting…",
         "tile_disconnecting" to "Disconnecting…",
-        "tile_disconnected" to "Disconnected"
+        "tile_disconnected" to "Disconnected",
+        "settings_font" to "Typography & Font",
+        "font_system" to "System Default (Roboto / Noto Sans)",
+        "font_ios" to "SF Pro / PingFang SC",
+        "font_updated" to "Font updated"
     )
 
     private val ruExtra = mapOf(
@@ -484,7 +492,11 @@ object AppStrings {
         "tile_connected" to "Подключено",
         "tile_connecting" to "Подключение…",
         "tile_disconnecting" to "Отключение…",
-        "tile_disconnected" to "Отключено"
+        "tile_disconnected" to "Отключено",
+        "settings_font" to "Шрифт интерфейса",
+        "font_system" to "Системный (Roboto / Noto Sans)",
+        "font_ios" to "SF Pro / PingFang SC",
+        "font_updated" to "Шрифт обновлён"
     )
 
     private val zhAll = zh + zhExtra

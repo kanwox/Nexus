@@ -22,10 +22,18 @@ object LogRepository {
     private val _logsFlow = MutableStateFlow<List<LogEntry>>(emptyList())
     val logsFlow: StateFlow<List<LogEntry>> = _logsFlow.asStateFlow()
 
+    /**
+     * When the device screen is off (Doze / standby), skip non-essential JNI logcat
+     * JSON/Regex parsing and list allocations to eliminate background CPU/GC battery drain.
+     */
+    @Volatile
+    var isScreenOff: Boolean = false
+
     private val json = Json { ignoreUnknownKeys = true }
 
     @Synchronized
     fun addRawLogcat(payload: String) {
+        if (isScreenOff) return
         try {
             val element = json.parseToJsonElement(payload)
             val obj = element.jsonObject
@@ -39,6 +47,7 @@ object LogRepository {
 
     @Synchronized
     fun addLog(level: String, message: String) {
+        if (isScreenOff && !level.equals("error", ignoreCase = true)) return
         val entry = LogEntry(
             id = nextId.getAndIncrement(),
             level = level.lowercase(),
@@ -49,9 +58,11 @@ object LogRepository {
         }
         logList.addLast(entry)
         _logsFlow.value = logList.toList()
-        runCatching {
-            DnsRepository.parseFromLog(message)
-            RequestRepository.parseFromLog(message)
+        if (!isScreenOff) {
+            runCatching {
+                DnsRepository.parseFromLog(message)
+                RequestRepository.parseFromLog(message)
+            }
         }
     }
 

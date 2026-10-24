@@ -66,6 +66,9 @@ class MihomoVpnService : VpnService() {
         private val _vpnState = MutableStateFlow(VpnState())
         val vpnState = _vpnState.asStateFlow()
 
+        @Volatile
+        var isUiInForeground: Boolean = false
+
         fun start(context: Context) {
             val intent = Intent(context, MihomoVpnService::class.java).apply {
                 action = ACTION_START
@@ -136,11 +139,13 @@ class MihomoVpnService : VpnService() {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenInteractive = false
+                    com.github.mihomo.android.data.LogRepository.isScreenOff = true
                     trafficMonitorJob?.cancel()
                     ClashCore.setSuspended(true)
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenInteractive = true
+                    com.github.mihomo.android.data.LogRepository.isScreenOff = false
                     ClashCore.setSuspended(false)
                     if (_vpnState.value.status == VpnState.Status.RUNNING) {
                         startTrafficMonitor()
@@ -371,34 +376,45 @@ class MihomoVpnService : VpnService() {
         }
     }
 
+    private var lastNotificationUpdateTimeMs: Long = 0L
+
     private fun startTrafficMonitor() {
         trafficMonitorJob?.cancel()
         if (!isScreenInteractive) return
         trafficMonitorJob = serviceScope.launch {
             while (isActive && isScreenInteractive && _vpnState.value.status == VpnState.Status.RUNNING) {
-                delay(1000)
+                val pollIntervalMs = if (isUiInForeground) 1000L else 3000L
+                delay(pollIntervalMs)
                 if (!isScreenInteractive || _vpnState.value.status != VpnState.Status.RUNNING) break
                 val now = ClashCore.queryTrafficNow()
-                val total = ClashCore.queryTrafficTotal()
 
                 val upStr = now.trafficSpeedUpload()
                 val downStr = now.trafficSpeedDownload()
-                val totalUpStr = total.trafficUpload()
-                val totalDownStr = total.trafficDownload()
-
                 val cur = _vpnState.value
                 val speedChanged = cur.upSpeed != upStr || cur.downSpeed != downStr
-                val totalChanged = cur.totalUp != totalUpStr || cur.totalDown != totalDownStr
-                if (speedChanged || totalChanged) {
-                    _vpnState.value = cur.copy(
-                        upSpeed = upStr,
-                        downSpeed = downStr,
-                        totalUp = totalUpStr,
-                        totalDown = totalDownStr
-                    )
+
+                // Only query cumulative total traffic when UI is visible or when speed is non-zero
+                if (isUiInForeground || now != 0L || speedChanged) {
+                    val total = ClashCore.queryTrafficTotal()
+                    val totalUpStr = total.trafficUpload()
+                    val totalDownStr = total.trafficDownload()
+                    val totalChanged = cur.totalUp != totalUpStr || cur.totalDown != totalDownStr
+                    if (speedChanged || totalChanged) {
+                        _vpnState.value = cur.copy(
+                            upSpeed = upStr,
+                            downSpeed = downStr,
+                            totalUp = totalUpStr,
+                            totalDown = totalDownStr
+                        )
+                    }
                 }
 
-                updateNotification("\u2191 $upStr   \u2193 $downStr")
+                // Throttle SystemUI NotificationManager Binder IPC updates to at most once every 3s
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastNotificationUpdateTimeMs >= 3000L) {
+                    lastNotificationUpdateTimeMs = nowMs
+                    updateNotification("\u2191 $upStr   \u2193 $downStr")
+                }
             }
         }
     }
@@ -474,6 +490,7 @@ class MihomoVpnService : VpnService() {
             .addAction(0, getString(R.string.action_stop), stopPendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }

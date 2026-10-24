@@ -1,6 +1,5 @@
 package com.github.mihomo.android.ui.screens
 
-import android.widget.Toast
 import com.github.mihomo.android.ui.components.CupertinoToast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -10,11 +9,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.github.mihomo.android.data.AppFont
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
 import androidx.compose.ui.tooling.preview.Preview
@@ -26,12 +24,15 @@ fun AppearanceScreen(
     themeMode: ThemeMode,
     onThemeModeChanged: (ThemeMode) -> Unit,
     onLanguageChanged: (String) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    appFont: AppFont = LocalAppFont.current,
+    onAppFontChanged: (AppFont) -> Unit = {}
 ) {
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
     val lang = LocalAppLanguage.current
     var currentLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
+    var currentFont by remember(appFont) { mutableStateOf(appFont) }
 
     Column(
         modifier = Modifier
@@ -88,7 +89,43 @@ fun AppearanceScreen(
                 }
             }
 
-            // Section 2: 界面语言
+            // Section 2: 界面字体 (System Default vs SF Pro / PingFang SC)
+            val fonts = listOf(
+                AppFont.SYSTEM to AppStrings.get("font_system", lang),
+                AppFont.IOS to AppStrings.get("font_ios", lang)
+            )
+
+            CupertinoGroupedSection(
+                title = AppStrings.get("settings_font", lang)
+            ) {
+                fonts.forEachIndexed { index, (fontOption, label) ->
+                    val isSelected = currentFont == fontOption
+                    CupertinoCell(
+                        title = label,
+                        trailing = {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = IosBlue,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        },
+                        onClick = {
+                            currentFont = fontOption
+                            settingsManager.appFont = fontOption
+                            onAppFontChanged(fontOption)
+                            CupertinoToast.show("${AppStrings.get("font_updated", lang)}: $label")
+                        }
+                    )
+                    if (index < fonts.size - 1) {
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+                    }
+                }
+            }
+
+            // Section 3: 界面语言
             val langs = listOf(
                 "SYSTEM" to AppStrings.get("theme_system", lang),
                 "zh" to "简体中文",

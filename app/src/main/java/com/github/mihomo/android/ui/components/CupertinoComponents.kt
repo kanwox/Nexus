@@ -16,7 +16,9 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import com.github.mihomo.android.ui.theme.RoundedCornerShape
+import com.github.mihomo.android.ui.theme.LocalAppFont
+import com.github.mihomo.android.data.AppFont
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
@@ -28,6 +30,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
@@ -426,7 +429,7 @@ fun CupertinoCell(
                     color = if (enabled) LoonTextPrimary else LoonTextMuted,
                     fontSize = 15.5.sp,
                     fontWeight = FontWeight.Normal,
-                    letterSpacing = (-0.2).sp
+                    letterSpacing = if (LocalAppFont.current == AppFont.IOS) (-0.2).sp else 0.sp
                 )
                 if (!subtitle.isNullOrBlank()) {
                     Spacer(modifier = Modifier.height(2.dp))
@@ -638,7 +641,7 @@ fun CupertinoNavBar(
                         color = LoonTextPrimary,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold,
-                        letterSpacing = (-0.3).sp,
+                        letterSpacing = if (LocalAppFont.current == AppFont.IOS) (-0.3).sp else 0.sp,
                         maxLines = 1
                     )
                     if (!subtitle.isNullOrBlank()) {
@@ -1200,7 +1203,7 @@ fun CupertinoSearchBar(
                     value = value,
                     onValueChange = onValueChange,
                     singleLine = true,
-                    textStyle = TextStyle(
+                    textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Normal
@@ -1282,7 +1285,7 @@ fun CupertinoTextField(
                     onValueChange = onValueChange,
                     singleLine = singleLine,
                     maxLines = maxLines,
-                    textStyle = TextStyle(
+                    textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
                         fontSize = 14.5.sp,
                         fontWeight = FontWeight.Normal
