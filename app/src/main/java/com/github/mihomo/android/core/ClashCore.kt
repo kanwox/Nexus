@@ -25,10 +25,17 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 
 object ClashCore {
     private const val TAG = "ClashCore"
     private const val LOAD_TIMEOUT_MS = 20_000L
+    private const val HEALTH_CHECK_TIMEOUT_MS = 8_000L
+
+    private val activeGroupChecks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+
+    @Volatile
+    private var loadedProfileId: String? = null
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -91,6 +98,7 @@ object ClashCore {
             val res = load(configFile)
             if (res.isSuccess) {
                 isCoreLoaded = true
+                loadedProfileId = activeProfile?.id
                 runCatching {
                     val allSaved = settings.getAllSelectedNodes()
                     allSaved.forEach { (gName, sNode) ->
@@ -105,7 +113,10 @@ object ClashCore {
     }
 
     suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
-        if (isCoreLoaded) {
+        val settings = com.github.mihomo.android.data.SettingsManager(context)
+        val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
+        val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
+        if (isCoreLoaded && activeProfile?.id == loadedProfileId) {
             notifyNetworkChanged(context)
             return@withContext true
         }
@@ -217,48 +228,67 @@ object ClashCore {
         }.getOrDefault(false)
     }
 
+    private fun getOrStartGroupHealthCheck(groupName: String): CompletableDeferred<Unit> {
+        return activeGroupChecks.compute(groupName) { _, existing ->
+            if (existing != null && !existing.isCompleted) {
+                existing
+            } else {
+                CompletableDeferred<Unit>().also { deferred ->
+                    runCatching {
+                        Bridge.nativeHealthCheck(deferred, groupName)
+                    }.onFailure {
+                        deferred.complete(Unit)
+                    }
+                }
+            }
+        }!!
+    }
+
     suspend fun healthCheckGroupNative(
         name: String,
         onProgress: ((String, Int) -> Unit)? = null
     ): Map<String, Int> = withContext(Dispatchers.IO) {
         val initialGroup = queryGroup(name)
         val initialDelays = initialGroup?.proxies?.associate { it.name to it.delay } ?: emptyMap()
-        val deferred = CompletableDeferred<Unit>()
+        val deferred = getOrStartGroupHealthCheck(name)
         var pollJob: Job? = null
         try {
-            Bridge.nativeHealthCheck(deferred, name)
             if (onProgress != null) {
                 val reported = mutableSetOf<String>()
                 pollJob = launch {
                     while (isActive && !deferred.isCompleted) {
-                        delay(150L)
+                        delay(120L)
                         val currentGroup = queryGroup(name)
                         val proxies = currentGroup?.proxies ?: emptyList()
                         proxies.forEach { p ->
                             if (!reported.contains(p.name)) {
                                 val oldDelay = initialDelays[p.name]
                                 val newDelay = p.delay
-                                if (oldDelay != newDelay && newDelay > 0) {
+                                if (oldDelay != newDelay && newDelay in 1..65534) {
                                     reported.add(p.name)
-                                    val finalD = if (newDelay in 1..65534) newDelay else -2
-                                    onProgress(p.name, finalD)
+                                    onProgress(p.name, newDelay)
                                 }
                             }
                         }
                     }
                 }
             }
-            withTimeout(5500L) {
+            withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
                 deferred.await()
             }
         } catch (_: Throwable) {
         } finally {
             pollJob?.cancel()
+            activeGroupChecks.remove(name, deferred)
         }
         val group = queryGroup(name)
         val result = mutableMapOf<String, Int>()
         group?.proxies?.forEach { p ->
-            val d = if (p.delay in 1..65534) p.delay else if (p.delay >= 65535 || p.delay == -2) -2 else -1
+            val d = when {
+                p.delay in 1..65534 -> p.delay
+                p.name.equals("DIRECT", ignoreCase = true) -> 0
+                else -> -2
+            }
             result[p.name] = d
             onProgress?.invoke(p.name, d)
         }
@@ -273,29 +303,74 @@ object ClashCore {
         if (proxyName.equals("REJECT", ignoreCase = true)) return@withContext -2
         if (proxyName.equals("COMPATIBLE", ignoreCase = true)) return@withContext -2
 
-        val deferred = CompletableDeferred<Unit>()
+        val allGroups = queryGroupNames()
+        val isProxyItselfGroup = allGroups.contains(proxyName)
+
+        if (isProxyItselfGroup) {
+            val deferred = getOrStartGroupHealthCheck(proxyName)
+            try {
+                withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
+                    deferred.await()
+                }
+            } catch (_: Throwable) {
+            } finally {
+                activeGroupChecks.remove(proxyName, deferred)
+            }
+            val subGroup = queryGroup(proxyName) ?: return@withContext -2
+            val activeProxy = subGroup.proxies.find { it.name == subGroup.now }
+            if (activeProxy != null && activeProxy.delay in 1..65534) {
+                return@withContext activeProxy.delay
+            }
+            val bestValid = subGroup.proxies.map { it.delay }.filter { it in 1..65534 }.minOrNull()
+            return@withContext bestValid ?: -2
+        }
+
+        val targetGroup = when {
+            !groupName.isNullOrBlank() && allGroups.contains(groupName) -> groupName
+            else -> allGroups.firstOrNull { g ->
+                queryGroup(g)?.proxies?.any { it.name == proxyName } == true
+            } ?: groupName
+        }
+
+        if (targetGroup.isNullOrBlank()) return@withContext -2
+
+        val initialGroup = queryGroup(targetGroup)
+        val initialDelay = initialGroup?.proxies?.find { it.name == proxyName }?.delay ?: -1
+        val deferred = getOrStartGroupHealthCheck(targetGroup)
+
         try {
-            Bridge.nativeHealthCheck(deferred, proxyName)
-            withTimeout(5500L) {
+            withTimeout(HEALTH_CHECK_TIMEOUT_MS) {
+                while (isActive && !deferred.isCompleted) {
+                    delay(80L)
+                    val curGroup = queryGroup(targetGroup)
+                    val curProxy = curGroup?.proxies?.find { it.name == proxyName }
+                    if (curProxy != null && curProxy.delay in 1..65534 && curProxy.delay != initialDelay) {
+                        return@withTimeout curProxy.delay
+                    }
+                }
                 deferred.await()
+                -1
+            }.let { earlyDelay ->
+                if (earlyDelay in 1..65534) return@withContext earlyDelay
             }
         } catch (_: Throwable) {
-        }
-
-        if (!groupName.isNullOrBlank()) {
-            val group = queryGroup(groupName)
-            val p = group?.proxies?.find { it.name == proxyName }
-            if (p != null) {
-                return@withContext if (p.delay in 1..65534) p.delay else -2
+        } finally {
+            if (deferred.isCompleted) {
+                activeGroupChecks.remove(targetGroup, deferred)
             }
         }
 
-        val groups = queryGroupNames()
-        for (g in groups) {
+        val finalGroup = queryGroup(targetGroup)
+        val finalProxy = finalGroup?.proxies?.find { it.name == proxyName }
+        if (finalProxy != null && finalProxy.delay in 1..65534) {
+            return@withContext finalProxy.delay
+        }
+
+        for (g in allGroups) {
             val group = queryGroup(g)
             val p = group?.proxies?.find { it.name == proxyName }
-            if (p != null) {
-                return@withContext if (p.delay in 1..65534) p.delay else -2
+            if (p != null && p.delay in 1..65534) {
+                return@withContext p.delay
             }
         }
         -2
@@ -307,6 +382,8 @@ object ClashCore {
 
     fun reset() {
         isCoreLoaded = false
+        loadedProfileId = null
+        activeGroupChecks.clear()
         runCatching { Bridge.nativeReset() }
     }
 }

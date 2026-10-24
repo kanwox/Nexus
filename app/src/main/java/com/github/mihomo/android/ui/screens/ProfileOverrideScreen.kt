@@ -95,8 +95,8 @@ fun ProfileOverrideScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .bounceOverscroll()
-                .padding(bottom = 32.dp),
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -935,20 +936,24 @@ fun rememberBounceOverscrollConnection(
     allowBottom: Boolean = true
 ): Pair<NestedScrollConnection, State<Float>> {
     val coroutineScope = rememberCoroutineScope()
-    val overscrollOffset = remember { Animatable(0f) }
+    val overscrollOffset = remember { mutableFloatStateOf(0f) }
+    var springJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     val connection = remember(allowTop, allowBottom) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                val current = overscrollOffset.value
-                // Scroll back toward zero before passing to the list
+                val current = overscrollOffset.floatValue
+                if (current == 0f) return Offset.Zero
+                // Scroll back toward zero synchronously before passing delta to the list
                 if (current > 0f && available.y < 0f) {
+                    springJob?.cancel()
                     val consumed = available.y.coerceAtLeast(-current)
-                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
+                    overscrollOffset.floatValue = current + consumed
                     return Offset(0f, consumed)
                 } else if (current < 0f && available.y > 0f) {
+                    springJob?.cancel()
                     val consumed = available.y.coerceAtMost(-current)
-                    coroutineScope.launch { overscrollOffset.snapTo(current + consumed) }
+                    overscrollOffset.floatValue = current + consumed
                     return Offset(0f, consumed)
                 }
                 return Offset.Zero
@@ -970,44 +975,50 @@ fun rememberBounceOverscrollConnection(
                     if (isBottomOverscroll && !allowBottom) {
                         return Offset.Zero
                     }
-                    val current = overscrollOffset.value
+                    springJob?.cancel()
+                    val current = overscrollOffset.floatValue
                     val resistance = (1f - (kotlin.math.abs(current) / 500f).coerceIn(0f, 0.85f)) * 0.42f
                     val delta = available.y * resistance
-                    coroutineScope.launch { overscrollOffset.snapTo(current + delta) }
+                    overscrollOffset.floatValue = (current + delta).coerceIn(-220f, 220f)
                     return Offset(0f, available.y)
                 }
                 return Offset.Zero
             }
 
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                if (overscrollOffset.value != 0f) {
-                    overscrollOffset.animateTo(
+            private fun animateBackToZero() {
+                val startValue = overscrollOffset.floatValue
+                if (startValue == 0f) return
+                springJob?.cancel()
+                springJob = coroutineScope.launch {
+                    animate(
+                        initialValue = startValue,
                         targetValue = 0f,
                         animationSpec = spring(
                             dampingRatio = 0.82f,
                             stiffness = Spring.StiffnessMediumLow
                         )
-                    )
-                    return available
+                    ) { value, _ ->
+                        overscrollOffset.floatValue = value
+                    }
+                }
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (overscrollOffset.floatValue != 0f) {
+                    animateBackToZero()
                 }
                 return Velocity.Zero
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (overscrollOffset.value != 0f) {
-                    overscrollOffset.animateTo(
-                        targetValue = 0f,
-                        animationSpec = spring(
-                            dampingRatio = 0.82f,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    )
+                if (overscrollOffset.floatValue != 0f) {
+                    animateBackToZero()
                 }
                 return Velocity.Zero
             }
         }
     }
-    return Pair(connection, overscrollOffset.asState())
+    return Pair(connection, overscrollOffset)
 }
 
 // iOS-style Rubber-Band Bounce Overscroll
@@ -1017,6 +1028,7 @@ fun Modifier.bounceOverscroll(
 ): Modifier = composed {
     val (connection, offsetState) = rememberBounceOverscrollConnection(allowTop, allowBottom)
     this
+        .clipToBounds()
         .nestedScroll(connection)
         .graphicsLayer {
             translationY = offsetState.value

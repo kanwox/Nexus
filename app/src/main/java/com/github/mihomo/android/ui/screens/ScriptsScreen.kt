@@ -210,8 +210,8 @@ fun ScriptsScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .bounceOverscroll()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .bounceOverscroll(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
             ) {
                 item {
                     Surface(

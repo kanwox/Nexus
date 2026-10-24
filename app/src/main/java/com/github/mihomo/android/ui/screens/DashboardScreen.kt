@@ -189,16 +189,13 @@ fun DashboardScreen(
                     .fillMaxSize()
                     .background(topBgBrush)
                     .statusBarsPadding()
-                    .bounceOverscroll()
-                    .verticalScroll(state = scrollState, enabled = draggedId == null)
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 16.dp, bottom = 110.dp)
             ) {
                 // Header: NEXUS (LOON style) & Mode Selector + iOS Switch
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 18.dp)
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 20.dp, bottom = 14.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -248,7 +245,16 @@ fun DashboardScreen(
                     }
                 }
 
-                // Dual Traffic Cards Row (Upload & Download)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .bounceOverscroll()
+                        .verticalScroll(state = scrollState, enabled = draggedId == null)
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 4.dp, bottom = 110.dp)
+                ) {
+                    // Dual Traffic Cards Row (Upload & Download)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -533,6 +539,7 @@ fun DashboardScreen(
                     }
                 }
             }
+            } // Close scrollable content Column
 
             // =========================================================================
             // Quick Node Selector ModalBottomSheet (Authentic iOS Presentation)
@@ -617,12 +624,6 @@ fun DashboardScreen(
                                 dividerStartIndent = 16.dp
                             ) { _, proxy ->
                                 val isSelected = proxy.name == activeNodeName
-                                val nodeEmoji = extractLeadingEmoji(proxy.name)
-                                val displayName = if (nodeEmoji != null) {
-                                    proxy.name.removePrefix(nodeEmoji).trim()
-                                } else {
-                                    proxy.name
-                                }
 
                                 Row(
                                     modifier = Modifier
@@ -637,34 +638,25 @@ fun DashboardScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(end = 10.dp)
                                     ) {
-                                        if (nodeEmoji != null) {
-                                            Text(
-                                                text = nodeEmoji,
-                                                fontSize = 18.sp,
-                                                modifier = Modifier.padding(end = 10.dp)
-                                            )
-                                        }
-
-                                        Column {
-                                            Text(
-                                                text = displayName,
-                                                color = LoonTextPrimary,
-                                                fontSize = 15.sp,
-                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            Text(
-                                                text = proxy.type.uppercase(),
-                                                color = LoonTextMuted,
-                                                fontSize = 11.5.sp
-                                            )
-                                        }
+                                        Text(
+                                            text = proxy.name,
+                                            color = if (isSelected) IosBlue else LoonTextPrimary,
+                                            fontSize = 15.sp,
+                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = proxy.type.uppercase(),
+                                            color = LoonTextMuted,
+                                            fontSize = 11.5.sp
+                                        )
                                     }
 
                                     Spacer(modifier = Modifier.width(10.dp))
