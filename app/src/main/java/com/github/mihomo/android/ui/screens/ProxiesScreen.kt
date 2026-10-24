@@ -136,103 +136,50 @@ fun ProxiesScreen(
         }
     }
 
-    val isAnyTesting = if (isListMode) {
-        testingNodes.isNotEmpty()
-    } else {
-        testingNodes.contains(selectedGroupName) ||
-                currentGroup?.proxies?.any {
-                    testingNodes.contains("$selectedGroupName:${it.name}") || testingNodes.contains(it.name)
-                } == true
-    }
-
     val lang = LocalAppLanguage.current
-    val currentGroupProxies = currentGroup?.proxies ?: emptyList()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(top = 10.dp)
     ) {
         // =================================================================
-        // 1. iOS Large Title Header & Clean Plain Icon Actions
+        // 1. iOS Large Title Header & Clean Plain Icon Action
+        //    (Unified position & typography with SettingsScreen)
         // =================================================================
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(top = 4.dp, bottom = 10.dp),
+                .padding(horizontal = 20.dp)
+                .padding(top = 20.dp, bottom = 12.dp)
+                .heightIn(min = 40.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = AppStrings.get("proxies_title", lang),
-                    color = LoonTextPrimary,
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.6).sp
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                val subText = if (isAnyTesting) {
-                    "正在检测节点延迟..."
-                } else if (isListMode) {
-                    "${visibleGroups.size} 个策略组"
-                } else {
-                    "${visibleGroups.size} 个策略组 · 当前共 ${currentGroupProxies.size} 个节点"
-                }
-                Text(
-                    text = subText,
-                    color = if (isAnyTesting) IosBlue else LoonTextSecondary,
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = AppStrings.get("proxies_title", lang),
+                color = LoonTextPrimary,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.6).sp
+            )
 
-            // Right Clean Plain Icon Actions (Max 2 high-frequency actions, no circle background blocks)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .iosPressable(pressedScale = 0.88f) {
+                        haptic.lightTick()
+                        showOptionsMenu = true
+                    },
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .iosPressable(pressedScale = 0.88f) {
-                            haptic.impact()
-                            if (selectedGroupName.isNotBlank()) {
-                                onHealthCheck(selectedGroupName)
-                            } else if (visibleGroups.isNotEmpty()) {
-                                onHealthCheck(visibleGroups.first())
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    AnimatedSpeedTestIcon(
-                        isTesting = isAnyTesting,
-                        tint = LoonTextPrimary,
-                        modifier = Modifier.size(21.dp)
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .iosPressable(pressedScale = 0.88f) {
-                            haptic.lightTick()
-                            showOptionsMenu = true
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.MoreHoriz,
-                        contentDescription = "策略设置",
-                        tint = if (nodeSortMode != "DEFAULT") IosBlue else LoonTextPrimary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.MoreHoriz,
+                    contentDescription = "策略设置",
+                    tint = if (nodeSortMode != "DEFAULT") IosBlue else LoonTextPrimary,
+                    modifier = Modifier.size(22.dp)
+                )
             }
         }
 
@@ -373,6 +320,7 @@ fun ProxiesScreen(
                         key = { _, grpName -> grpName }
                     ) { _, groupName ->
                         val isSelected = groupName == selectedGroupName
+                        val isPillTesting = testingNodes.contains("group:$groupName")
                         val groupIconUrl = groupIcons[groupName]
 
                         val pillBg by animateColorAsState(
@@ -428,6 +376,27 @@ fun ProxiesScreen(
                                     fontSize = 13.5.sp,
                                     maxLines = 1
                                 )
+                                if (isSelected || isPillTesting) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clickable(
+                                                enabled = !isPillTesting,
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null
+                                            ) {
+                                                haptic.impact()
+                                                onHealthCheck(groupName)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        AnimatedSpeedTestIcon(
+                                            isTesting = isPillTesting,
+                                            tint = if (isSelected) Color.White else IosBlue,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -511,8 +480,7 @@ fun ProxiesScreen(
                             ) {
                                 for (proxy in rowProxies) {
                                     Box(modifier = Modifier.weight(1f)) {
-                                        val isItemTesting = testingNodes.contains(proxy.name) ||
-                                                testingNodes.contains("$targetGroupName:${proxy.name}")
+                                        val isItemTesting = testingNodes.contains("$targetGroupName:${proxy.name}")
                                         LoonProxyItemCard(
                                             proxy = proxy,
                                             isSelected = proxy.name == currentNow,
@@ -571,11 +539,7 @@ fun ProxiesScreen(
                         val iconUrl = groupIcons[groupName]
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
-                            val isGroupTesting = testingNodes.contains(groupName) ||
-                                    rawProxies.any {
-                                        testingNodes.contains("$groupName:${it.name}") ||
-                                                (it.isGroup && testingNodes.contains(it.name))
-                                    }
+                            val isGroupTesting = testingNodes.contains("group:$groupName")
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 LoonGroupHeaderCard(
                                     groupName = groupName,
@@ -630,8 +594,7 @@ fun ProxiesScreen(
                                             ) {
                                                 for (proxy in rowProxies) {
                                                     Box(modifier = Modifier.weight(1f)) {
-                                                        val isItemTesting = testingNodes.contains(proxy.name) ||
-                                                                testingNodes.contains("$groupName:${proxy.name}")
+                                                        val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
                                                         LoonProxyItemCard(
                                                             proxy = proxy,
                                                             isSelected = proxy.name == groupNow,
@@ -706,6 +669,7 @@ private fun LoonGroupHeaderCard(
     onHealthCheck: () -> Unit,
     onToggleExpand: () -> Unit
 ) {
+    val currentOnHealthCheck by rememberUpdatedState(onHealthCheck)
     val standardType = remember(groupType) { formatStandardGroupType(groupType) }
     val chevronRotation by animateFloatAsState(
         targetValue = if (isExpanded) 90f else 0f,
@@ -733,7 +697,7 @@ private fun LoonGroupHeaderCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -747,8 +711,8 @@ private fun LoonGroupHeaderCard(
                     RemoteIcon(
                         url = iconUrl,
                         modifier = Modifier
-                            .padding(end = 10.dp)
-                            .size(22.dp),
+                            .padding(end = 12.dp)
+                            .size(32.dp),
                         contentDescription = groupName
                     )
                 }
@@ -794,16 +758,20 @@ private fun LoonGroupHeaderCard(
                     if (showSpeedTest) {
                         Box(
                             modifier = Modifier
-                                .size(28.dp)
-                                .iosPressable(enabled = !isTesting, pressedScale = 0.88f) {
-                                    onHealthCheck()
+                                .size(34.dp)
+                                .clickable(
+                                    enabled = !isTesting,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    currentOnHealthCheck()
                                 },
                             contentAlignment = Alignment.Center
                         ) {
                             AnimatedSpeedTestIcon(
                                 isTesting = isTesting,
                                 tint = IosBlue,
-                                modifier = Modifier.size(17.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     } else {
@@ -979,19 +947,11 @@ private fun CupertinoLatencyText(
     compact: Boolean,
     onClick: () -> Unit
 ) {
-    val isTimeout = delay == -2 || delay >= 65535
     val isValidDelay = delay in 1..65534
     val delayColor = when {
-        isTimeout -> IosRed
         isValidDelay && delay <= 250 -> IosGreen
         isValidDelay && delay <= 600 -> IosOrange
-        isValidDelay && delay > 600 -> IosRed
-        else -> LoonTextSecondary
-    }
-    val delayText = when {
-        isTimeout -> "超时"
-        isValidDelay -> if (compact) "${delay}ms" else "$delay ms"
-        else -> "测速"
+        else -> IosRed
     }
 
     Box(
@@ -1011,12 +971,12 @@ private fun CupertinoLatencyText(
                 modifier = Modifier.size(if (compact) 11.dp else 13.dp),
                 color = IosBlue
             )
-        } else {
+        } else if (isValidDelay) {
             Text(
-                text = delayText,
+                text = if (compact) "${delay}ms" else "$delay ms",
                 color = delayColor,
                 fontSize = if (compact) 10.sp else 11.5.sp,
-                fontWeight = if (isValidDelay || isTimeout) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )
         }

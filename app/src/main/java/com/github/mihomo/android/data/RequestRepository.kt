@@ -7,13 +7,37 @@ import java.util.concurrent.atomic.AtomicLong
 
 object RequestRepository {
     private const val MAX_RECORDS = 500
+    private const val ACTIVE_CONNECTION_TTL_MS = 120_000L
     private val nextId = AtomicLong(1)
     private val recordList = mutableListOf<RequestRecord>()
     private val _recordsFlow = MutableStateFlow<List<RequestRecord>>(emptyList())
     val recordsFlow: StateFlow<List<RequestRecord>> = _recordsFlow.asStateFlow()
 
+    private val closeRegex = Regex(
+        """\[(TCP|UDP)\]\s+(?:connection\s+to\s+)?([a-zA-Z0-9_.-]+)(?::\d+)?\s+closed""",
+        RegexOption.IGNORE_CASE
+    )
+    private val arrowRegex = Regex(
+        """\[(TCP|UDP)\]\s+(?:\[?[0-9a-fA-F.:]+\]?:\d+)(?:\(([^)]+)\))?\s+(?:-->|->)\s+\[?([a-zA-Z0-9_.-]+)\]?:(\d+)(?:\s+match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?)?\s+using\s+(?:Proxy\[([^\]]+)\]|([^\s\r\n]+))?""",
+        RegexOption.IGNORE_CASE
+    )
+    private val dialRegex = Regex(
+        """\[(TCP|UDP)\]\s+dial\s+(?:Proxy\[([^\]]+)\]|([^\s(]+))(?:\s+\(match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?\))?\s+to\s+\[?([a-zA-Z0-9_.-]+)\]?:(\d+)""",
+        RegexOption.IGNORE_CASE
+    )
+
     @Synchronized
     fun addRecord(record: RequestRecord) {
+        val now = record.timestamp
+        for (i in recordList.indices) {
+            val existing = recordList[i]
+            if (existing.isActive && now - existing.timestamp > ACTIVE_CONNECTION_TTL_MS) {
+                recordList[i] = existing.copy(
+                    isActive = false,
+                    durationMs = now - existing.timestamp
+                )
+            }
+        }
         recordList.add(0, record)
         if (recordList.size > MAX_RECORDS) {
             recordList.removeAt(recordList.lastIndex)
@@ -66,7 +90,6 @@ object RequestRepository {
 
             // 1. Check for connection closed events: e.g. [TCP] connection to api.github.com:443 closed
             if (trimmed.contains("closed", ignoreCase = true)) {
-                val closeRegex = Regex("""\[(TCP|UDP)\]\s+(?:connection\s+to\s+)?([a-zA-Z0-9_.-]+)(?::\d+)?\s+closed""", RegexOption.IGNORE_CASE)
                 val closeMatch = closeRegex.find(trimmed)
                 if (closeMatch != null) {
                     val host = closeMatch.groupValues[2]
@@ -82,10 +105,6 @@ object RequestRepository {
 
             // 2. Format: [TCP] 198.18.0.1:54321 --> api.github.com:443 match DomainSuffix(github.com) using Proxy[HK 01]
             // or: [TCP] 198.18.0.1:54321 --> 1.1.1.1:853 using DIRECT
-            val arrowRegex = Regex(
-                """\[(TCP|UDP)\]\s+(?:\[?[0-9a-fA-F.:]+\]?:\d+)(?:\(([^)]+)\))?\s+(?:-->|->)\s+\[?([a-zA-Z0-9_.-]+)\]?:(\d+)(?:\s+match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?)?\s+using\s+(?:Proxy\[([^\]]+)\]|([^\s\r\n]+))?""",
-                RegexOption.IGNORE_CASE
-            )
             val arrowMatch = arrowRegex.find(trimmed)
             if (arrowMatch != null) {
                 val net = arrowMatch.groupValues[1].uppercase()
@@ -122,10 +141,6 @@ object RequestRepository {
 
             // 3. Format: [TCP] dial Proxy[HK 01] (match DomainSuffix/github.com) to api.github.com:443
             // or: [TCP] dial DIRECT to 127.0.0.1:53
-            val dialRegex = Regex(
-                """\[(TCP|UDP)\]\s+dial\s+(?:Proxy\[([^\]]+)\]|([^\s(]+))(?:\s+\(match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?\))?\s+to\s+\[?([a-zA-Z0-9_.-]+)\]?:(\d+)""",
-                RegexOption.IGNORE_CASE
-            )
             val dialMatch = dialRegex.find(trimmed)
             if (dialMatch != null) {
                 val net = dialMatch.groupValues[1].uppercase()

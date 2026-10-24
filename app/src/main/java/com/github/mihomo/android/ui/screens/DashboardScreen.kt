@@ -118,7 +118,6 @@ fun DashboardScreen(
     // All shortcut item definitions available across entire DashboardScreen (cached to eliminate recomposition lag)
     val allShortcutMap = remember(
         lang, activeProfileName, activeNodeName, totalNodes, totalRules,
-        vpnState.upSpeed, vpnState.downSpeed, vpnState.totalUp, vpnState.totalDown,
         vpnState.coreVersion, isRunning
     ) {
         mapOf(
@@ -154,7 +153,7 @@ fun DashboardScreen(
         )
     }
 
-    val displayedShortcuts = remember(localOrder, visibleShortcuts, lang) {
+    val displayedShortcuts = remember(localOrder, visibleShortcuts, allShortcutMap, lang) {
         localOrder.mapNotNull { allShortcutMap[it] }.filter { visibleShortcuts.contains(it.id) }
     }
 
@@ -189,13 +188,16 @@ fun DashboardScreen(
                     .fillMaxSize()
                     .background(topBgBrush)
                     .statusBarsPadding()
+                    .bounceOverscroll()
+                    .verticalScroll(state = scrollState, enabled = draggedId == null)
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 110.dp)
             ) {
                 // Header: NEXUS (LOON style) & Mode Selector + iOS Switch
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(top = 20.dp, bottom = 14.dp)
+                        .padding(top = 20.dp, bottom = 18.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -245,16 +247,7 @@ fun DashboardScreen(
                     }
                 }
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .bounceOverscroll()
-                        .verticalScroll(state = scrollState, enabled = draggedId == null)
-                        .padding(horizontal = 20.dp)
-                        .padding(top = 4.dp, bottom = 110.dp)
-                ) {
-                    // Dual Traffic Cards Row (Upload & Download)
+                // Dual Traffic Cards Row (Upload & Download)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -667,19 +660,17 @@ fun DashboardScreen(
                                                 modifier = Modifier.size(13.dp),
                                                 color = IosBlue
                                             )
-                                        } else {
-                                            val (delayColor, delayText) = when {
-                                                proxy.delay == -2 -> Pair(RedDanger, "超时")
-                                                proxy.delay in 1..250 -> Pair(IosGreen, "${proxy.delay} ms")
-                                                proxy.delay in 251..600 -> Pair(IosOrange, "${proxy.delay} ms")
-                                                proxy.delay > 600 -> Pair(RedDanger, "${proxy.delay} ms")
-                                                else -> Pair(LoonTextMuted, "--")
+                                        } else if (proxy.delay in 1..65534) {
+                                            val delayColor = when {
+                                                proxy.delay in 1..250 -> IosGreen
+                                                proxy.delay in 251..600 -> IosOrange
+                                                else -> RedDanger
                                             }
                                             Text(
-                                                text = delayText,
+                                                text = "${proxy.delay} ms",
                                                 color = delayColor,
                                                 fontSize = 12.sp,
-                                                fontWeight = if (proxy.delay > 0 || proxy.delay == -2) FontWeight.SemiBold else FontWeight.Normal
+                                                fontWeight = FontWeight.SemiBold
                                             )
                                         }
 
@@ -864,7 +855,6 @@ fun DashboardScreen(
             }
         }
     }
-}
 }
 
 @Preview(name = "Light Mode", showBackground = true, showSystemUi = true)

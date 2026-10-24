@@ -493,10 +493,12 @@ object ConfigManager {
             val activeProfile = getProfiles(context).find {
                 it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
             }
-            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) {
-                activeProfile.scriptIds
-            } else null
-            if (!targetIds.isNullOrEmpty()) {
+            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled) {
+                activeProfile.scriptIds.ifEmpty {
+                    ScriptManager.getScripts(context).filter { it.enabled }.map { it.id }
+                }
+            } else emptyList()
+            if (targetIds.isNotEmpty()) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name} (${targetIds.size} scripts)...")
                 rawContent = ConfigScriptEngine.executeScripts(
                     context = context,

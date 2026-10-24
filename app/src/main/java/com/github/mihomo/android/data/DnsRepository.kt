@@ -12,6 +12,9 @@ object DnsRepository {
     private val _recordsFlow = MutableStateFlow<List<DnsRecord>>(emptyList())
     val recordsFlow: StateFlow<List<DnsRecord>> = _recordsFlow.asStateFlow()
 
+    private val dnsRegex1 = Regex("""(?:\[DNS\]\s+)?(?:resolve:?\s+|fake-ip:?\s+|query:?\s+|cache:?\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:-->|->|to)\s*\[?([0-9a-fA-F.:]+)\]?""")
+    private val dnsRegex2 = Regex("""\[DNS\]\s+([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:\[|\()([0-9a-fA-F.:]+)(?:\]|\))""")
+
     @Synchronized
     fun addRecord(domain: String, ip: String, isFakeIp: Boolean = false, latencyMs: Int = 0, type: String = "A") {
         val cleanDomain = domain.trim()
@@ -58,7 +61,6 @@ object DnsRepository {
             if (!message.contains("[DNS]", ignoreCase = true) && !message.contains("resolve", ignoreCase = true)) return
 
             // 1. Match: [DNS] (optional resolve/fake-ip/query/cache) domain -> ip or --> ip or to ip
-            val dnsRegex1 = Regex("""(?:\[DNS\]\s+)?(?:resolve:?\s+|fake-ip:?\s+|query:?\s+|cache:?\s+)?([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:-->|->|to)\s*\[?([0-9a-fA-F.:]+)\]?""")
             val match1 = dnsRegex1.find(message)
             if (match1 != null) {
                 val domain = match1.groupValues[1]
@@ -68,7 +70,6 @@ object DnsRepository {
             }
 
             // 2. Match: [DNS] domain [ip] or [DNS] domain (ip)
-            val dnsRegex2 = Regex("""\[DNS\]\s+([a-zA-Z0-9_.-]+\.[a-zA-Z]{2,})\s*(?:\[|\()([0-9a-fA-F.:]+)(?:\]|\))""")
             val match2 = dnsRegex2.find(message)
             if (match2 != null) {
                 val domain = match2.groupValues[1]

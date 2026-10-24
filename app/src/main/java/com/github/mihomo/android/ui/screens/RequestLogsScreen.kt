@@ -583,8 +583,16 @@ private fun RequestRecordCell(
                     fontSize = 12.5.sp
                 )
 
+                val midText = if (record.uploadBytes > 0L || record.downloadBytes > 0L) {
+                    "↑ ${formatTraffic(record.uploadBytes)}  ↓ ${formatTraffic(record.downloadBytes)}"
+                } else if (record.rulePayload.isNotBlank()) {
+                    "${record.rule}(${record.rulePayload})"
+                } else {
+                    record.rule
+                }
+
                 Text(
-                    text = "↑ ${formatTraffic(record.uploadBytes)}  ↓ ${formatTraffic(record.downloadBytes)}",
+                    text = midText,
                     color = LoonTextSecondary,
                     fontSize = 12.5.sp,
                     maxLines = 1,

@@ -4,13 +4,20 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.github.kr328.clash.core.util.*
@@ -97,9 +104,121 @@ class MihomoVpnService : VpnService() {
     private var startJob: Job? = null
     private var vpnInterface: ParcelFileDescriptor? = null
 
+    @Volatile
+    private var isScreenInteractive: Boolean = true
+
+    @Volatile
+    private var lastNotificationContent: String? = null
+
+    private var screenStateReceiverRegistered = false
+    private var networkCallbackRegistered = false
+
+    private val launchPendingIntent: PendingIntent by lazy {
+        PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    private val stopPendingIntent: PendingIntent by lazy {
+        PendingIntent.getService(
+            this,
+            1,
+            Intent(this, MihomoVpnService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenInteractive = false
+                    trafficMonitorJob?.cancel()
+                    ClashCore.setSuspended(true)
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenInteractive = true
+                    ClashCore.setSuspended(false)
+                    if (_vpnState.value.status == VpnState.Status.RUNNING) {
+                        startTrafficMonitor()
+                    }
+                }
+            }
+        }
+    }
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            handlePhysicalNetworkChanged(network)
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            handlePhysicalNetworkChanged(network)
+        }
+
+        private fun handlePhysicalNetworkChanged(network: Network) {
+            if (_vpnState.value.status != VpnState.Status.RUNNING) return
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+            ClashCore.notifyNetworkChanged(this@MihomoVpnService)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        isScreenInteractive = pm?.isInteractive ?: true
+        registerScreenStateReceiver()
+        registerPhysicalNetworkCallback()
+    }
+
+    private fun registerScreenStateReceiver() {
+        if (screenStateReceiverRegistered) return
+        runCatching {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(screenStateReceiver, filter)
+            }
+            screenStateReceiverRegistered = true
+        }
+    }
+
+    private fun unregisterScreenStateReceiver() {
+        if (!screenStateReceiverRegistered) return
+        runCatching { unregisterReceiver(screenStateReceiver) }
+        screenStateReceiverRegistered = false
+    }
+
+    private fun registerPhysicalNetworkCallback() {
+        if (networkCallbackRegistered) return
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            cm.registerNetworkCallback(request, networkCallback)
+            networkCallbackRegistered = true
+        }
+    }
+
+    private fun unregisterPhysicalNetworkCallback() {
+        if (!networkCallbackRegistered) return
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.unregisterNetworkCallback(networkCallback)
+        }
+        networkCallbackRegistered = false
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -145,7 +264,7 @@ class MihomoVpnService : VpnService() {
                 val configFile = ConfigManager.prepareConfig(this@MihomoVpnService, activeProfile?.file)
 
                 // 3. Load config into core
-                val loadRes = ClashCore.load(configFile)
+                val loadRes = ClashCore.load(configFile, activeProfile?.id)
                 if (loadRes.isFailure) {
                     error("加载配置文件失败: ${loadRes.exceptionOrNull()?.message}")
                 }
@@ -160,28 +279,7 @@ class MihomoVpnService : VpnService() {
                 }
 
                 // Notify physical network DNS and Timezone to core
-                runCatching {
-                    val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                    val activeNet = cm?.activeNetwork
-                    val linkProps = cm?.getLinkProperties(activeNet)
-                    val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress }?.filter { !it.contains(":") } ?: emptyList()
-                    val dnsStr = if (dnsServers.isNotEmpty()) dnsServers.joinToString(",") else "223.5.5.5,119.29.29.29"
-                    com.github.kr328.clash.core.bridge.Bridge.nativeNotifyDnsChanged(dnsStr)
-                    com.github.kr328.clash.core.bridge.Bridge.nativeNotifyTimeZoneChanged(
-                        java.util.TimeZone.getDefault().id,
-                        java.util.TimeZone.getDefault().rawOffset / 1000
-                    )
-                }
-
-                // Subscribe to native core logcat
-                runCatching {
-                    com.github.kr328.clash.core.bridge.Bridge.nativeSubscribeLogcat(object : com.github.kr328.clash.core.bridge.LogcatInterface {
-                        override fun received(jsonPayload: String) {
-                            Log.i("NexusCore", jsonPayload)
-                            com.github.mihomo.android.data.LogRepository.addRawLogcat(jsonPayload)
-                        }
-                    })
-                }
+                ClashCore.notifyNetworkChanged(this@MihomoVpnService)
 
                 // 4. Establish Android VpnService TUN
                 val builder = Builder().apply {
@@ -203,8 +301,13 @@ class MihomoVpnService : VpnService() {
                     val packages = settings.selectedPackages
                     when (settings.perAppProxyMode) {
                         PerAppProxyMode.WHITELIST -> {
-                            packages.forEach { pkg ->
-                                runCatching { addAllowedApplication(pkg) }
+                            val allowed = packages.filter { it != packageName }
+                            if (allowed.isEmpty()) {
+                                runCatching { addDisallowedApplication(packageName) }
+                            } else {
+                                allowed.forEach { pkg ->
+                                    runCatching { addAllowedApplication(pkg) }
+                                }
                             }
                         }
                         PerAppProxyMode.BLACKLIST -> {
@@ -245,7 +348,12 @@ class MihomoVpnService : VpnService() {
                     error = null
                 )
 
-                startTrafficMonitor()
+                ClashCore.setSuspended(!isScreenInteractive)
+                if (isScreenInteractive) {
+                    startTrafficMonitor()
+                } else {
+                    updateNotification("\u2191 0 B/s   \u2193 0 B/s")
+                }
                 Log.i(TAG, "Nexus VPN successfully started! Core: $coreVer")
                 com.github.mihomo.android.data.LogRepository.addLog("info", "Nexus VPN 已成功建立！核心版本: $coreVer")
 
@@ -265,9 +373,11 @@ class MihomoVpnService : VpnService() {
 
     private fun startTrafficMonitor() {
         trafficMonitorJob?.cancel()
+        if (!isScreenInteractive) return
         trafficMonitorJob = serviceScope.launch {
-            while (isActive && _vpnState.value.status == VpnState.Status.RUNNING) {
+            while (isActive && isScreenInteractive && _vpnState.value.status == VpnState.Status.RUNNING) {
                 delay(1000)
+                if (!isScreenInteractive || _vpnState.value.status != VpnState.Status.RUNNING) break
                 val now = ClashCore.queryTrafficNow()
                 val total = ClashCore.queryTrafficTotal()
 
@@ -276,12 +386,15 @@ class MihomoVpnService : VpnService() {
                 val totalUpStr = total.trafficUpload()
                 val totalDownStr = total.trafficDownload()
 
-                _vpnState.value = _vpnState.value.copy(
-                    upSpeed = upStr,
-                    downSpeed = downStr,
-                    totalUp = totalUpStr,
-                    totalDown = totalDownStr
-                )
+                val cur = _vpnState.value
+                if (cur.upSpeed != upStr || cur.downSpeed != downStr || cur.totalUp != totalUpStr || cur.totalDown != totalDownStr) {
+                    _vpnState.value = cur.copy(
+                        upSpeed = upStr,
+                        downSpeed = downStr,
+                        totalUp = totalUpStr,
+                        totalDown = totalDownStr
+                    )
+                }
 
                 updateNotification("\u2191 $upStr   \u2193 $downStr")
             }
@@ -334,6 +447,7 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun startForegroundServiceNotification(content: String) {
+        lastNotificationContent = content
         val notification = buildNotification(content)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -343,31 +457,19 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun updateNotification(content: String) {
+        if (content == lastNotificationContent) return
+        lastNotificationContent = content
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(content))
     }
 
     private fun buildNotification(content: String): Notification {
-        val launchIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val stopIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, MihomoVpnService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_vpn_key)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(content)
-            .setContentIntent(launchIntent)
-            .addAction(0, getString(R.string.action_stop), stopIntent)
+            .setContentIntent(launchPendingIntent)
+            .addAction(0, getString(R.string.action_stop), stopPendingIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -378,6 +480,8 @@ class MihomoVpnService : VpnService() {
         super.onDestroy()
         // The service can be destroyed without ACTION_STOP (process death, low memory), so the
         // native tunnel and the shared state are cleaned up here as well.
+        unregisterScreenStateReceiver()
+        unregisterPhysicalNetworkCallback()
         trafficMonitorJob?.cancel()
         startJob?.cancel()
         serviceScope.cancel()

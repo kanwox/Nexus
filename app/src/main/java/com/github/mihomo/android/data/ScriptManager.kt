@@ -131,6 +131,68 @@ object ScriptManager {
         ProfileParser.clearCache()
     }
 
+    suspend fun fetchRemoteScriptContent(url: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanUrl = url.trim()
+            requireSecureRemoteUrl(cleanUrl)
+            fetchUrl(cleanUrl)
+        }
+    }
+
+    fun saveScript(
+        context: Context,
+        existingId: String? = null,
+        name: String,
+        url: String = "",
+        pattern: String = "",
+        type: String = "config",
+        code: String,
+        enabled: Boolean = true
+    ): ScriptItem {
+        val current = getScripts(context).toMutableList()
+        val existingIdx = if (!existingId.isNullOrBlank()) {
+            current.indexOfFirst { it.id == existingId }
+        } else {
+            -1
+        }
+
+        val id = if (existingIdx >= 0) current[existingIdx].id else java.util.UUID.randomUUID().toString()
+        val fileName = if (existingIdx >= 0 && current[existingIdx].scriptFile.isNotBlank()) {
+            current[existingIdx].scriptFile
+        } else {
+            "$id.js"
+        }
+        val file = getScriptsDir(context).resolve(fileName)
+        file.writeText(code)
+
+        val resolvedName = name.trim().ifBlank {
+            if (url.isNotBlank()) {
+                url.substringAfterLast("/").substringBefore("?").ifBlank { "未命名脚本" }
+            } else {
+                "未命名脚本"
+            }
+        }
+
+        val item = ScriptItem(
+            id = id,
+            name = resolvedName,
+            url = url.trim(),
+            pattern = pattern.trim(),
+            type = type.ifBlank { "config" },
+            scriptFile = fileName,
+            enabled = enabled,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        if (existingIdx >= 0) {
+            current[existingIdx] = item
+        } else {
+            current.add(0, item)
+        }
+        saveScripts(context, current)
+        return item
+    }
+
     suspend fun downloadScript(
         context: Context,
         url: String,

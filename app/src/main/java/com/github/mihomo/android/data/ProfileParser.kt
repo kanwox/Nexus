@@ -67,9 +67,12 @@ object ProfileParser {
                 it.file.name == file.name || it.file.absolutePath == file.absolutePath || it.id == file.nameWithoutExtension
             }
         } else null
-        val scriptKey = if (activeProfile != null && activeProfile.scriptEnabled) {
-            activeProfile.scriptIds.sorted().joinToString(",")
-        } else ""
+        val resolvedScriptIds = if (context != null && activeProfile != null && activeProfile.scriptEnabled) {
+            activeProfile.scriptIds.ifEmpty {
+                ScriptManager.getScripts(context).filter { it.enabled }.map { it.id }
+            }
+        } else emptyList()
+        val scriptKey = resolvedScriptIds.sorted().joinToString(",")
 
         val cached = parsedCache[path]
         if (cached?.isValid(lm, len, savedHash, scriptKey) == true) {
@@ -78,15 +81,12 @@ object ProfileParser {
 
         var content = file.readText()
         if (context != null) {
-            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled && activeProfile.scriptIds.isNotEmpty()) {
-                activeProfile.scriptIds
-            } else null
-            if (!targetIds.isNullOrEmpty()) {
+            if (resolvedScriptIds.isNotEmpty()) {
                 content = runCatching {
                     ConfigScriptEngine.executeScripts(
                         context = context,
                         rawYaml = content,
-                        targetScriptIds = targetIds,
+                        targetScriptIds = resolvedScriptIds,
                         logToRepo = false
                     )
                 }.getOrElse {

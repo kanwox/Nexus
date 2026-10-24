@@ -10,6 +10,237 @@ object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
     private const val RHINO_TIMEOUT_MS = 5_000L
 
+    data class ScriptPreviewResult(
+        val success: Boolean,
+        val engineName: String,
+        val durationMs: Long,
+        val outputYaml: String,
+        val consoleLogs: List<String>,
+        val errorMessage: String? = null,
+        val beforeProxies: Int = 0,
+        val afterProxies: Int = 0,
+        val beforeGroups: Int = 0,
+        val afterGroups: Int = 0,
+        val beforeRules: Int = 0,
+        val afterRules: Int = 0
+    )
+
+    private val SAMPLE_PREVIEW_YAML = """
+        mixed-port: 7890
+        allow-lan: false
+        mode: rule
+        log-level: info
+        proxies:
+          - name: "🇭🇰 香港 IEPL 01"
+            type: ss
+            server: hk1.example.com
+            port: 8388
+            cipher: aes-256-gcm
+            password: "password"
+          - name: "🇯🇵 日本 BGP 01"
+            type: vless
+            server: jp1.example.com
+            port: 443
+            uuid: "00000000-0000-0000-0000-000000000000"
+          - name: "🇸🇬 新加坡 高速 01"
+            type: trojan
+            server: sg1.example.com
+            port: 443
+            password: "password"
+          - name: "🇺🇸 美国 专线 01"
+            type: hysteria2
+            server: us1.example.com
+            port: 443
+            password: "password"
+        proxy-groups:
+          - name: "🚀 节点选择"
+            type: select
+            proxies:
+              - "♻️ 自动选择"
+              - "🇭🇰 香港 IEPL 01"
+              - "🇯🇵 日本 BGP 01"
+              - "🇸🇬 新加坡 高速 01"
+              - "🇺🇸 美国 专线 01"
+              - DIRECT
+          - name: "♻️ 自动选择"
+            type: url-test
+            url: "http://www.gstatic.com/generate_204"
+            interval: 300
+            proxies:
+              - "🇭🇰 香港 IEPL 01"
+              - "🇯🇵 日本 BGP 01"
+              - "🇸🇬 新加坡 高速 01"
+              - "🇺🇸 美国 专线 01"
+        rules:
+          - DOMAIN-SUFFIX,google.com,🚀 节点选择
+          - DOMAIN-KEYWORD,github,🚀 节点选择
+          - GEOIP,CN,DIRECT
+          - MATCH,🚀 节点选择
+    """.trimIndent()
+
+    private fun countMapStats(map: Map<*, *>?): Triple<Int, Int, Int> {
+        if (map == null) return Triple(0, 0, 0)
+        val proxies = (map["proxies"] ?: map["Proxy"] ?: map["Proxies"]) as? List<*>
+        val groups = (map["proxy-groups"] ?: map["Proxy Group"]) as? List<*>
+        val rules = (map["rules"] ?: map["Rule"]) as? List<*>
+        return Triple(proxies?.size ?: 0, groups?.size ?: 0, rules?.size ?: 0)
+    }
+
+    /**
+     * Execute a single script in sandbox preview mode against [rawYaml] (or fallback sample config),
+     * capturing console output, structural diffs (nodes/groups/rules), execution time, and output YAML.
+     */
+    fun previewScript(
+        rawYaml: String,
+        code: String,
+        scriptName: String = "preview.js"
+    ): ScriptPreviewResult {
+        val startMs = System.currentTimeMillis()
+        val effectiveInputYaml = rawYaml.takeIf { it.isNotBlank() } ?: SAMPLE_PREVIEW_YAML
+        val dumperOptions = org.yaml.snakeyaml.DumperOptions().apply {
+            defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
+            isPrettyFlow = true
+            indent = 2
+        }
+        val yamlParser = Yaml(dumperOptions)
+        val gson = GsonBuilder()
+            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
+            .setPrettyPrinting()
+            .create()
+
+        val baseMap = runCatching { yamlParser.load<Any>(effectiveInputYaml) as? Map<*, *> }.getOrNull()
+        val (beforeP, beforeG, beforeR) = countMapStats(baseMap)
+        val logs = mutableListOf<String>()
+
+        if (code.isBlank()) {
+            return ScriptPreviewResult(
+                success = false,
+                engineName = "None",
+                durationMs = 0L,
+                outputYaml = effectiveInputYaml,
+                consoleLogs = listOf("[WARN] 脚本内容为空"),
+                errorMessage = "脚本代码不能为空",
+                beforeProxies = beforeP,
+                afterProxies = beforeP,
+                beforeGroups = beforeG,
+                afterGroups = beforeG,
+                beforeRules = beforeR,
+                afterRules = beforeR
+            )
+        }
+
+        return try {
+            val isJs = code.contains("main") ||
+                code.contains("module.exports") ||
+                code.contains("export default") ||
+                code.contains("function") ||
+                code.contains("=>")
+
+            if (isJs) {
+                if (baseMap == null) {
+                    throw IllegalArgumentException("输入配置不是合法的 YAML 格式")
+                }
+                val jsonStr = gson.toJson(baseMap)
+                var engineUsed = "QuickJS (ES2020)"
+                val resultJson: String? = try {
+                    executeWithQuickJS(code, jsonStr, scriptName, gson, logs)
+                } catch (qjsErr: Throwable) {
+                    logs.add("[INFO] QuickJS 切换至 Rhino 兼容引擎: ${qjsErr.message}")
+                    engineUsed = "Rhino (ES6)"
+                    try {
+                        executeWithRhino(code, jsonStr, scriptName, gson, logs)
+                    } catch (rhinoErr: Throwable) {
+                        throw Exception(rhinoErr.message ?: qjsErr.message ?: "语法或运行时错误")
+                    }
+                }
+
+                val finalMap = LinkedHashMap<String, Any?>()
+                for ((k, v) in baseMap) {
+                    if (k != null) finalMap[k.toString()] = v
+                }
+                if (!resultJson.isNullOrBlank() && resultJson != "undefined" && resultJson != "null") {
+                    val modifiedMap = gson.fromJson(resultJson, Map::class.java) as? Map<*, *>
+                    if (modifiedMap != null && modifiedMap.isNotEmpty()) {
+                        for ((k, v) in modifiedMap) {
+                            if (k != null) finalMap[k.toString()] = v
+                        }
+                    }
+                }
+                val normalized = normalizeYamlData(finalMap) as? Map<*, *>
+                val (afterP, afterG, afterR) = countMapStats(normalized)
+                val outYaml = yamlParser.dump(normalized ?: finalMap)
+                val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                logs.add(0, "[OK] 使用 $engineUsed 执行完成 (${elapsed}ms)")
+                ScriptPreviewResult(
+                    success = true,
+                    engineName = engineUsed,
+                    durationMs = elapsed,
+                    outputYaml = outYaml,
+                    consoleLogs = logs,
+                    beforeProxies = beforeP,
+                    afterProxies = afterP,
+                    beforeGroups = beforeG,
+                    afterGroups = afterG,
+                    beforeRules = beforeR,
+                    afterRules = afterR
+                )
+            } else {
+                val snippetMap = runCatching { yamlParser.load<Any>(code) as? Map<*, *> }.getOrNull()
+                    ?: throw IllegalArgumentException("未检测到 main(config) 函数，且内容不是有效的 YAML 键值对片段")
+                val mergedMap = LinkedHashMap<String, Any?>()
+                if (baseMap != null) {
+                    for ((k, v) in baseMap) {
+                        if (k != null) mergedMap[k.toString()] = v
+                    }
+                }
+                for ((k, v) in snippetMap) {
+                    val kStr = k?.toString() ?: continue
+                    val baseVal = mergedMap[kStr]
+                    if (baseVal is List<*> && v is List<*>) {
+                        mergedMap[kStr] = (baseVal + v).distinct()
+                    } else {
+                        mergedMap[kStr] = v
+                    }
+                }
+                val normalized = normalizeYamlData(mergedMap) as? Map<*, *>
+                val (afterP, afterG, afterR) = countMapStats(normalized)
+                val outYaml = yamlParser.dump(normalized ?: mergedMap)
+                val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+                logs.add("[OK] YAML 覆写片段合并完成 (${elapsed}ms)")
+                ScriptPreviewResult(
+                    success = true,
+                    engineName = "YAML Merge",
+                    durationMs = elapsed,
+                    outputYaml = outYaml,
+                    consoleLogs = logs,
+                    beforeProxies = beforeP,
+                    afterProxies = afterP,
+                    beforeGroups = beforeG,
+                    afterGroups = afterG,
+                    beforeRules = beforeR,
+                    afterRules = afterR
+                )
+            }
+        } catch (e: Throwable) {
+            val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            logs.add("[ERROR] ${e.message ?: e.javaClass.simpleName}")
+            ScriptPreviewResult(
+                success = false,
+                engineName = "Error",
+                durationMs = elapsed,
+                outputYaml = effectiveInputYaml,
+                consoleLogs = logs,
+                errorMessage = e.message ?: "脚本运行异常",
+                beforeProxies = beforeP,
+                afterProxies = beforeP,
+                beforeGroups = beforeG,
+                afterGroups = beforeG,
+                beforeRules = beforeR,
+                afterRules = beforeR
+            )
+        }
+    }
+
     fun executeScripts(
         context: Context,
         rawYaml: String,
@@ -133,22 +364,42 @@ object ConfigScriptEngine {
         return currentYaml
     }
 
-    private fun executeWithQuickJS(code: String, jsonStr: String, scriptName: String, gson: Gson): String? {
+    private fun executeWithQuickJS(
+        code: String,
+        jsonStr: String,
+        scriptName: String,
+        gson: Gson,
+        logSink: MutableList<String>? = null
+    ): String? {
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
         val future = executor.submit<String?> {
             val quickJS = com.quickjs.QuickJS.createRuntime()
             val jsContext = quickJS.createContext()
             try {
                 val envPolyfill = """
+                    var __logs = [];
+                    function __ pushLog(level, args) {
+                        if (__logs.length >= 100) return;
+                        var parts = [];
+                        for (var i = 0; i < args.length; i++) {
+                            var a = args[i];
+                            if (typeof a === 'object' && a !== null) {
+                                try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
+                            } else {
+                                parts.push(String(a));
+                            }
+                        }
+                        __logs.push('[' + level + '] ' + parts.join(' '));
+                    }
                     var console = {
-                        log: function() {},
-                        info: function() {},
-                        warn: function() {},
-                        error: function() {}
+                        log: function() { __pushLog('LOG', arguments); },
+                        info: function() { __pushLog('INFO', arguments); },
+                        warn: function() { __pushLog('WARN', arguments); },
+                        error: function() { __pushLog('ERROR', arguments); }
                     };
                     var module = { exports: {} };
                     var exports = module.exports;
-                """.trimIndent()
+                """.trimIndent().replace("function __ pushLog", "function __pushLog")
                 jsContext.executeVoidScript(envPolyfill, "polyfill.js")
                 jsContext.executeVoidScript(code, scriptName)
 
@@ -185,7 +436,17 @@ object ConfigScriptEngine {
                         return JSON.stringify(__res);
                     })();
                 """.trimIndent()
-                jsContext.executeStringScript(runnerCode, "runner.js")
+                val res = jsContext.executeStringScript(runnerCode, "runner.js")
+                if (logSink != null) {
+                    runCatching {
+                        val logsJson = jsContext.executeStringScript("JSON.stringify(__logs);", "logs.js")
+                        val parsedLogs = gson.fromJson(logsJson, Array<String>::class.java)
+                        if (parsedLogs != null) {
+                            logSink.addAll(parsedLogs)
+                        }
+                    }
+                }
+                res
             } finally {
                 try { jsContext.close() } catch (_: Throwable) {}
                 try { quickJS.close() } catch (_: Throwable) {}
@@ -210,7 +471,13 @@ object ConfigScriptEngine {
      * pulled from remote subscriptions, so an unrestricted bridge here is remote code execution.
      * A ContextFactory-based instruction observer also bounds runaway scripts.
      */
-    internal fun executeWithRhino(code: String, jsonStr: String, scriptName: String, gson: Gson): String? {
+    internal fun executeWithRhino(
+        code: String,
+        jsonStr: String,
+        scriptName: String,
+        gson: Gson,
+        logSink: MutableList<String>? = null
+    ): String? {
         val deadline = System.currentTimeMillis() + RHINO_TIMEOUT_MS
         val factory = object : org.mozilla.javascript.ContextFactory() {
             override fun observeInstructionCount(cx: org.mozilla.javascript.Context, instructionCount: Int) {
@@ -228,11 +495,25 @@ object ConfigScriptEngine {
 
             val scope = rhinoCtx.initSafeStandardObjects()
             val envPolyfill = """
+                var __logs = [];
+                function __pushLog(level, args) {
+                    if (__logs.length >= 100) return;
+                    var parts = [];
+                    for (var i = 0; i < args.length; i++) {
+                        var a = args[i];
+                        if (typeof a === 'object' && a !== null) {
+                            try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
+                        } else {
+                            parts.push(String(a));
+                        }
+                    }
+                    __logs.push('[' + level + '] ' + parts.join(' '));
+                }
                 var console = {
-                    log: function() {},
-                    info: function() {},
-                    warn: function() {},
-                    error: function() {}
+                    log: function() { __pushLog('LOG', arguments); },
+                    info: function() { __pushLog('INFO', arguments); },
+                    warn: function() { __pushLog('WARN', arguments); },
+                    error: function() { __pushLog('ERROR', arguments); }
                 };
                 var module = { exports: {} };
                 var exports = module.exports;
@@ -273,6 +554,18 @@ object ConfigScriptEngine {
                 })();
             """.trimIndent()
             val resultObj = rhinoCtx.evaluateString(scope, runnerCode, "runner.js", 1, null)
+            if (logSink != null) {
+                runCatching {
+                    val logsObj = rhinoCtx.evaluateString(scope, "JSON.stringify(__logs);", "logs.js", 1, null)
+                    if (logsObj != null) {
+                        val logsJson = org.mozilla.javascript.Context.toString(logsObj)
+                        val parsedLogs = gson.fromJson(logsJson, Array<String>::class.java)
+                        if (parsedLogs != null) {
+                            logSink.addAll(parsedLogs)
+                        }
+                    }
+                }
+            }
             if (resultObj != null) org.mozilla.javascript.Context.toString(resultObj) else null
         }
     }

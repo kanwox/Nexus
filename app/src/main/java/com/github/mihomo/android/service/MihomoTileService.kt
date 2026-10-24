@@ -11,6 +11,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @RequiresApi(Build.VERSION_CODES.N)
@@ -22,9 +24,12 @@ class MihomoTileService : TileService() {
         super.onStartListening()
         stateJob?.cancel()
         stateJob = scope.launch {
-            MihomoVpnService.vpnState.collectLatest { state ->
-                updateTileState(state.status)
-            }
+            MihomoVpnService.vpnState
+                .map { it.status }
+                .distinctUntilChanged()
+                .collectLatest { status ->
+                    updateTileState(status)
+                }
         }
     }
 

@@ -121,6 +121,25 @@ fun DnsScreen(
                 }
             }
 
+            item {
+                CupertinoGroupedSection(
+                    header = "解析模式",
+                    footer = if (fakeIpEnabled) "Fake-IP 模式可加速 DNS 响应并有效防止 DNS 污染。" else "当前使用 Redir-Host 真实 IP 解析模式。"
+                ) {
+                    CupertinoCell(
+                        title = "Fake-IP 增强模式",
+                        subtitle = "198.18.0.1/16",
+                        showChevron = false,
+                        trailing = {
+                            CupertinoSwitch(
+                                checked = fakeIpEnabled,
+                                onCheckedChange = { onFakeIpEnabledChanged(it) }
+                            )
+                        }
+                    )
+                }
+            }
+
             if (filteredRecords.isEmpty()) {
                 item {
                     Box(

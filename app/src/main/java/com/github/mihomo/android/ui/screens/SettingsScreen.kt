@@ -94,19 +94,25 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(LoonBg)
             .statusBarsPadding()
-            .padding(top = 10.dp)
     ) {
-        // iOS Large Title Header
-        Text(
-            text = AppStrings.get("settings_title", lang),
-            color = LoonTextPrimary,
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = (-0.6).sp,
+        // iOS Large Title Header (Unified position & typography with ProxiesScreen)
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        )
+                .padding(horizontal = 20.dp)
+                .padding(top = 20.dp, bottom = 12.dp)
+                .heightIn(min = 40.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = AppStrings.get("settings_title", lang),
+                color = LoonTextPrimary,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.6).sp
+            )
+        }
 
         // Scrollable content area
         Column(

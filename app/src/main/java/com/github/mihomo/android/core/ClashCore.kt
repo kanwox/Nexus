@@ -95,10 +95,8 @@ object ClashCore {
             val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
             val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
             val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, activeProfile?.file)
-            val res = load(configFile)
+            val res = load(configFile, activeProfile?.id)
             if (res.isSuccess) {
-                isCoreLoaded = true
-                loadedProfileId = activeProfile?.id
                 runCatching {
                     val allSaved = settings.getAllSelectedNodes()
                     allSaved.forEach { (gName, sNode) ->
@@ -131,7 +129,7 @@ object ClashCore {
         }
     }
 
-    suspend fun load(configFile: File): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val deferred = CompletableDeferred<Unit>()
             val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
@@ -139,7 +137,17 @@ object ClashCore {
             Bridge.nativeLoad(deferred, configDir)
             withTimeout(LOAD_TIMEOUT_MS) { deferred.await() }
             isCoreLoaded = true
+            if (profileId != null) {
+                loadedProfileId = profileId
+            }
             Unit
+        }
+    }
+
+    fun setSuspended(suspended: Boolean) {
+        if (!initialized) return
+        runCatching {
+            Bridge.nativeSuspend(suspended)
         }
     }
 

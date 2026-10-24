@@ -18,7 +18,7 @@ data class LogEntry(
 object LogRepository {
     private const val MAX_LOGS = 1000
     private val nextId = AtomicLong(1)
-    private val logList = mutableListOf<LogEntry>()
+    private val logList = ArrayDeque<LogEntry>(MAX_LOGS)
     private val _logsFlow = MutableStateFlow<List<LogEntry>>(emptyList())
     val logsFlow: StateFlow<List<LogEntry>> = _logsFlow.asStateFlow()
 
@@ -44,10 +44,10 @@ object LogRepository {
             level = level.lowercase(),
             message = message
         )
-        logList.add(entry)
-        if (logList.size > MAX_LOGS) {
-            logList.removeAt(0)
+        if (logList.size >= MAX_LOGS) {
+            logList.removeFirst()
         }
+        logList.addLast(entry)
         _logsFlow.value = logList.toList()
         runCatching {
             DnsRepository.parseFromLog(message)
