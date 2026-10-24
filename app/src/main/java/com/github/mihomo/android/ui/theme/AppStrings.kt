@@ -329,8 +329,8 @@ object AppStrings {
         "tile_disconnecting" to "断开中…",
         "tile_disconnected" to "已断开",
         "settings_font" to "界面字体",
-        "font_system" to "系统默认 (Roboto / Noto Sans)",
-        "font_ios" to "SF Pro / 苹方 (PingFang SC)",
+        "font_system" to "系统默认",
+        "font_ios" to "苹方",
         "font_updated" to "字体样式已更新"
     )
 
@@ -420,8 +420,8 @@ object AppStrings {
         "tile_disconnecting" to "Disconnecting…",
         "tile_disconnected" to "Disconnected",
         "settings_font" to "Typography & Font",
-        "font_system" to "System Default (Roboto / Noto Sans)",
-        "font_ios" to "SF Pro / PingFang SC",
+        "font_system" to "System Default",
+        "font_ios" to "SF Pro",
         "font_updated" to "Font updated"
     )
 
@@ -494,8 +494,8 @@ object AppStrings {
         "tile_disconnecting" to "Отключение…",
         "tile_disconnected" to "Отключено",
         "settings_font" to "Шрифт интерфейса",
-        "font_system" to "Системный (Roboto / Noto Sans)",
-        "font_ios" to "SF Pro / PingFang SC",
+        "font_system" to "Системный",
+        "font_ios" to "SF Pro",
         "font_updated" to "Шрифт обновлён"
     )
 
