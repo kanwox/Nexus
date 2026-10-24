@@ -76,4 +76,104 @@ class ConfigScriptEngineTest {
         assertTrue(result.outputYaml.contains("MATCH,DIRECT"))
         assertTrue(result.outputYaml.contains("example.com"))
     }
+
+    // ----------------------------------------------------------------------
+    // Real-engine tests. The unit-test classpath substitutes quickjs-kt-jvm
+    // (see app/build.gradle.kts), so these execute actual JavaScript.
+    // ----------------------------------------------------------------------
+
+    private val sampleYaml = """
+        proxies:
+          - name: "node-1"
+            type: ss
+            server: s1.example.com
+            port: 8388
+          - name: "node-2"
+            type: ss
+            server: s2.example.com
+            port: 8388
+        proxy-groups:
+          - name: "select"
+            type: select
+            proxies:
+              - "node-1"
+              - "node-2"
+        rules:
+          - MATCH,DIRECT
+    """.trimIndent()
+
+    @Test
+    fun `JS main function rewrites the config`() {
+        val code = """
+            function main(config) {
+                config.rules = ['MATCH,🚀 节点选择'];
+                return config;
+            }
+        """.trimIndent()
+
+        val result = ConfigScriptEngine.previewScript(rawYaml = sampleYaml, code = code)
+        assertTrue("engine failed: ${result.errorMessage}", result.success)
+        assertEquals("QuickJS (ES2020)", result.engineName)
+        assertTrue(result.outputYaml.contains("MATCH,🚀 节点选择"))
+        // Untouched sections survive the rewrite.
+        assertTrue(result.outputYaml.contains("node-1"))
+        assertEquals(2, result.afterProxies)
+    }
+
+    @Test
+    fun `infinite loop script is interrupted by the engine timeout`() {
+        val originalTimeout = ConfigScriptEngine.scriptTimeoutMs
+        ConfigScriptEngine.scriptTimeoutMs = 1000L
+        try {
+            val start = System.currentTimeMillis()
+            val result = ConfigScriptEngine.previewScript(
+                rawYaml = sampleYaml,
+                code = "function main(config) { while (true) {} }"
+            )
+            val elapsed = System.currentTimeMillis() - start
+            assertFalse(result.success)
+            assertTrue(
+                "expected timeout error, got: ${result.errorMessage}",
+                result.errorMessage?.contains("超时") == true
+            )
+            // The old engine leaked a spinning thread here and the caller blocked forever;
+            // the new engine must return shortly after the timeout.
+            assertTrue("interruption took ${elapsed}ms", elapsed < 15_000L)
+        } finally {
+            ConfigScriptEngine.scriptTimeoutMs = originalTimeout
+        }
+    }
+
+    @Test
+    fun `promise-returning main is reported instead of silently ignored`() {
+        val code = """
+            function main(config) {
+                return Promise.resolve(config);
+            }
+        """.trimIndent()
+
+        val result = ConfigScriptEngine.previewScript(rawYaml = sampleYaml, code = code)
+        assertTrue(result.success)
+        assertTrue(
+            "expected promise warning in logs: ${result.consoleLogs}",
+            result.consoleLogs.any { it.contains("Promise") }
+        )
+    }
+
+    @Test
+    fun `console output is captured into preview logs`() {
+        val code = """
+            function main(config) {
+                console.log('rewriting', config.proxies.length, 'proxies');
+                return config;
+            }
+        """.trimIndent()
+
+        val result = ConfigScriptEngine.previewScript(rawYaml = sampleYaml, code = code)
+        assertTrue(result.success)
+        assertTrue(
+            "expected console log: ${result.consoleLogs}",
+            result.consoleLogs.any { it.contains("[LOG]") && it.contains("rewriting") }
+        )
+    }
 }

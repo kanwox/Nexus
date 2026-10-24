@@ -28,11 +28,12 @@
 -keep class * implements com.github.kr328.clash.core.bridge.FetchCallback { *; }
 -keep class * implements com.github.kr328.clash.core.bridge.LogcatInterface { *; }
 
-# QuickJS JNI engine
--keep class com.quickjs.** { *; }
+# QuickJS JNI engine (quickjs-kt; JNI-registered natives and JS-facing bindings)
+-keep class com.dokar.quickjs.** { *; }
+-dontwarn com.dokar.quickjs.**
 
 # ---------------------------------------------------------------------------
-# Data Models & Serialization (kotlinx.serialization / Gson)
+# Data Models & Serialization (kotlinx.serialization)
 # ---------------------------------------------------------------------------
 -dontnote kotlinx.serialization.**
 -keep class com.github.kr328.clash.core.model.** { *; }
@@ -48,15 +49,11 @@
 }
 
 # ---------------------------------------------------------------------------
-# Scripting Engine & Third-Party Libraries
+# Third-Party Libraries
 # ---------------------------------------------------------------------------
-# Mozilla Rhino JS engine (invoked reflectively)
--dontwarn org.mozilla.javascript.**
--keep class org.mozilla.javascript.** { *; }
-
-# SnakeYAML / Gson / OkHttp / Okio / SLF4J
+# SnakeYAML / OkHttp / Okio / SLF4J / kotlinx-coroutines
 -dontwarn org.yaml.snakeyaml.**
--dontwarn com.google.gson.**
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn org.slf4j.**
+-dontwarn kotlinx.coroutines.**

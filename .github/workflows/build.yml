@@ -37,7 +37,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # detekt is configured with maxIssues: 0, so this gate is meaningful.
+      # detekt fails the build on any issue (ignoreFailures = false in app/build.gradle.kts),
+      # so this gate is meaningful.
       - name: Static analysis (detekt)
         run: ./gradlew detekt --no-configuration-cache
 
@@ -52,12 +53,8 @@ jobs:
           mkdir -p build_output
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             cp app/build/outputs/apk/release/app-release.apk build_output/Nexus-arm64-v8a-release.apk
-          elif [ -f app/build/outputs/apk/release/nexus-release.apk ]; then
-            cp app/build/outputs/apk/release/nexus-release.apk build_output/Nexus-arm64-v8a-release.apk
           elif [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk build_output/Nexus-arm64-v8a-debug.apk
-          elif [ -f app/build/outputs/apk/debug/nexus-debug.apk ]; then
-            cp app/build/outputs/apk/debug/nexus-debug.apk build_output/Nexus-arm64-v8a-debug.apk
           else
             find app/build/outputs/apk -name "*.apk" -exec cp {} build_output/ \;
           fi
@@ -81,8 +78,15 @@ jobs:
           fi
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "RELEASE_TITLE=Nexus $TAG" >> "$GITHUB_ENV"
+          # Any tag carrying a pre-release marker is published as a GitHub pre-release.
+          if echo "$TAG" | grep -qiE -- '-(alpha|beta|rc|preview|canary|dev)([.#0-9-]|$)'; then
+            echo "RELEASE_IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
 
-      # Publishes a new release corresponding to the version tag (e.g. v1.0.1-Beta.2)
+      # Publishes the APK as a GitHub release for the version tag. Tags with a pre-release
+      # marker (v1.0.4-Alpha.1, v1.0.1-Beta.2, v2.0.0-RC1, …) are marked as pre-releases.
       - name: Publish Automatic Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
@@ -90,26 +94,32 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
-            ### Changes in v1.0.3
+            ### Changes in v1.0.4-Alpha.1
 
-            #### Changed
-            - Upgraded Mihomo core to v1.19.33 (compiled with Go 1.27 and NDK 29; binary stripped to 56 MB).
-            - Simplified DNS settings to Fake-IP mode and IPv6 resolution toggles.
-            - Standardized font selection labels in Appearance settings to System Default and SF Pro.
-            - Adjusted primary screen top padding to 8 dp in accordance with iOS navigation standards.
-            - Restricted haptic feedback exclusively to bottom navigation and VPN toggle events.
-            - Reorganized dashboard shortcuts into a balanced 8-item grid.
+            #### Security
+            - Pinned SHA-256 fingerprints for config rewrite scripts. Scripts are verified before auto-execution and skipped with a warning if the on-disk content or a re-downloaded remote payload no longer matches what was saved.
+            - Replaced the unmaintained QuickJS engine with quickjs-kt. Script timeouts are now enforced by a native interrupt handler, so an infinite-loop script is terminated cleanly instead of leaking a spinning thread and unbounded memory.
+            - Subscription and script URLs are redacted in logs and error messages (tokens stripped), and link-local (cloud metadata) targets are rejected.
+            - Subscription and script downloads are size-capped (20 MB / 5 MB) with a total call timeout, and written atomically — a failed or oversized download can no longer destroy the working profile.
+            - Improved JS/YAML script detection: YAML containing words like "maintain" is no longer misrouted into the JS engine.
 
             #### Fixed
-            - Fixed domain resolution capture in request logs for newer Mihomo log formats.
-            - Fixed UDP resolution tracking in connection monitoring.
-            - Resolved Android 15 edge-to-edge status bar and Compose lifecycle deprecation warnings.
+            - Fixed a VPN stop/start race that could leave a ghost TUN interface, leak its file descriptor, and stick the state on RUNNING.
+            - Fixed a foreground-service crash when tapping Start during a stop sequence (the start is now queued and honored after teardown).
+            - Profile metadata is written atomically with a backup copy; a corrupted store is recovered instead of silently wiping all subscription metadata.
+            - Bounded the DNS domain→IP cache (memory no longer grows indefinitely on long VPN sessions) and stopped polluting the DNS list with synthetic fake-IP entries from connection logs.
+            - Fixed list keys causing full node-list rebuilds while searching or delay-sorting; fixed the segmented control wrongly highlighting the first item when the saved selection is no longer in the list.
+            - No update prompt when the installed version cannot be determined.
 
-            #### Removed
-            - Removed manual DNS server editor and presets from DNS settings.
-            - Removed Core Logs shortcut from dashboard.
+            #### Changed
+            - The speed-test engine now lives in a ViewModel: rotating the screen no longer cancels in-flight group tests or wipes measured delays.
+            - Once-per-second traffic updates no longer recompose the whole UI; recomposition is scoped to the traffic cards and collection is lifecycle-aware.
+            - Speed-test results are applied in batches (one recomposition per frame instead of one per node).
+            - Geo databases are extracted on a background thread at first launch.
+            - Upgraded Kotlin 2.1.0 → 2.4.10.
+            - R8 keep rules prepared for a future minified release; shrinking stays off until verified on a real device.
           draft: false
-          prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'Beta') || contains(env.RELEASE_TAG, 'rc') || contains(env.RELEASE_TAG, 'alpha') }}
+          prerelease: ${{ env.RELEASE_IS_PRERELEASE == 'true' }}
           files: build_output/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

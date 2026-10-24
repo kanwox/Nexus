@@ -2,6 +2,12 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import android.util.Log
+import com.dokar.quickjs.QuickJs
+import com.dokar.quickjs.QuickJsInterruptedException
+import com.dokar.quickjs.binding.define
+import com.dokar.quickjs.binding.function
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -484,43 +490,44 @@ object ConfigScriptEngine {
         return currentYaml
     }
 
+    /** Overridable in tests so the infinite-loop interruption test stays fast. */
+    internal var scriptTimeoutMs: Long = SCRIPT_TIMEOUT_MS
+
+    private fun consoleArgToString(a: Any?): String = when (a) {
+        null -> "null"
+        is String -> a
+        is Map<*, *> -> a.entries.joinToString(", ", "{", "}") { "\"${it.key}\":${consoleArgToString(it.value)}" }
+        is List<*> -> a.joinToString(", ", "[", "]") { consoleArgToString(it) }
+        else -> a.toString()
+    }
+
+    private fun pushConsoleLog(sink: MutableList<String>, level: String, args: Array<Any?>) {
+        if (sink.size >= 100) return
+        sink.add("[$level] ${args.joinToString(" ") { consoleArgToString(it) }}")
+    }
+
     private fun executeWithQuickJS(
         code: String,
         jsonStr: String,
         scriptName: String,
         logSink: MutableList<String>? = null
     ): String? {
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        val future = executor.submit<String?> {
-            val quickJS = com.quickjs.QuickJS.createRuntime()
-            val jsContext = quickJS.createContext()
+        val logs = logSink ?: mutableListOf()
+        return runBlocking {
+            val quickJs = QuickJs.create(Dispatchers.Default)
             try {
-                val envPolyfill = """
-                    var __logs = [];
-                    function __pushLog(level, args) {
-                        if (__logs.length >= 100) return;
-                        var parts = [];
-                        for (var i = 0; i < args.length; i++) {
-                            var a = args[i];
-                            if (typeof a === 'object' && a !== null) {
-                                try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
-                            } else {
-                                parts.push(String(a));
-                            }
-                        }
-                        __logs.push('[' + level + '] ' + parts.join(' '));
-                    }
-                    var console = {
-                        log: function() { __pushLog('LOG', arguments); },
-                        info: function() { __pushLog('INFO', arguments); },
-                        warn: function() { __pushLog('WARN', arguments); },
-                        error: function() { __pushLog('ERROR', arguments); }
-                    };
-                    var module = { exports: {} };
-                    var exports = module.exports;
-                """.trimIndent()
-                jsContext.executeVoidScript(envPolyfill, "polyfill.js")
-                jsContext.executeVoidScript(code, scriptName)
+                // Engine-enforced interrupt: unlike a Java thread interrupt, this stops even
+                // a native `while (true) {}` spin loop, so a runaway script can no longer
+                // leak a spinning thread and its runtime memory past the timeout.
+                quickJs.evaluationTimeoutMillis = scriptTimeoutMs
+                quickJs.define("console") {
+                    function("log") { args -> pushConsoleLog(logs, "LOG", args) }
+                    function("info") { args -> pushConsoleLog(logs, "INFO", args) }
+                    function("warn") { args -> pushConsoleLog(logs, "WARN", args) }
+                    function("error") { args -> pushConsoleLog(logs, "ERROR", args) }
+                }
+                quickJs.evaluate<Unit>("var module = { exports: {} }; var exports = module.exports;")
+                quickJs.evaluate<Unit>(code)
 
                 val escapedJson = jsonToJsStringLiteral(jsonStr)
                 val runnerCode = """
@@ -557,38 +564,20 @@ object ConfigScriptEngine {
                         return JSON.stringify(__res);
                     })();
                 """.trimIndent()
-                val res = jsContext.executeStringScript(runnerCode, "runner.js")
+                val res = quickJs.evaluate<String>(runnerCode)
                 val promiseDropped = runCatching {
-                    jsContext.executeStringScript("__promiseDropped === true ? '1' : '0'", "flag.js") == "1"
+                    quickJs.evaluate<String>("__promiseDropped === true ? '1' : '0'") == "1"
                 }.getOrDefault(false)
                 if (promiseDropped) {
                     Log.w(TAG, "Script $scriptName returned a Promise; async main() is not supported and the rewrite was discarded")
                     logSink?.add("[WARN] main() 返回了 Promise（异步脚本不支持），本次改写未生效")
                 }
-                if (logSink != null) {
-                    runCatching {
-                        val logsJson = jsContext.executeStringScript("JSON.stringify(__logs);", "logs.js")
-                        val parsedLogs = scriptJson.parseToJsonElement(logsJson) as? JsonArray
-                        if (parsedLogs != null) {
-                            logSink.addAll(parsedLogs.map { it.jsonPrimitive.content })
-                        }
-                    }
-                }
                 res
+            } catch (e: QuickJsInterruptedException) {
+                throw RuntimeException("脚本执行超时（超过 ${scriptTimeoutMs / 1000}s）")
             } finally {
-                try { jsContext.close() } catch (_: Throwable) {}
-                try { quickJS.close() } catch (_: Throwable) {}
+                runCatching { quickJs.close() }
             }
-        }
-        return try {
-            future.get(SCRIPT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
-        } catch (_: java.util.concurrent.TimeoutException) {
-            future.cancel(true)
-            throw RuntimeException("脚本执行超时（超过 ${SCRIPT_TIMEOUT_MS / 1000}s）")
-        } catch (e: java.util.concurrent.ExecutionException) {
-            throw (e.cause ?: e)
-        } finally {
-            executor.shutdownNow()
         }
     }
 

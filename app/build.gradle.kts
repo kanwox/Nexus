@@ -33,8 +33,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.0.3"
+        versionCode = 11
+        versionName = "1.0.4-Alpha.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -56,8 +56,11 @@ android {
 
     buildTypes {
         release {
-            // R8 shrinking/obfuscation stays off: it crashes on startup with the native core
-            // (verified on device). Keep rules are kept in proguard-rules.pro for reference.
+            // R8 shrinking/obfuscation stays off: it crashed on startup with the native core
+            // when last tried on device. The keep rules in proguard-rules.pro are kept ready
+            // (native bridge callbacks, quickjs-kt, kotlinx.serialization). To re-enable:
+            // flip both flags below, assemble a release APK and smoke-test on a REAL device —
+            // an x86_64 emulator cannot run the arm64-only Go core, so it cannot verify this.
             isMinifyEnabled = false
             isShrinkResources = false
             if (hasReleaseSigning) {
@@ -125,7 +128,10 @@ dependencies {
     // Network & Config
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.yaml:snakeyaml:2.2")
-    implementation("io.github.taoweiji.quickjs:quickjs-android:1.4.6")
+    // Maintained QuickJS binding; unlike the previous engine it supports interrupting
+    // native evaluation (evaluationTimeoutMillis), so an infinite-loop script can no longer
+    // leak a spinning thread past its timeout.
+    implementation("io.github.dokar3:quickjs-kt-android:1.0.15")
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.5")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.5")
@@ -135,6 +141,16 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:core:1.6.1")
+}
+
+// The Android artifact's native library cannot load on the desktop JVM, so local unit
+// tests substitute the JVM variant of the same version (see ConfigScriptEngineTest for
+// real-engine tests, including the infinite-loop interruption).
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("io.github.dokar3:quickjs-kt-android"))
+            .using(module("io.github.dokar3:quickjs-kt-jvm:1.0.15"))
+    }
 }
 
 detekt {
