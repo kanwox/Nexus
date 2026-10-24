@@ -193,6 +193,7 @@ class MainActivity : ComponentActivity() {
         var proxiesViewMode by remember { mutableStateOf(settingsManager.proxiesViewMode) }
         var showGroupIcons by remember { mutableStateOf(settingsManager.showGroupIcons) }
         var nodeColumns by remember { mutableIntStateOf(settingsManager.nodeColumns) }
+        var nodeSortMode by remember { mutableStateOf(settingsManager.nodeSortMode) }
         var scriptingEnabled by remember { mutableStateOf(settingsManager.scriptingEnabled) }
         var rewriteEnabled by remember { mutableStateOf(settingsManager.rewriteEnabled) }
 
@@ -792,6 +793,7 @@ class MainActivity : ComponentActivity() {
                             currentViewMode = proxiesViewMode,
                             showGroupIcons = showGroupIcons,
                             nodeColumns = nodeColumns,
+                            nodeSortMode = nodeSortMode,
                             tabsListState = proxiesTabsListState,
                             listModeState = proxiesListModeState,
                             groupRowState = proxiesGroupRowState,
@@ -808,6 +810,10 @@ class MainActivity : ComponentActivity() {
                             onNodeColumnsChanged = { cols ->
                                 nodeColumns = cols
                                 settingsManager.nodeColumns = cols
+                            },
+                            onNodeSortModeChanged = { sortMode ->
+                                nodeSortMode = sortMode
+                                settingsManager.nodeSortMode = sortMode
                             },
                             onSelectGroup = { gName ->
                                 selectedGroupName = gName

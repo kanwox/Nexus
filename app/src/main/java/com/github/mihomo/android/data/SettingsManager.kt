@@ -125,6 +125,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getInt("node_columns", 1)
         set(value) = prefs.edit().putInt("node_columns", value.coerceIn(1, 3)).apply()
 
+    var nodeSortMode: String
+        get() = prefs.getString("node_sort_mode", "DEFAULT") ?: "DEFAULT"
+        set(value) = prefs.edit().putString("node_sort_mode", value).apply()
+
     var logLevel: String
         get() = prefs.getString("core_log_level", "info") ?: "info"
         set(value) = prefs.edit().putString("core_log_level", value).apply()
