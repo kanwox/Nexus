@@ -12,6 +12,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,11 +33,11 @@ import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-private enum class LogFilter(val label: String) {
-    ALL("全部"),
-    ISSUES("异常"),
-    INFO("信息"),
-    DEBUG("调试")
+private enum class LogFilter(val labelKey: String) {
+    ALL("log_level_all"),
+    ISSUES("log_level_issues"),
+    INFO("log_level_info"),
+    DEBUG("log_level_debug")
 }
 
 /** One log line for copy/export, including the collapse count when a message repeated. */
@@ -60,7 +61,7 @@ fun LogsScreen(
     val lang = LocalAppLanguage.current
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
-    val logs by LogRepository.logsFlow.collectAsState()
+    val logs by LogRepository.logsFlow.collectAsStateWithLifecycle()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(LogFilter.ALL) }
@@ -88,9 +89,9 @@ fun LogsScreen(
                 context.contentResolver.openOutputStream(uri)?.use { out ->
                     out.write(exportText.toByteArray(Charsets.UTF_8))
                 }
-                CupertinoToast.show("已导出 ${entries.size} 条日志")
+                CupertinoToast.show(AppStrings.get("logs_exported_count", lang).replace("{n}", entries.size.toString()))
             }.onFailure {
-                CupertinoToast.show("导出失败: ${it.message}", isDestructive = true)
+                CupertinoToast.show(AppStrings.get("logs_export_failed", lang).replace("{msg}", it.message ?: ""), isDestructive = true)
             }
         }
     }
@@ -145,13 +146,13 @@ fun LogsScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.FilterList,
-                                contentDescription = "日志过滤",
+                                contentDescription = AppStrings.get("logs_filter_desc", lang),
                                 tint = if (selectedFilter != LogFilter.ALL) IosBlue else LoonTextSecondary,
                                 modifier = Modifier.size(20.dp)
                             )
                             if (selectedFilter != LogFilter.ALL) {
                                 Text(
-                                    text = selectedFilter.label,
+                                    text = AppStrings.get(selectedFilter.labelKey, lang),
                                     color = IosBlue,
                                     fontSize = 13.5.sp,
                                     fontWeight = FontWeight.SemiBold
@@ -173,7 +174,7 @@ fun LogsScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "操作",
+                                text = AppStrings.get("action_more", lang),
                                 color = IosBlue,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -201,7 +202,7 @@ fun LogsScreen(
                     CupertinoSearchBar(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = "搜索日志内容、级别或报错"
+                        placeholder = AppStrings.get("logs_search_placeholder", lang)
                     )
                 }
             }
@@ -224,7 +225,7 @@ fun LogsScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "未找到匹配日志" else "暂无核心日志",
+                                text = if (searchQuery.isNotBlank()) AppStrings.get("logs_no_match", lang) else AppStrings.get("logs_none", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 14.sp
                             )
@@ -233,11 +234,11 @@ fun LogsScreen(
                 }
             } else {
                 val sectionHeader = when {
-                    searchQuery.isNotBlank() -> "搜索结果 (${filteredLogs.size})"
-                    selectedFilter == LogFilter.ISSUES -> "异常日志 (${filteredLogs.size})"
-                    selectedFilter == LogFilter.INFO -> "信息日志 (${filteredLogs.size})"
-                    selectedFilter == LogFilter.DEBUG -> "调试日志 (${filteredLogs.size})"
-                    else -> "运行日志 (${filteredLogs.size})"
+                    searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredLogs.size.toString())
+                    selectedFilter == LogFilter.ISSUES -> AppStrings.get("logs_section_issues", lang).replace("{n}", filteredLogs.size.toString())
+                    selectedFilter == LogFilter.INFO -> AppStrings.get("logs_section_info", lang).replace("{n}", filteredLogs.size.toString())
+                    selectedFilter == LogFilter.DEBUG -> AppStrings.get("logs_section_debug", lang).replace("{n}", filteredLogs.size.toString())
+                    else -> AppStrings.get("logs_section_all", lang).replace("{n}", filteredLogs.size.toString())
                 }
                 val displayLogs = filteredLogs.asReversed()
 
@@ -279,7 +280,7 @@ fun LogsScreen(
 
         CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailLog = null },
-            title = "日志详情",
+            title = AppStrings.get("logs_detail_title", lang),
             trailingAction = {
                 Text(
                     text = lvlText,
@@ -299,7 +300,7 @@ fun LogsScreen(
 
                 // Card 1: 发生时间
                 Text(
-                    text = "发生时间",
+                    text = AppStrings.get("logs_time_label", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -322,7 +323,7 @@ fun LogsScreen(
                     if (entry.count > 1) {
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
-                            text = "重复 ×${entry.count} 次",
+                            text = AppStrings.get("logs_repeated", lang).replace("{n}", entry.count.toString()),
                             fontSize = 12.sp,
                             color = LoonTextSecondary
                         )
@@ -333,7 +334,7 @@ fun LogsScreen(
 
                 // Card 2: 完整内容 (带一键复制)
                 Text(
-                    text = "完整内容",
+                    text = AppStrings.get("logs_full_content", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -347,7 +348,7 @@ fun LogsScreen(
                         .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(entry.message))
-                            CupertinoToast.show("已复制日志内容")
+                            CupertinoToast.show(AppStrings.get("logs_content_copied", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
@@ -357,13 +358,13 @@ fun LogsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "轻点复制全文",
+                            text = AppStrings.get("logs_tap_to_copy", lang),
                             fontSize = 12.sp,
                             color = IosBlue
                         )
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "复制",
+                            contentDescription = AppStrings.get("copy_desc", lang),
                             tint = IosBlue,
                             modifier = Modifier.size(15.dp)
                         )
@@ -384,11 +385,11 @@ fun LogsScreen(
     if (showActionSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showActionSheet = false },
-            title = "核心日志操作",
-            message = "当前已产生 ${logs.size} 条日志记录",
+            title = AppStrings.get("logs_actions_title", lang),
+            message = AppStrings.get("logs_count_message", lang).replace("{n}", logs.size.toString()),
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = "复制日志",
+                    text = AppStrings.get("logs_copy", lang),
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
@@ -396,11 +397,11 @@ fun LogsScreen(
                             formatLogLine(log, timeFormat, fullTimeFormat)
                         }
                         clipboardManager.setText(AnnotatedString(exportText))
-                        CupertinoToast.show("已复制 ${filteredLogs.size} 条日志")
+                        CupertinoToast.show(AppStrings.get("logs_copied_count", lang).replace("{n}", filteredLogs.size.toString()))
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "导出日志",
+                    text = AppStrings.get("logs_export", lang),
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
@@ -410,17 +411,17 @@ fun LogsScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "清空日志",
+                    text = AppStrings.get("logs_clear", lang),
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
                         showActionSheet = false
                         LogRepository.clear()
-                        CupertinoToast.show("已清空核心日志", isDestructive = true)
+                        CupertinoToast.show(AppStrings.get("logs_cleared_toast", lang), isDestructive = true)
                     }
                 )
             ),
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
@@ -428,11 +429,11 @@ fun LogsScreen(
     if (showFilterSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showFilterSheet = false },
-            title = "日志级别过滤",
-            message = "当前匹配 ${filteredLogs.size} / ${logs.size} 条日志记录",
+            title = AppStrings.get("logs_filter_title", lang),
+            message = AppStrings.get("logs_filter_message", lang).replace("{a}", filteredLogs.size.toString()).replace("{b}", logs.size.toString()),
             actions = LogFilter.entries.map { filter ->
                 CupertinoActionSheetItem(
-                    text = if (filter == selectedFilter) "${filter.label}  ✓" else filter.label,
+                    text = if (filter == selectedFilter) AppStrings.get(filter.labelKey, lang) + "  ✓" else AppStrings.get(filter.labelKey, lang),
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -440,7 +441,7 @@ fun LogsScreen(
                     }
                 )
             },
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 }

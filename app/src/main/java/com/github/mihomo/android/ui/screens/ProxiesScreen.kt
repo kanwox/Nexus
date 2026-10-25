@@ -40,6 +40,7 @@ fun AnimatedSpeedTestIcon(
     tint: Color = LoonTextPrimary,
     modifier: Modifier = Modifier
 ) {
+    val lang = LocalAppLanguage.current
     if (isTesting) {
         CupertinoActivityIndicator(
             modifier = modifier,
@@ -48,7 +49,7 @@ fun AnimatedSpeedTestIcon(
     } else {
         Icon(
             imageVector = Icons.Default.Bolt,
-            contentDescription = "测速",
+            contentDescription = AppStrings.get("proxies_test", lang),
             tint = tint,
             modifier = modifier
         )
@@ -178,7 +179,7 @@ fun ProxiesScreen(
             ) {
                 Icon(
                     imageVector = Icons.Default.MoreHoriz,
-                    contentDescription = "策略设置",
+                    contentDescription = AppStrings.get("proxies_settings_desc", lang),
                     tint = if (nodeSortMode != "DEFAULT") IosBlue else LoonTextPrimary,
                     modifier = Modifier.size(20.dp)
                 )
@@ -191,7 +192,7 @@ fun ProxiesScreen(
         if (showOptionsMenu) {
             CupertinoModalBottomSheet(
                 onDismissRequest = { showOptionsMenu = false },
-                title = "策略与排版"
+                title = AppStrings.get("proxies_layout_title", lang)
             ) {
                 Column(
                     modifier = Modifier
@@ -199,7 +200,7 @@ fun ProxiesScreen(
                         .padding(top = 4.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    CupertinoGroupedSection(title = "视图布局") {
+                    CupertinoGroupedSection(title = AppStrings.get("proxies_layout_section", lang)) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -208,7 +209,7 @@ fun ProxiesScreen(
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "浏览模式",
+                                    text = AppStrings.get("proxies_view_mode", lang),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
@@ -228,7 +229,7 @@ fun ProxiesScreen(
 
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "节点排版",
+                                    text = AppStrings.get("proxies_columns", lang),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
@@ -239,9 +240,9 @@ fun ProxiesScreen(
                                     onItemSelected = { onNodeColumnsChanged(it) },
                                     labelProvider = {
                                         when (it) {
-                                            1 -> "单列列表"
-                                            2 -> "双列网格"
-                                            else -> "三列紧凑"
+                                            1 -> AppStrings.get("proxies_column_1", lang)
+                                            2 -> AppStrings.get("proxies_column_2", lang)
+                                            else -> AppStrings.get("proxies_column_3", lang)
                                         }
                                     }
                                 )
@@ -251,7 +252,7 @@ fun ProxiesScreen(
 
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
-                                    text = "节点排序",
+                                    text = AppStrings.get("proxies_sort", lang),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
@@ -262,9 +263,9 @@ fun ProxiesScreen(
                                     onItemSelected = { onNodeSortModeChanged(it) },
                                     labelProvider = {
                                         when (it) {
-                                            "DELAY" -> "延迟优先"
-                                            "NAME" -> "名称 A-Z"
-                                            else -> "默认顺序"
+                                            "DELAY" -> AppStrings.get("proxies_sort_delay", lang)
+                                            "NAME" -> AppStrings.get("proxies_sort_name", lang)
+                                            else -> AppStrings.get("proxies_sort_default", lang)
                                         }
                                     }
                                 )
@@ -272,7 +273,7 @@ fun ProxiesScreen(
                         }
                     }
 
-                    CupertinoGroupedSection(title = "显示偏好") {
+                    CupertinoGroupedSection(title = AppStrings.get("proxies_display_section", lang)) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -282,14 +283,14 @@ fun ProxiesScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "显示策略组图标",
+                                    text = AppStrings.get("proxies_show_icons", lang),
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Normal,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "加载配置中定义的远程 SVG / PNG 策略图标",
+                                    text = AppStrings.get("proxies_show_icons_desc", lang),
                                     fontSize = 12.sp,
                                     color = LoonTextSecondary
                                 )
@@ -448,9 +449,9 @@ fun ProxiesScreen(
                 if (proxies.isEmpty()) {
                     IosEmptyProxiesPlaceholder(
                         message = if (visibleGroups.isEmpty()) {
-                            "暂无节点数据\n请前往「配置」添加订阅"
+                            AppStrings.get("proxies_empty_no_groups", lang)
                         } else {
-                            "当前策略组无可用节点"
+                            AppStrings.get("proxies_empty_group", lang)
                         }
                     )
                 } else {
@@ -519,7 +520,7 @@ fun ProxiesScreen(
         // =================================================================
         else {
             if (visibleGroups.isEmpty()) {
-                IosEmptyProxiesPlaceholder(message = "暂无策略分组数据\n请前往「配置」添加订阅")
+                IosEmptyProxiesPlaceholder(message = AppStrings.get("proxies_empty_list_mode", lang))
             } else {
                 val cols = nodeColumns.coerceIn(1, 3)
                 LazyColumn(
@@ -674,6 +675,7 @@ private fun LoonGroupHeaderCard(
     onHealthCheck: () -> Unit,
     onToggleExpand: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val currentOnHealthCheck by rememberUpdatedState(onHealthCheck)
     val standardType = remember(groupType) { formatStandardGroupType(groupType) }
     val chevronRotation by animateFloatAsState(
@@ -792,7 +794,7 @@ private fun LoonGroupHeaderCard(
 
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
-                    contentDescription = if (isExpanded) "收起" else "展开",
+                    contentDescription = if (isExpanded) AppStrings.get("collapse_desc", lang) else AppStrings.get("expand_desc", lang),
                     tint = LoonChevronTint,
                     modifier = Modifier
                         .size(17.dp)

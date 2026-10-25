@@ -118,10 +118,10 @@ fun SettingsScreen(
         ) {
             // Section 1: 网络与核心 (Network & Core)
             CupertinoGroupedSection(
-                header = "网络与核心"
+                header = AppStrings.get("settings_section_network_core", lang)
             ) {
                 CupertinoCell(
-                    title = "TUN 堆栈",
+                    title = AppStrings.get("settings_tun_stack", lang),
                     value = when (tunStack.lowercase()) {
                         "mixed" -> "Mixed"
                         "gvisor" -> "gVisor"
@@ -134,7 +134,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "开机自启动",
+                    title = AppStrings.get("settings_boot_startup", lang),
                     icon = Icons.Default.PowerSettingsNew,
                     iconBg = IosGreen,
                     trailing = {
@@ -147,7 +147,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "局域网共享",
+                    title = AppStrings.get("settings_lan_share_plain", lang),
                     icon = Icons.Default.WifiTethering,
                     iconBg = IosCyan,
                     trailing = {
@@ -173,8 +173,8 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "系统 VPN",
-                    value = "始终开启",
+                    title = AppStrings.get("settings_system_vpn", lang),
+                    value = AppStrings.get("always_on", lang),
                     icon = Icons.Default.Security,
                     iconBg = IosOrange,
                     showChevron = true,
@@ -191,10 +191,10 @@ fun SettingsScreen(
 
             // Section 2: 分流与服务 (Routing & Services)
             CupertinoGroupedSection(
-                header = "分流与服务"
+                header = AppStrings.get("settings_section_routing_services", lang)
             ) {
                 CupertinoCell(
-                    title = "分应用代理",
+                    title = AppStrings.get("settings_app_routing", lang),
                     icon = Icons.Default.Apps,
                     iconBg = IosOrange,
                     showChevron = true,
@@ -202,7 +202,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "DNS 设置",
+                    title = AppStrings.get("settings_dns_section", lang),
                     value = if (fakeIpEnabled) "Fake-IP" else "Redir-Host",
                     icon = Icons.Default.Public,
                     iconBg = IosTeal,
@@ -213,8 +213,8 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "脚本中心",
-                    value = "${scripts.size} 个脚本",
+                    title = AppStrings.get("settings_scripts_center", lang),
+                    value = AppStrings.get("script_count", lang).replace("{n}", scripts.size.toString()),
                     icon = Icons.Default.Code,
                     iconBg = IosIndigo,
                     showChevron = true,
@@ -222,7 +222,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "配置与订阅",
+                    title = AppStrings.get("settings_profiles_subs_plain", lang),
                     icon = Icons.Default.FolderZip,
                     iconBg = IosPurple,
                     showChevron = true,
@@ -234,14 +234,14 @@ fun SettingsScreen(
 
             // Section 3: 个性化与调试 (Preferences & Debugging)
             CupertinoGroupedSection(
-                header = "个性化与调试"
+                header = AppStrings.get("settings_section_personalize_debug", lang)
             ) {
                 CupertinoCell(
-                    title = "外观与显示",
+                    title = AppStrings.get("settings_appearance", lang),
                     value = when (themeMode) {
-                        ThemeMode.SYSTEM -> "跟随系统"
-                        ThemeMode.LIGHT -> "浅色"
-                        ThemeMode.DARK -> "深色"
+                        ThemeMode.SYSTEM -> AppStrings.get("theme_system", lang)
+                        ThemeMode.LIGHT -> AppStrings.get("theme_light_short", lang)
+                        ThemeMode.DARK -> AppStrings.get("theme_dark_short", lang)
                     },
                     icon = Icons.Default.Palette,
                     iconBg = IosPink,
@@ -250,7 +250,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "核心日志",
+                    title = AppStrings.get("shortcut_logs", lang),
                     icon = Icons.Default.Terminal,
                     iconBg = IosGray,
                     showChevron = true,
@@ -258,7 +258,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "日志级别",
+                    title = AppStrings.get("settings_log_level_short", lang),
                     value = currentLogLevel.uppercase(),
                     icon = Icons.Default.Tune,
                     iconBg = IosIndigo,
@@ -271,10 +271,10 @@ fun SettingsScreen(
 
             // Section 4: 关于与维护 (About & Maintenance)
             CupertinoGroupedSection(
-                header = "维护与关于"
+                header = AppStrings.get("settings_section_maintenance_about", lang)
             ) {
                 CupertinoCell(
-                    title = "检查更新",
+                    title = AppStrings.get("settings_check_update", lang),
                     value = "v$installedVersion",
                     icon = Icons.Default.SystemUpdate,
                     iconBg = IosGreen,
@@ -308,7 +308,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "核心版本",
+                    title = AppStrings.get("settings_core_version_short", lang),
                     value = coreVersion.ifBlank { "v1.18.x" },
                     icon = Icons.Default.Memory,
                     iconBg = IosGray,
@@ -316,7 +316,7 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
-                    title = "重置核心状态",
+                    title = AppStrings.get("settings_reset_core_short", lang),
                     icon = Icons.Default.RestartAlt,
                     iconBg = IosRed,
                     showChevron = true,
@@ -329,13 +329,13 @@ fun SettingsScreen(
     // TUN Stack Selection BottomSheet
     if (showTunDialog) {
         val stacks = listOf(
-            Triple("mixed", "Mixed", "兼顾性能与稳定性的混合模式"),
-            Triple("gvisor", "gVisor", "用户态网络协议栈隔离"),
-            Triple("system", "System", "操作系统原生网络栈")
+            Triple("mixed", "Mixed", AppStrings.get("tun_desc_mixed", lang)),
+            Triple("gvisor", "gVisor", AppStrings.get("tun_desc_gvisor", lang)),
+            Triple("system", "System", AppStrings.get("tun_desc_system", lang))
         )
         CupertinoModalBottomSheet(
             onDismissRequest = { showTunDialog = false },
-            title = "TUN 协议栈"
+            title = AppStrings.get("tun_stack_dialog_title", lang)
         ) {
             Column(
                 modifier = Modifier
@@ -395,14 +395,14 @@ fun SettingsScreen(
     // Log Level Selection BottomSheet
     if (showLogLevelDialog) {
         val levels = listOf(
-            Triple("info", "INFO", "记录标准网络调度与运行输出"),
-            Triple("warning", "WARN", "仅记录警告告警与异常"),
-            Triple("error", "ERROR", "仅记录严重崩溃与错误"),
-            Triple("debug", "DEBUG", "输出底层全部调试报文")
+            Triple("info", "INFO", AppStrings.get("loglevel_desc_info", lang)),
+            Triple("warning", "WARN", AppStrings.get("loglevel_desc_warning", lang)),
+            Triple("error", "ERROR", AppStrings.get("loglevel_desc_error", lang)),
+            Triple("debug", "DEBUG", AppStrings.get("loglevel_desc_debug", lang))
         )
         CupertinoModalBottomSheet(
             onDismissRequest = { showLogLevelDialog = false },
-            title = "日志详细程度"
+            title = AppStrings.get("log_detail_level_title", lang)
         ) {
             Column(
                 modifier = Modifier
@@ -468,10 +468,10 @@ fun SettingsScreen(
     // Core Reset Confirmation
     if (showResetDialog) {
         CupertinoAlertDialog(
-            title = "重置核心状态",
-            message = "确定要重置底层核心状态吗？当前活动的网络连接将被断开并重新初始化。",
-            confirmText = "重置",
-            dismissText = "取消",
+            title = AppStrings.get("settings_reset_core_short", lang),
+            message = AppStrings.get("settings_reset_confirm_long", lang),
+            confirmText = AppStrings.get("reset_action", lang),
+            dismissText = AppStrings.get("cancel", lang),
             isDestructive = true,
             onConfirm = {
                 showResetDialog = false
@@ -480,7 +480,7 @@ fun SettingsScreen(
                         com.github.mihomo.android.service.MihomoVpnService.stop(context)
                     }
                     withContext(Dispatchers.IO) { ClashCore.reset() }
-                    CupertinoToast.show("核心已重置")
+                    CupertinoToast.show(AppStrings.get("core_reset_done", lang))
                 }
             },
             onDismissRequest = { showResetDialog = false }
@@ -492,10 +492,10 @@ fun SettingsScreen(
         val result = updateResult!!
         val isNewer = result is UpdateChecker.CheckResult.Success && result.info.isNewer
         CupertinoAlertDialog(
-            title = "检查更新",
+            title = AppStrings.get("settings_check_update", lang),
             onDismissRequest = { showUpdateDialog = false },
-            confirmText = if (isNewer) "前往下载" else "好",
-            dismissText = if (isNewer) "稍后再说" else null,
+            confirmText = if (isNewer) AppStrings.get("action_download", lang) else AppStrings.get("action_ok", lang),
+            dismissText = if (isNewer) AppStrings.get("later", lang) else null,
             onConfirm = {
                 showUpdateDialog = false
                 if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
@@ -521,7 +521,7 @@ fun SettingsScreen(
                                             .background(IosGreen)
                                     )
                                     Text(
-                                        text = "发现新版本 ${info.tagName}",
+                                        text = AppStrings.get("update_found", lang).replace("{v}", info.tagName),
                                         color = IosGreen,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 15.sp
@@ -544,7 +544,7 @@ fun SettingsScreen(
                                 }
                             } else {
                                 Text(
-                                    text = "当前已是最新版本 (v$installedVersion)",
+                                    text = AppStrings.get("update_up_to_date", lang).replace("{v}", installedVersion),
                                     color = LoonTextPrimary,
                                     fontSize = 14.sp
                                 )
@@ -552,7 +552,7 @@ fun SettingsScreen(
                         }
                         is UpdateChecker.CheckResult.Error -> {
                             Text(
-                                text = "检查更新失败: ${result.message}",
+                                text = AppStrings.get("update_check_failed", lang).replace("{msg}", result.message),
                                 color = RedDanger,
                                 fontSize = 13.5.sp
                             )

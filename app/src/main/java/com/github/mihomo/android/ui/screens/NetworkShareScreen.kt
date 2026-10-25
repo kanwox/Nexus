@@ -79,8 +79,8 @@ fun NetworkShareScreen(
             // Main Switch Card (iOS Inset Grouped Section)
             item {
                 CupertinoGroupedSection(
-                    header = "共享设置",
-                    footer = "开启后，同一局域网内的其他设备（如电脑、Switch/PS5 游戏主机、平板等）可通过填入本机 IP 与端口接入代理网络。"
+                    header = AppStrings.get("share_settings_section", lang),
+                    footer = AppStrings.get("share_settings_footer", lang)
                 ) {
                     Row(
                         modifier = Modifier
@@ -91,14 +91,14 @@ fun NetworkShareScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "允许局域网连接",
+                                text = AppStrings.get("share_allow_lan", lang),
                                 color = LoonTextPrimary,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "监听 0.0.0.0 开放混合代理端口",
+                                text = AppStrings.get("share_listen_hint", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 12.5.sp
                             )
@@ -122,8 +122,8 @@ fun NetworkShareScreen(
                 item {
                     Spacer(modifier = Modifier.height(10.dp))
                     CupertinoGroupedSection(
-                        header = "访问鉴权",
-                        footer = "设置访问密码后，局域网设备接入代理需输入用户名 nexus 与此密码，防止同网络下的陌生设备滥用代理出口。留空则不鉴权；修改密码后重新加载配置生效。"
+                        header = AppStrings.get("share_auth_section", lang),
+                        footer = AppStrings.get("share_auth_footer", lang)
                     ) {
                         Column(
                             modifier = Modifier
@@ -133,7 +133,7 @@ fun NetworkShareScreen(
                             CupertinoTextField(
                                 value = allowLanPassword,
                                 onValueChange = onAllowLanPasswordChanged,
-                                placeholder = "留空表示无需鉴权",
+                                placeholder = AppStrings.get("share_password_hint", lang),
                                 visualTransformation = PasswordVisualTransformation()
                             )
                         }
@@ -167,7 +167,7 @@ fun NetworkShareScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (isRunning) "共享服务运行中 · 端口 $proxyPort 已对外监听" else "VPN 核心未运行",
+                                text = if (isRunning) AppStrings.get("share_running_title", lang).replace("{n}", proxyPort.toString()) else AppStrings.get("share_vpn_not_running", lang),
                                 color = if (isRunning) IosGreen else IosOrange,
                                 fontSize = 13.5.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -175,9 +175,9 @@ fun NetworkShareScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = if (isRunning) {
-                                    "局域网设备按下方参数配置即可正常走代理"
+                                    AppStrings.get("share_running_hint", lang)
                                 } else {
-                                    "共享开关已开启，但需启动 VPN 外部设备方可正常访问互联网"
+                                    AppStrings.get("share_offline_hint", lang)
                                 },
                                 color = if (isRunning) IosGreen.copy(alpha = 0.85f) else IosOrange.copy(alpha = 0.85f),
                                 fontSize = 12.sp,
@@ -191,17 +191,17 @@ fun NetworkShareScreen(
                 item {
                     Spacer(modifier = Modifier.height(10.dp))
                     CupertinoGroupedSection(
-                        header = "连接参数",
-                        footer = "请确保被共享的终端设备与此手机处于同一个 Wi-Fi 局域网或连接了此手机的热点。"
+                        header = AppStrings.get("share_params_section", lang),
+                        footer = AppStrings.get("share_params_footer", lang)
                     ) {
                         ShareParamRow(
-                            label = "本机局域网 IP",
-                            value = localIp ?: "未能获取 (请确认已连接 Wi-Fi)",
+                            label = AppStrings.get("share_field_local_ip", lang),
+                            value = localIp ?: AppStrings.get("share_ip_unavailable", lang),
                             onCopy = if (localIp != null) {
                                 {
                                     haptic.lightTick()
                                     clipboardManager.setText(AnnotatedString(localIp))
-                                    CupertinoToast.show("已复制本机 IP: $localIp")
+                                    CupertinoToast.show(AppStrings.get("share_copied_ip", lang).replace("{v}", localIp))
                                 }
                             } else null
                         )
@@ -209,39 +209,39 @@ fun NetworkShareScreen(
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         ShareParamRow(
-                            label = "代理混合端口",
+                            label = AppStrings.get("share_field_port", lang),
                             value = "$proxyPort",
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString("$proxyPort"))
-                                CupertinoToast.show("已复制端口: $proxyPort")
+                                CupertinoToast.show(AppStrings.get("share_copied_port", lang).replace("{v}", proxyPort.toString()))
                             }
                         )
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         ShareParamRow(
-                            label = "完整代理地址",
+                            label = AppStrings.get("share_field_full_address", lang),
                             value = fullProxyAddress,
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString(fullProxyAddress))
-                                CupertinoToast.show("已复制完整代理地址: $fullProxyAddress")
+                                CupertinoToast.show(AppStrings.get("share_copied_address", lang).replace("{v}", fullProxyAddress))
                             }
                         )
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         ShareParamRow(
-                            label = "接入鉴权",
-                            value = if (allowLanPassword.isNotBlank()) "用户名 nexus · 已设密码" else "无鉴权",
+                            label = AppStrings.get("share_field_auth", lang),
+                            value = if (allowLanPassword.isNotBlank()) AppStrings.get("share_auth_enabled", lang) else AppStrings.get("share_auth_none", lang),
                             onCopy = null
                         )
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         ShareParamRow(
-                            label = "支持协议",
+                            label = AppStrings.get("share_field_protocols", lang),
                             value = "HTTP / HTTPS / SOCKS5",
                             onCopy = null
                         )
@@ -252,18 +252,18 @@ fun NetworkShareScreen(
                 item {
                     Spacer(modifier = Modifier.height(12.dp))
                     CupertinoGroupedSection(
-                        header = "终端接入指南"
+                        header = AppStrings.get("share_guide_section", lang)
                     ) {
                         GuideRow(
-                            title = "Windows / macOS 电脑",
-                            steps = "系统设置 ➔ 网络 ➔ 代理 ➔ 开启手动代理 ➔ 地址填入上方本机 IP ➔ 端口填入 $proxyPort"
+                            title = AppStrings.get("share_guide_desktop", lang),
+                            steps = AppStrings.get("share_guide_desktop_steps", lang).replace("{n}", proxyPort.toString())
                         )
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
 
                         GuideRow(
-                            title = "Nintendo Switch / 游戏主机",
-                            steps = "设置 ➔ 互联网设置 ➔ 选择当前 Wi-Fi ➔ 更改设置 ➔ 代理服务器设为【使用】➔ 输入上方 IP 与 $proxyPort"
+                            title = AppStrings.get("share_guide_console", lang),
+                            steps = AppStrings.get("share_guide_console_steps", lang).replace("{n}", proxyPort.toString())
                         )
 
                         CupertinoIndentedDivider(startIndent = 16.dp)
@@ -275,13 +275,13 @@ fun NetworkShareScreen(
                         }
                         val curlCmd = "export http_proxy=\"$proxyUrlForCurl\" && export https_proxy=\"$proxyUrlForCurl\""
                         GuideRow(
-                            title = "命令行终端代理 (Terminal)",
+                            title = AppStrings.get("share_guide_terminal", lang),
                             steps = curlCmd,
                             isCommand = true,
                             onCopy = {
                                 haptic.lightTick()
                                 clipboardManager.setText(AnnotatedString(curlCmd))
-                                CupertinoToast.show("已复制终端代理命令")
+                                CupertinoToast.show(AppStrings.get("share_copied_command", lang))
                             }
                         )
                     }
@@ -300,6 +300,7 @@ private fun ShareParamRow(
     value: String,
     onCopy: (() -> Unit)? = null
 ) {
+    val lang = LocalAppLanguage.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -335,7 +336,7 @@ private fun ShareParamRow(
                 Spacer(modifier = Modifier.width(8.dp))
                 Icon(
                     imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "复制",
+                    contentDescription = AppStrings.get("copy_desc", lang),
                     tint = IosBlue,
                     modifier = Modifier.size(15.dp)
                 )
@@ -354,6 +355,7 @@ private fun GuideRow(
     isCommand: Boolean = false,
     onCopy: (() -> Unit)? = null
 ) {
+    val lang = LocalAppLanguage.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -379,7 +381,7 @@ private fun GuideRow(
             if (onCopy != null) {
                 Icon(
                     imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "复制",
+                    contentDescription = AppStrings.get("copy_desc", lang),
                     tint = IosBlue,
                     modifier = Modifier.size(15.dp)
                 )

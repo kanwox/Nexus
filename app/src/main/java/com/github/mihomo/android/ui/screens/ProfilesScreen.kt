@@ -35,16 +35,16 @@ import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import java.util.Locale
 
-private fun formatRelativeTime(timestamp: Long): String {
-    if (timestamp <= 0L) return "从未更新"
+private fun formatRelativeTime(timestamp: Long, lang: String): String {
+    if (timestamp <= 0L) return AppStrings.get("time_never_updated", lang)
     val diff = System.currentTimeMillis() - timestamp
-    if (diff < 60_000L) return "刚刚"
+    if (diff < 60_000L) return AppStrings.get("time_just_now", lang)
     val minutes = diff / 60_000L
-    if (minutes < 60L) return "${minutes}分钟前"
+    if (minutes < 60L) return AppStrings.get("time_minutes_ago", lang).replace("{n}", minutes.toString())
     val hours = minutes / 60L
-    if (hours < 24L) return "${hours}小时前"
+    if (hours < 24L) return AppStrings.get("time_hours_ago", lang).replace("{n}", hours.toString())
     val days = hours / 24L
-    return "${days}天前"
+    return AppStrings.get("time_days_ago", lang).replace("{n}", days.toString())
 }
 
 private fun formatFileSize(bytes: Long): String {
@@ -86,6 +86,7 @@ fun ProfilesScreen(
 ) {
     val context = LocalContext.current
     val haptic = rememberIosHaptic()
+    val lang = LocalAppLanguage.current
 
     var showAddSheet by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -107,9 +108,9 @@ fun ProfilesScreen(
             if (result.isSuccess) {
                 val imported = result.getOrThrow()
                 onUpdateProfile(imported)
-                CupertinoToast.show("已导入 ${imported.name}")
+                CupertinoToast.show(AppStrings.get("imported_toast", lang).replace("{name}", imported.name))
             } else {
-                CupertinoToast.show("导入失败: ${result.exceptionOrNull()?.message}", isDestructive = true)
+                CupertinoToast.show(AppStrings.get("import_failed", lang).replace("{msg}", result.exceptionOrNull()?.message ?: ""), isDestructive = true)
             }
         }
     }
@@ -121,7 +122,7 @@ fun ProfilesScreen(
             .statusBarsPadding()
     ) {
         CupertinoNavBar(
-            title = "配置",
+            title = AppStrings.get("nav_profiles", lang),
             showBackButton = onBack != null,
             onBack = onBack,
             actions = {
@@ -169,7 +170,7 @@ fun ProfilesScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "暂无配置",
+                                text = AppStrings.get("profiles_empty_short", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 14.sp
                             )
@@ -181,8 +182,8 @@ fun ProfilesScreen(
                     val isSelected = profile.id == selectedProfileId
                     val isSub = !profile.url.isNullOrBlank()
 
-                    val metadataStr = remember(profile) {
-                        val timePart = formatRelativeTime(profile.lastUpdated)
+                    val metadataStr = remember(profile, lang) {
+                        val timePart = formatRelativeTime(profile.lastUpdated, lang)
                         val sizePart = formatFileSize(profile.file.length())
                         if (profile.totalBytes > 0L) {
                             val used = formatTraffic(profile.uploadBytes + profile.downloadBytes)
@@ -291,7 +292,7 @@ fun ProfilesScreen(
             onDismissRequest = { showAddSheet = false },
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = "添加订阅",
+                    text = AppStrings.get("profiles_add_subscription", lang),
                     onClick = {
                         haptic.selection()
                         showAddSheet = false
@@ -303,7 +304,7 @@ fun ProfilesScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "导入文件",
+                    text = AppStrings.get("profiles_import_file", lang),
                     onClick = {
                         haptic.selection()
                         showAddSheet = false
@@ -315,23 +316,23 @@ fun ProfilesScreen(
                     }
                 )
             ),
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
     if (showAddDialog) {
         CupertinoAlertDialog(
-            title = "添加订阅",
-            confirmText = "添加",
-            dismissText = "取消",
+            title = AppStrings.get("profiles_add_subscription", lang),
+            confirmText = AppStrings.get("action_add", lang),
+            dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
                 val url = newSubUrl.trim()
                 if (url.isNotBlank()) {
                     showAddDialog = false
-                    val name = newSubName.trim().ifBlank { "订阅" }
+                    val name = newSubName.trim().ifBlank { AppStrings.get("default_sub_name", lang) }
                     onAddSubscription(name, url)
                 } else {
-                    CupertinoToast.show("请输入链接", isDestructive = true)
+                    CupertinoToast.show(AppStrings.get("profile_url_required", lang), isDestructive = true)
                 }
             },
             onDismiss = { showAddDialog = false },
@@ -341,14 +342,14 @@ fun ProfilesScreen(
             CupertinoTextField(
                 value = newSubName,
                 onValueChange = { newSubName = it },
-                placeholder = "名称",
+                placeholder = AppStrings.get("field_name", lang),
                 singleLine = true
             )
             Spacer(modifier = Modifier.height(10.dp))
             CupertinoTextField(
                 value = newSubUrl,
                 onValueChange = { newSubUrl = it },
-                placeholder = "链接 (URL)",
+                placeholder = AppStrings.get("field_url", lang),
                 singleLine = true
             )
         }
@@ -362,7 +363,7 @@ fun ProfilesScreen(
             if (isSub) {
                 add(
                     CupertinoActionSheetItem(
-                        text = "更新",
+                        text = AppStrings.get("profile_update", lang),
                         onClick = {
                             haptic.lightTick()
                             actionSheetProfile = null
@@ -373,7 +374,7 @@ fun ProfilesScreen(
             }
             add(
                 CupertinoActionSheetItem(
-                    text = "编辑",
+                    text = AppStrings.get("shortcuts_edit", lang),
                     onClick = {
                         haptic.selection()
                         actionSheetProfile = null
@@ -386,7 +387,7 @@ fun ProfilesScreen(
             if (onNavigateToOverride != null) {
                 add(
                     CupertinoActionSheetItem(
-                        text = "覆写",
+                        text = AppStrings.get("profile_override", lang),
                         onClick = {
                             haptic.selection()
                             actionSheetProfile = null
@@ -397,7 +398,7 @@ fun ProfilesScreen(
             }
             add(
                 CupertinoActionSheetItem(
-                    text = "删除",
+                    text = AppStrings.get("profile_delete", lang),
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
@@ -412,7 +413,7 @@ fun ProfilesScreen(
             onDismissRequest = { actionSheetProfile = null },
             title = target.name,
             actions = actions,
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
@@ -421,9 +422,9 @@ fun ProfilesScreen(
         val isSub = !target.url.isNullOrBlank()
 
         CupertinoAlertDialog(
-            title = "编辑",
-            confirmText = "保存",
-            dismissText = "取消",
+            title = AppStrings.get("shortcuts_edit", lang),
+            confirmText = AppStrings.get("action_save", lang),
+            dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
                 val finalName = editName.trim().ifBlank { target.name }
                 val finalUrl = if (isSub) editUrl.trim() else target.url
@@ -439,7 +440,7 @@ fun ProfilesScreen(
             CupertinoTextField(
                 value = editName,
                 onValueChange = { editName = it },
-                placeholder = "名称",
+                placeholder = AppStrings.get("field_name", lang),
                 singleLine = true
             )
             if (isSub) {
@@ -447,7 +448,7 @@ fun ProfilesScreen(
                 CupertinoTextField(
                     value = editUrl,
                     onValueChange = { editUrl = it },
-                    placeholder = "链接 (URL)",
+                    placeholder = AppStrings.get("field_url", lang),
                     singleLine = true
                 )
             }
@@ -457,10 +458,10 @@ fun ProfilesScreen(
     if (deletingProfile != null) {
         val target = deletingProfile!!
         CupertinoAlertDialog(
-            title = "删除配置",
-            message = "确定要删除此配置吗？",
-            confirmText = "删除",
-            dismissText = "取消",
+            title = AppStrings.get("profile_delete_title", lang),
+            message = AppStrings.get("profile_delete_confirm", lang),
+            confirmText = AppStrings.get("profile_delete", lang),
+            dismissText = AppStrings.get("cancel", lang),
             isDestructive = true,
             onConfirm = {
                 deletingProfile = null

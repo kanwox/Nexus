@@ -87,21 +87,21 @@ function main(config) {
 }
 """.trimIndent()
 
-private fun formatRelativeTime(timestamp: Long): String {
+private fun formatRelativeTime(timestamp: Long, lang: String): String {
     val diff = System.currentTimeMillis() - timestamp
-    if (diff < 0) return "刚刚"
+    if (diff < 0) return AppStrings.get("time_just_now", lang)
     val seconds = diff / 1000
-    if (seconds < 60) return "刚刚"
+    if (seconds < 60) return AppStrings.get("time_just_now", lang)
     val minutes = seconds / 60
-    if (minutes < 60) return "${minutes}分钟前"
+    if (minutes < 60) return AppStrings.get("time_minutes_ago", lang).replace("{n}", minutes.toString())
     val hours = minutes / 60
-    if (hours < 24) return "${hours}小时前"
+    if (hours < 24) return AppStrings.get("time_hours_ago", lang).replace("{n}", hours.toString())
     val days = hours / 24
-    if (days < 30) return "${days}天前"
+    if (days < 30) return AppStrings.get("time_days_ago", lang).replace("{n}", days.toString())
     val months = days / 30
-    if (months < 12) return "${months}个月前"
+    if (months < 12) return AppStrings.get("time_months_ago", lang).replace("{n}", months.toString())
     val years = months / 12
-    return "${years}年前"
+    return AppStrings.get("time_years_ago", lang).replace("{n}", years.toString())
 }
 
 private fun linkScriptToEnabledProfiles(context: Context, scriptId: String) {
@@ -122,6 +122,7 @@ fun ScriptsScreen(
     onBack: () -> Unit,
     onScriptsChanged: () -> Unit = {}
 ) {
+    val lang = LocalAppLanguage.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val haptic = rememberIosHaptic()
@@ -172,13 +173,13 @@ fun ScriptsScreen(
                             }
                         }
                         val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                            ?: error("无法读取文件内容")
+                            ?: error(AppStrings.get("scripts_read_content_failed", lang))
                         val cleanName = name
                             .removeSuffix(".js")
                             .removeSuffix(".yaml")
                             .removeSuffix(".yml")
                             .removeSuffix(".txt")
-                            .ifBlank { "本地脚本" }
+                            .ifBlank { AppStrings.get("script_type_local", lang) }
                         cleanName to text
                     }
                     withContext(Dispatchers.IO) {
@@ -191,9 +192,9 @@ fun ScriptsScreen(
                         linkScriptToEnabledProfiles(context, saved.id)
                     }
                     refresh()
-                    CupertinoToast.show("已导入 $displayName")
+                    CupertinoToast.show(AppStrings.get("imported_name", lang).replace("{name}", displayName))
                 }.onFailure { e ->
-                    CupertinoToast.show("导入失败: ${e.message}", isDestructive = true)
+                    CupertinoToast.show(AppStrings.get("import_failed", lang).replace("{msg}", e.message ?: ""), isDestructive = true)
                 }
             }
         }
@@ -203,7 +204,7 @@ fun ScriptsScreen(
         if (isUpdatingAll) return
         val remoteScripts = scripts.filter { it.url.isNotBlank() }
         if (remoteScripts.isEmpty()) {
-            CupertinoToast.show("暂无可更新的远程脚本")
+            CupertinoToast.show(AppStrings.get("scripts_no_remote", lang))
             return
         }
         isUpdatingAll = true
@@ -223,10 +224,10 @@ fun ScriptsScreen(
             isUpdatingAll = false
             refresh()
             if (failCount == 0) {
-                CupertinoToast.show("已更新 $successCount 个远程脚本")
+                CupertinoToast.show(AppStrings.get("scripts_updated_count", lang).replace("{n}", successCount.toString()))
             } else {
                 CupertinoToast.show(
-                    "更新完成: 成功 $successCount 个, 失败 $failCount 个",
+                    AppStrings.get("scripts_update_summary", lang).replace("{ok}", successCount.toString()).replace("{fail}", failCount.toString()),
                     isDestructive = successCount == 0
                 )
             }
@@ -241,10 +242,10 @@ fun ScriptsScreen(
             updatingScriptIds = updatingScriptIds - script.id
             if (res.isSuccess) {
                 refresh()
-                CupertinoToast.show("已更新 ${script.name}")
+                CupertinoToast.show(AppStrings.get("scripts_updated_name", lang).replace("{name}", script.name))
             } else {
                 CupertinoToast.show(
-                    "更新失败: ${res.exceptionOrNull()?.message}",
+                    AppStrings.get("scripts_sync_failed", lang).replace("{msg}", res.exceptionOrNull()?.message ?: ""),
                     isDestructive = true
                 )
             }
@@ -291,7 +292,7 @@ fun ScriptsScreen(
                     .statusBarsPadding()
             ) {
                 CupertinoNavBar(
-                    title = "脚本",
+                    title = AppStrings.get("scripts_title", lang),
                     showBackButton = true,
                     onBack = onBack,
                     actions = {
@@ -315,7 +316,7 @@ fun ScriptsScreen(
                                 } else {
                                     Icon(
                                         imageVector = Icons.Default.Refresh,
-                                        contentDescription = "更新脚本",
+                                        contentDescription = AppStrings.get("scripts_update_all_desc", lang),
                                         tint = IosBlue,
                                         modifier = Modifier.size(20.dp)
                                     )
@@ -335,7 +336,7 @@ fun ScriptsScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
-                                    contentDescription = "添加脚本",
+                                    contentDescription = AppStrings.get("scripts_add_desc", lang),
                                     tint = IosBlue,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -368,7 +369,7 @@ fun ScriptsScreen(
                                     )
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Text(
-                                        text = "暂无脚本",
+                                        text = AppStrings.get("scripts_empty_short", lang),
                                         color = LoonTextSecondary,
                                         fontSize = 14.sp
                                     )
@@ -438,9 +439,9 @@ fun ScriptsScreen(
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = buildString {
-                                                append(if (isRemote) "远程脚本" else "本地脚本")
+                                                append(if (isRemote) AppStrings.get("script_type_remote", lang) else AppStrings.get("script_type_local", lang))
                                                 append(" · ")
-                                                append(formatRelativeTime(script.updatedAt))
+                                                append(formatRelativeTime(script.updatedAt, lang))
                                             },
                                             color = LoonTextSecondary,
                                             fontSize = 12.sp,
@@ -468,7 +469,7 @@ fun ScriptsScreen(
             onDismissRequest = { showAddSheet = false },
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = "新建脚本",
+                    text = AppStrings.get("scripts_new", lang),
                     onClick = {
                         haptic.selection()
                         showAddSheet = false
@@ -476,7 +477,7 @@ fun ScriptsScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "URL 导入",
+                    text = AppStrings.get("scripts_url_import", lang),
                     onClick = {
                         haptic.selection()
                         showAddSheet = false
@@ -488,7 +489,7 @@ fun ScriptsScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "本地导入",
+                    text = AppStrings.get("scripts_import_local", lang),
                     onClick = {
                         haptic.selection()
                         showAddSheet = false
@@ -496,21 +497,21 @@ fun ScriptsScreen(
                     }
                 )
             ),
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
     // 2. URL Import Dialog
     if (showUrlImportDialog) {
         CupertinoAlertDialog(
-            title = "URL 导入",
-            confirmText = if (isImportingUrl) "导入中..." else "导入",
-            dismissText = "取消",
+            title = AppStrings.get("scripts_url_import", lang),
+            confirmText = if (isImportingUrl) AppStrings.get("importing", lang) else AppStrings.get("scripts_import", lang),
+            dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
                 if (isImportingUrl) return@CupertinoAlertDialog
                 val cleanUrl = importUrlValue.trim()
                 if (cleanUrl.isBlank()) {
-                    CupertinoToast.show("请输入脚本链接", isDestructive = true)
+                    CupertinoToast.show(AppStrings.get("scripts_url_required", lang), isDestructive = true)
                     return@CupertinoAlertDialog
                 }
                 isImportingUrl = true
@@ -530,10 +531,10 @@ fun ScriptsScreen(
                         }
                         showUrlImportDialog = false
                         refresh()
-                        CupertinoToast.show("已导入 ${item.name}")
+                        CupertinoToast.show(AppStrings.get("imported_name", lang).replace("{name}", item.name))
                     } else {
                         CupertinoToast.show(
-                            "导入失败: ${res.exceptionOrNull()?.message}",
+                            AppStrings.get("import_failed", lang).replace("{msg}", res.exceptionOrNull()?.message ?: ""),
                             isDestructive = true
                         )
                     }
@@ -550,14 +551,14 @@ fun ScriptsScreen(
             CupertinoTextField(
                 value = importUrlName,
                 onValueChange = { importUrlName = it },
-                placeholder = "名称 (选填)",
+                placeholder = AppStrings.get("scripts_name_optional_short", lang),
                 singleLine = true
             )
             Spacer(modifier = Modifier.height(10.dp))
             CupertinoTextField(
                 value = importUrlValue,
                 onValueChange = { importUrlValue = it },
-                placeholder = "脚本链接 (URL)",
+                placeholder = AppStrings.get("scripts_url_field", lang),
                 singleLine = true
             )
         }
@@ -572,7 +573,7 @@ fun ScriptsScreen(
             if (isRemote) {
                 add(
                     CupertinoActionSheetItem(
-                        text = "更新",
+                        text = AppStrings.get("profile_update", lang),
                         onClick = {
                             haptic.lightTick()
                             actionSheetScript = null
@@ -583,7 +584,7 @@ fun ScriptsScreen(
             }
             add(
                 CupertinoActionSheetItem(
-                    text = "编辑代码",
+                    text = AppStrings.get("scripts_edit_code", lang),
                     onClick = {
                         haptic.selection()
                         actionSheetScript = null
@@ -593,7 +594,7 @@ fun ScriptsScreen(
             )
             add(
                 CupertinoActionSheetItem(
-                    text = "编辑信息",
+                    text = AppStrings.get("scripts_edit_info", lang),
                     onClick = {
                         haptic.selection()
                         actionSheetScript = null
@@ -605,7 +606,7 @@ fun ScriptsScreen(
             )
             add(
                 CupertinoActionSheetItem(
-                    text = "删除",
+                    text = AppStrings.get("profile_delete", lang),
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
@@ -620,7 +621,7 @@ fun ScriptsScreen(
             onDismissRequest = { actionSheetScript = null },
             title = target.name,
             actions = actions,
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
@@ -630,9 +631,9 @@ fun ScriptsScreen(
         val isRemote = target.url.isNotBlank()
 
         CupertinoAlertDialog(
-            title = "编辑信息",
-            confirmText = "保存",
-            dismissText = "取消",
+            title = AppStrings.get("scripts_edit_info", lang),
+            confirmText = AppStrings.get("action_save", lang),
+            dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
                 val finalName = editInfoName.trim().ifBlank { target.name }
                 val finalUrl = if (isRemote) editInfoUrl.trim() else target.url
@@ -652,7 +653,7 @@ fun ScriptsScreen(
                     }
                     editingInfoScript = null
                     refresh()
-                    CupertinoToast.show("已保存")
+                    CupertinoToast.show(AppStrings.get("saved_toast", lang))
                 }
             },
             onDismiss = { editingInfoScript = null },
@@ -662,7 +663,7 @@ fun ScriptsScreen(
             CupertinoTextField(
                 value = editInfoName,
                 onValueChange = { editInfoName = it },
-                placeholder = "名称",
+                placeholder = AppStrings.get("field_name", lang),
                 singleLine = true
             )
             if (isRemote) {
@@ -670,7 +671,7 @@ fun ScriptsScreen(
                 CupertinoTextField(
                     value = editInfoUrl,
                     onValueChange = { editInfoUrl = it },
-                    placeholder = "脚本链接 (URL)",
+                    placeholder = AppStrings.get("scripts_url_field", lang),
                     singleLine = true
                 )
             }
@@ -681,16 +682,16 @@ fun ScriptsScreen(
     if (deleteConfirmScript != null) {
         val target = deleteConfirmScript!!
         CupertinoAlertDialog(
-            title = "删除脚本",
-            message = "确定要删除脚本「${target.name}」吗？",
-            confirmText = "删除",
-            dismissText = "取消",
+            title = AppStrings.get("scripts_delete_title", lang),
+            message = AppStrings.get("scripts_delete_confirm_alt", lang).replace("{name}", target.name),
+            confirmText = AppStrings.get("profile_delete", lang),
+            dismissText = AppStrings.get("cancel", lang),
             isDestructive = true,
             onConfirm = {
                 ScriptManager.deleteScript(context, target.id)
                 refresh()
                 deleteConfirmScript = null
-                CupertinoToast.show("已删除脚本")
+                CupertinoToast.show(AppStrings.get("scripts_deleted_toast", lang))
             },
             onDismiss = { deleteConfirmScript = null },
             onDismissRequest = { deleteConfirmScript = null }
@@ -707,6 +708,7 @@ private fun ScriptEditorScreen(
     onBack: () -> Unit,
     onSaved: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val haptic = rememberIosHaptic()
@@ -771,7 +773,7 @@ private fun ScriptEditorScreen(
         if (isSaving) return
         val codeToSave = textFieldValue.text
         if (codeToSave.isBlank()) {
-            CupertinoToast.show("脚本内容不能为空", isDestructive = true)
+            CupertinoToast.show(AppStrings.get("scripts_content_required", lang), isDestructive = true)
             return
         }
         isSaving = true
@@ -781,7 +783,7 @@ private fun ScriptEditorScreen(
                     val saved = ScriptManager.saveScript(
                         context = context,
                         existingId = existingScript?.id,
-                        name = finalName.trim().ifBlank { "自定义脚本" },
+                        name = finalName.trim().ifBlank { AppStrings.get("scripts_default_name", lang) },
                         url = existingScript?.url ?: "",
                         pattern = existingScript?.pattern ?: "",
                         type = existingScript?.type ?: "config",
@@ -790,7 +792,7 @@ private fun ScriptEditorScreen(
                     )
                     linkScriptToEnabledProfiles(context, saved.id)
                 }
-                CupertinoToast.show("已保存")
+                CupertinoToast.show(AppStrings.get("saved_toast", lang))
                 onSaved()
             } finally {
                 isSaving = false
@@ -825,7 +827,7 @@ private fun ScriptEditorScreen(
     ) {
         // 1. Standard iOS Navigation Bar
         CupertinoNavBar(
-            title = scriptName.ifBlank { "新建脚本" },
+            title = scriptName.ifBlank { AppStrings.get("scripts_new", lang) },
             showBackButton = true,
             onBack = onBack,
             actions = {
@@ -846,7 +848,7 @@ private fun ScriptEditorScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "保存",
+                        text = AppStrings.get("action_save", lang),
                         color = IosBlue,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
@@ -932,7 +934,7 @@ private fun ScriptEditorScreen(
                         Box {
                             if (textFieldValue.text.isEmpty()) {
                                 Text(
-                                    text = "// 在此输入脚本代码",
+                                    text = AppStrings.get("scripts_editor_hint", lang),
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 13.sp,
                                     lineHeight = 20.sp,
@@ -992,7 +994,7 @@ private fun ScriptEditorScreen(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Undo,
-                    contentDescription = "撤销",
+                    contentDescription = AppStrings.get("undo_desc", lang),
                     tint = if (undoIndex > 0) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.35f),
                     modifier = Modifier.size(18.dp)
                 )
@@ -1014,7 +1016,7 @@ private fun ScriptEditorScreen(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Redo,
-                    contentDescription = "重做",
+                    contentDescription = AppStrings.get("redo_desc", lang),
                     tint = if (undoIndex < undoStack.lastIndex) LoonTextPrimary else LoonTextMuted.copy(alpha = 0.35f),
                     modifier = Modifier.size(18.dp)
                 )
@@ -1063,11 +1065,11 @@ private fun ScriptEditorScreen(
 
     if (showNameDialog) {
         CupertinoAlertDialog(
-            title = if (isEditingExisting) "脚本名称" else "保存脚本",
-            confirmText = "保存",
-            dismissText = "取消",
+            title = if (isEditingExisting) AppStrings.get("scripts_name_label", lang) else AppStrings.get("scripts_save_title", lang),
+            confirmText = AppStrings.get("action_save", lang),
+            dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
-                val resolved = tempNameInput.trim().ifBlank { "自定义脚本" }
+                val resolved = tempNameInput.trim().ifBlank { AppStrings.get("scripts_default_name", lang) }
                 scriptName = resolved
                 showNameDialog = false
                 commitSave(resolved)
@@ -1079,7 +1081,7 @@ private fun ScriptEditorScreen(
             CupertinoTextField(
                 value = tempNameInput,
                 onValueChange = { tempNameInput = it },
-                placeholder = "输入脚本名称",
+                placeholder = AppStrings.get("scripts_name_input_hint", lang),
                 singleLine = true
             )
         }

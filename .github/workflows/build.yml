@@ -94,10 +94,37 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
-            ### Changes in v1.0.4-Alpha.6
+            ### Changes in v1.0.4
+
+            v1.0.4 is a major stability, security and polish release over v1.0.3.
+
+            #### Security
+            - Pinned SHA-256 fingerprints for config rewrite scripts. Scripts are verified before auto-execution and skipped with a warning if their content no longer matches what was saved.
+            - Replaced the unmaintained QuickJS engine with quickjs-kt: script timeouts are enforced by a native interrupt handler, so an infinite-loop script is terminated cleanly instead of leaking a spinning thread and unbounded memory. All common script styles (`function main`, `module.exports =`, arrow functions) are covered by engine tests.
+            - Subscription and script URLs are redacted in logs and error messages (tokens stripped); link-local (cloud metadata) targets are rejected.
+            - Subscription and script downloads are size-capped (20 MB / 5 MB) with a total call timeout and written atomically — a failed or oversized download can no longer destroy the working profile.
+            - Profile metadata is written atomically with a backup copy; a corrupted store is recovered instead of silently wiping all subscription metadata.
 
             #### Fixed
-            - Fixed the v1.0.4-Alpha.5 startup crash on real devices: the gomobile bridge library looks up kotlinx.coroutines methods by name during JNI_OnLoad, and R8 shrinking had stripped them. An explicit keep rule now covers the whole coroutines package, and R8 shrinking stays enabled (release APK ~32 MB, about 24% smaller).
+            - Fixed a VPN stop/start race that could leave a ghost TUN interface, leak its file descriptor, and stick the state on RUNNING; fixed a foreground-service crash when tapping Start during a stop sequence (the start is now queued and honored after teardown).
+            - Fixed the tunnel handing its IPv6 gateway to the core when the TUN's IPv6 address assignment failed — this caused "listen tcp6 … bind: cannot assign requested address" and dead tunnels on affected devices. The tunnel now runs IPv4-only in that case.
+            - Fixed imported/downloaded profiles not appearing until an app restart (profile listing cache was never invalidated).
+            - Fixed the Proxies screen freezing on data loaded at app start: LIST mode rendered expanded groups blank, non-selected groups in Tabs mode were empty, and the dashboard quick-node panel listed nothing after a cold start.
+            - Fixed script rewrites being silently skipped: unroutable scripts now fall through to the engine (with a clear error) and unrecognized content logs a plain "unrecognized content" warning.
+            - Bounded the DNS domain→IP cache (memory no longer grows indefinitely) and stopped polluting the DNS list with synthetic fake-IP entries from connection logs.
+            - No update prompt when the installed version cannot be determined.
+
+            #### Added
+            - Full interface localization (简体中文 / English / Русский) with a language switch in Appearance; the switch now takes effect immediately across all screens.
+            - Export logs to a file from the log screen via the system file picker; errors and warnings are also appended to a bounded on-disk file (diagnostic.log) so post-mortems survive a process death.
+            - Repeated identical log messages collapse into a single entry with a repeat count (×N); while the screen is off, warnings are kept alongside errors (info/debug still dropped), so a boot-time VPN start no longer loses diagnostic warnings.
+
+            #### Changed
+            - The speed-test engine now lives in a ViewModel: rotating the screen no longer cancels in-flight group tests or wipes measured delays.
+            - Once-per-second traffic updates no longer recompose the whole UI; speed-test results are applied in batches. Geo databases are extracted on a background thread at first launch.
+            - Enabled R8 shrinking for release builds (release APK ~32 MB, about 24% smaller). The initial attempt crashed on real devices because the gomobile bridge looks up kotlinx.coroutines methods by name during JNI_OnLoad; an explicit keep rule fixes it (v1.0.4-Alpha.6 verified on device).
+            - Unified visual specs across screens: colors now go through theme tokens, navigation-bar actions share one type/size spec, list row heights, divider indents, corner radii and empty states are consistent.
+            - Upgraded Kotlin 2.1.0 → 2.4.10.
           draft: false
           prerelease: ${{ env.RELEASE_IS_PRERELEASE == 'true' }}
           files: build_output/*.apk

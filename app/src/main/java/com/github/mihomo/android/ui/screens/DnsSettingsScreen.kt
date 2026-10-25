@@ -21,6 +21,7 @@ fun DnsSettingsScreen(
     onFakeIpEnabledChanged: ((Boolean) -> Unit)? = null,
     onBack: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val settingsManager = remember { SettingsManager(context) }
@@ -34,7 +35,7 @@ fun DnsSettingsScreen(
                 ClashCore.reloadActiveConfig(context)
             }
         }
-        CupertinoToast.show("DNS 配置已更新", isDestructive = false)
+        CupertinoToast.show(AppStrings.get("dns_settings_updated", lang), isDestructive = false)
     }
 
     Column(
@@ -44,7 +45,7 @@ fun DnsSettingsScreen(
             .statusBarsPadding()
     ) {
         CupertinoNavBar(
-            title = "DNS 设置",
+            title = AppStrings.get("settings_dns_section", lang),
             showBackButton = true,
             onBack = onBack
         )
@@ -57,9 +58,9 @@ fun DnsSettingsScreen(
         ) {
             // Group: Resolution Mode
             item {
-                CupertinoGroupedSection(header = "解析模式") {
+                CupertinoGroupedSection(header = AppStrings.get("dns_settings_mode_section", lang)) {
                     CupertinoCell(
-                        title = "Fake-IP 模式",
+                        title = AppStrings.get("dns_fakeip_mode", lang),
                         showChevron = false,
                         trailing = {
                             CupertinoSwitch(
@@ -75,7 +76,7 @@ fun DnsSettingsScreen(
                     )
                     CupertinoDivider()
                     CupertinoCell(
-                        title = "IPv6 解析",
+                        title = AppStrings.get("dns_ipv6_resolve", lang),
                         showChevron = false,
                         trailing = {
                             CupertinoSwitch(

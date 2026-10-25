@@ -29,11 +29,11 @@ import com.github.mihomo.android.data.ParsedRule
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 
-private enum class RuleFilter(val label: String) {
-    ALL("全部"),
-    PROXY("代理"),
-    DIRECT("直连"),
-    REJECT("拦截")
+private enum class RuleFilter(val labelKey: String) {
+    ALL("log_level_all"),
+    PROXY("filter_proxy"),
+    DIRECT("filter_direct"),
+    REJECT("filter_reject")
 }
 
 private data class IndexedRule(
@@ -117,13 +117,13 @@ fun RulesScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.FilterList,
-                            contentDescription = "分流过滤",
+                            contentDescription = AppStrings.get("rules_filter_desc", lang),
                             tint = if (selectedFilter != RuleFilter.ALL) IosBlue else LoonTextSecondary,
                             modifier = Modifier.size(20.dp)
                         )
                         if (selectedFilter != RuleFilter.ALL) {
                             Text(
-                                text = selectedFilter.label,
+                                text = AppStrings.get(selectedFilter.labelKey, lang),
                                 color = IosBlue,
                                 fontSize = 13.5.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -145,9 +145,9 @@ fun RulesScreen(
             if (tunnelMode != TunnelMode.RULE) {
                 item {
                     val noticeText = if (tunnelMode == TunnelMode.GLOBAL) {
-                        "当前处于全局代理模式，所有请求均通过全局代理，分流规则暂未生效"
+                        AppStrings.get("rules_notice_global", lang)
                     } else {
-                        "当前处于全局直连模式，所有请求均直连，分流规则暂未生效"
+                        AppStrings.get("rules_notice_direct", lang)
                     }
 
                     Row(
@@ -187,7 +187,7 @@ fun RulesScreen(
                     CupertinoSearchBar(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = "搜索域名、IP、类型或策略"
+                        placeholder = AppStrings.get("rules_search_placeholder", lang)
                     )
                 }
             }
@@ -210,7 +210,7 @@ fun RulesScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "未找到匹配规则" else "暂无分流规则",
+                                text = if (searchQuery.isNotBlank()) AppStrings.get("rules_no_match", lang) else AppStrings.get("rules_empty", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 14.sp
                             )
@@ -219,12 +219,12 @@ fun RulesScreen(
                 }
             } else {
                 val sectionHeader = when {
-                    searchQuery.isNotBlank() -> "搜索结果 (${filteredRules.size})"
-                    selectedFilter == RuleFilter.PROXY -> "代理规则 (${filteredRules.size})"
-                    selectedFilter == RuleFilter.DIRECT -> "直连规则 (${filteredRules.size})"
-                    selectedFilter == RuleFilter.REJECT -> "拦截规则 (${filteredRules.size})"
-                    totalRules > filteredRules.size -> "全部规则 (${filteredRules.size} / 共 $totalRules 条)"
-                    else -> "分流规则 (${filteredRules.size})"
+                    searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredRules.size.toString())
+                    selectedFilter == RuleFilter.PROXY -> AppStrings.get("rules_section_proxy", lang).replace("{n}", filteredRules.size.toString())
+                    selectedFilter == RuleFilter.DIRECT -> AppStrings.get("rules_section_direct", lang).replace("{n}", filteredRules.size.toString())
+                    selectedFilter == RuleFilter.REJECT -> AppStrings.get("rules_section_reject", lang).replace("{n}", filteredRules.size.toString())
+                    totalRules > filteredRules.size -> AppStrings.get("rules_section_all_total", lang).replace("{n}", filteredRules.size.toString()).replace("{m}", totalRules.toString())
+                    else -> AppStrings.get("rules_section_all", lang).replace("{n}", filteredRules.size.toString())
                 }
 
                 cupertinoGroupedItems(
@@ -267,10 +267,10 @@ fun RulesScreen(
 
         CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRule = null },
-            title = "规则详情",
+            title = AppStrings.get("rules_detail_title", lang),
             trailingAction = {
                 Text(
-                    text = "#${indexed.index + 1} 优先级",
+                    text = AppStrings.get("rules_priority", lang).replace("{n}", (indexed.index + 1).toString()),
                     color = IosBlue,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
@@ -287,7 +287,7 @@ fun RulesScreen(
 
                 // Card 1: 完整语法 (Raw Rule Syntax)
                 Text(
-                    text = "配置语法",
+                    text = AppStrings.get("rules_syntax_label", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -301,7 +301,7 @@ fun RulesScreen(
                         .iosPressable {
                             haptic.lightTick()
                             clipboardManager.setText(AnnotatedString(rawRuleText))
-                            CupertinoToast.show("已复制规则语法")
+                            CupertinoToast.show(AppStrings.get("rules_syntax_copied", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -317,7 +317,7 @@ fun RulesScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "复制规则",
+                        contentDescription = AppStrings.get("rules_copy_desc", lang),
                         tint = IosBlue,
                         modifier = Modifier.size(16.dp)
                     )
@@ -327,7 +327,7 @@ fun RulesScreen(
 
                 // Card 2: 规则解析属性
                 Text(
-                    text = "规则属性",
+                    text = AppStrings.get("rules_attributes", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -341,22 +341,22 @@ fun RulesScreen(
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     DetailRow(
-                        label = "规则类型",
-                        value = "${rule.type} (${getRuleTypeDescription(rule.type)})"
+                        label = AppStrings.get("rules_field_type", lang),
+                        value = "${rule.type} (${getRuleTypeDescription(rule.type, lang)})"
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "匹配目标",
-                        value = rule.payload.ifBlank { "全部未匹配流量" },
+                        label = AppStrings.get("rules_field_payload", lang),
+                        value = rule.payload.ifBlank { AppStrings.get("rules_match_all", lang) },
                         showCopy = rule.payload.isNotBlank(),
                         onCopy = {
                             clipboardManager.setText(AnnotatedString(rule.payload))
-                            CupertinoToast.show("已复制匹配目标")
+                            CupertinoToast.show(AppStrings.get("rules_payload_copied", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "分流去向",
+                        label = AppStrings.get("rules_field_target", lang),
                         value = rule.target,
                         valueColor = when {
                             rule.target.equals("REJECT", ignoreCase = true) -> RedDanger
@@ -366,13 +366,13 @@ fun RulesScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "DNS 解析",
-                        value = if (rule.noResolve) "no-resolve (跳过解析)" else "标准解析"
+                        label = AppStrings.get("rules_field_dns", lang),
+                        value = if (rule.noResolve) AppStrings.get("rules_no_resolve", lang) else AppStrings.get("rules_standard_resolve", lang)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "匹配顺序",
-                        value = "第 ${indexed.index + 1} 位 (自上而下匹配)"
+                        label = AppStrings.get("rules_field_order", lang),
+                        value = AppStrings.get("rules_order_value", lang).replace("{n}", (indexed.index + 1).toString())
                     )
                 }
             }
@@ -383,11 +383,11 @@ fun RulesScreen(
     if (showFilterActionSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showFilterActionSheet = false },
-            title = "分流规则过滤",
-            message = "当前匹配 ${filteredRules.size} / ${indexedRules.size} 条规则",
+            title = AppStrings.get("rules_filter_title", lang),
+            message = AppStrings.get("rules_filter_message", lang).replace("{a}", filteredRules.size.toString()).replace("{b}", indexedRules.size.toString()),
             actions = RuleFilter.entries.map { filter ->
                 CupertinoActionSheetItem(
-                    text = if (filter == selectedFilter) "${filter.label}  ✓" else filter.label,
+                    text = if (filter == selectedFilter) AppStrings.get(filter.labelKey, lang) + "  ✓" else AppStrings.get(filter.labelKey, lang),
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -395,7 +395,7 @@ fun RulesScreen(
                     }
                 )
             },
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 }
@@ -409,6 +409,7 @@ private fun RuleCell(
     indexedRule: IndexedRule,
     onClick: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val rule = indexedRule.rule
 
     val (targetColor, targetText) = when {
@@ -418,7 +419,7 @@ private fun RuleCell(
     }
 
     val displayPayload = when {
-        rule.type.equals("MATCH", ignoreCase = true) -> "MATCH (全部未匹配流量)"
+        rule.type.equals("MATCH", ignoreCase = true) -> AppStrings.get("rules_match_all_badge", lang)
         rule.payload.isBlank() -> rule.type
         else -> rule.payload
     }
@@ -512,6 +513,7 @@ private fun DetailRow(
     showCopy: Boolean = false,
     onCopy: (() -> Unit)? = null
 ) {
+    val lang = LocalAppLanguage.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -542,7 +544,7 @@ private fun DetailRow(
                 Spacer(modifier = Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "复制",
+                    contentDescription = AppStrings.get("copy_desc", lang),
                     tint = IosBlue,
                     modifier = Modifier
                         .size(15.dp)
@@ -553,18 +555,18 @@ private fun DetailRow(
     }
 }
 
-private fun getRuleTypeDescription(type: String): String {
+private fun getRuleTypeDescription(type: String, lang: String): String {
     return when (type.uppercase()) {
-        "DOMAIN-SUFFIX" -> "域名后缀"
-        "DOMAIN-KEYWORD" -> "域名关键字"
-        "DOMAIN" -> "完整域名"
-        "IP-CIDR", "IP-CIDR6" -> "IP 网段"
-        "GEOIP" -> "地理位置"
-        "RULE-SET" -> "规则集"
-        "PROCESS-NAME" -> "进程名称"
-        "PORT" -> "目标端口"
-        "MATCH" -> "兜底匹配"
-        else -> "自定义"
+        "DOMAIN-SUFFIX" -> AppStrings.get("rule_type_domain_suffix", lang)
+        "DOMAIN-KEYWORD" -> AppStrings.get("rule_type_domain_keyword", lang)
+        "DOMAIN" -> AppStrings.get("rule_type_domain", lang)
+        "IP-CIDR", "IP-CIDR6" -> AppStrings.get("rule_type_ip_cidr", lang)
+        "GEOIP" -> AppStrings.get("rule_type_geoip", lang)
+        "RULE-SET" -> AppStrings.get("rule_type_rule_set", lang)
+        "PROCESS-NAME" -> AppStrings.get("rule_type_process", lang)
+        "PORT" -> AppStrings.get("rule_type_port", lang)
+        "MATCH" -> AppStrings.get("rule_type_match", lang)
+        else -> AppStrings.get("rule_type_custom", lang)
     }
 }
 

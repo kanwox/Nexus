@@ -19,9 +19,6 @@ class MihomoApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        runCatching {
-            android.system.Os.setenv("GODEBUG", "cpu.all=off", true)
-        }
         installCrashLogger()
         instance = this
         Global.init(this)

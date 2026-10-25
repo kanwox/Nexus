@@ -28,9 +28,6 @@ object Bridge {
         if (isInitialized) return
         try {
             Global.init(context.applicationContext as android.app.Application)
-            runCatching {
-                android.system.Os.setenv("GODEBUG", "cpu.all=off", true)
-            }
             try {
                 System.loadLibrary("clash")
             } catch (e: Throwable) {

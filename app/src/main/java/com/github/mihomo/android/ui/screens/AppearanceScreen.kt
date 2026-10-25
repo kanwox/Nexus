@@ -25,7 +25,9 @@ fun AppearanceScreen(
     onThemeModeChanged: (ThemeMode) -> Unit,
     onBack: () -> Unit,
     appFont: AppFont = LocalAppFont.current,
-    onAppFontChanged: (AppFont) -> Unit = {}
+    onAppFontChanged: (AppFont) -> Unit = {},
+    appLanguage: String = LocalAppLanguage.current,
+    onAppLanguageChanged: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
@@ -118,6 +120,43 @@ fun AppearanceScreen(
                         }
                     )
                     if (index < fonts.size - 1) {
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+                    }
+                }
+            }
+
+            // Section 3: 界面语言 (System / Chinese / English / Russian)
+            val languages = listOf(
+                "SYSTEM" to "Follow System",
+                "zh" to "简体中文",
+                "en" to "English",
+                "ru" to "Русский"
+            )
+
+            CupertinoGroupedSection(
+                title = AppStrings.get("settings_language", lang)
+            ) {
+                languages.forEachIndexed { index, (code, label) ->
+                    val isSelected = appLanguage == code
+                    CupertinoCell(
+                        title = label,
+                        trailing = {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = IosBlue,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        },
+                        onClick = {
+                            settingsManager.appLanguage = code
+                            onAppLanguageChanged(code)
+                            CupertinoToast.show(AppStrings.get("language_updated", lang))
+                        }
+                    )
+                    if (index < languages.size - 1) {
                         CupertinoIndentedDivider(startIndent = 16.dp)
                     }
                 }

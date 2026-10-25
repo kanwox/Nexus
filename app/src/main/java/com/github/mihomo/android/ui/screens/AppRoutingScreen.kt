@@ -90,7 +90,7 @@ fun AppRoutingScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreHoriz,
-                            contentDescription = "更多操作",
+                            contentDescription = AppStrings.get("more_actions_desc", lang),
                             tint = IosBlue,
                             modifier = Modifier.size(20.dp)
                         )
@@ -110,11 +110,11 @@ fun AppRoutingScreen(
             item {
                 CupertinoGroupedSection(
                     footer = if (currentMode == PerAppProxyMode.DISABLED) {
-                        "当前模式下，设备上所有应用程序的网络流量均经由代理核心转发，无需单独选择应用。"
+                        AppStrings.get("app_routing_disabled_footer", lang)
                     } else null
                 ) {
                     ModeRow(
-                        title = "全部代理",
+                        title = AppStrings.get("app_mode_all", lang),
                         isSelected = currentMode == PerAppProxyMode.DISABLED,
                         onClick = {
                             haptic.selection()
@@ -123,7 +123,7 @@ fun AppRoutingScreen(
                     )
                     CupertinoIndentedDivider(startIndent = 16.dp)
                     ModeRow(
-                        title = "仅代理所选应用",
+                        title = AppStrings.get("app_mode_whitelist", lang),
                         isSelected = currentMode == PerAppProxyMode.WHITELIST,
                         onClick = {
                             haptic.selection()
@@ -132,7 +132,7 @@ fun AppRoutingScreen(
                     )
                     CupertinoIndentedDivider(startIndent = 16.dp)
                     ModeRow(
-                        title = "仅绕过所选应用",
+                        title = AppStrings.get("app_mode_blacklist", lang),
                         isSelected = currentMode == PerAppProxyMode.BLACKLIST,
                         onClick = {
                             haptic.selection()
@@ -154,7 +154,7 @@ fun AppRoutingScreen(
                         CupertinoSearchBar(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
-                            placeholder = "搜索应用或包名"
+                            placeholder = AppStrings.get("app_search_placeholder_short", lang)
                         )
                     }
                 }
@@ -175,7 +175,7 @@ fun AppRoutingScreen(
                                 )
                                 Spacer(modifier = Modifier.height(14.dp))
                                 Text(
-                                    text = "正在读取已安装应用...",
+                                    text = AppStrings.get("app_loading", lang),
                                     color = LoonTextSecondary,
                                     fontSize = 13.5.sp
                                 )
@@ -199,7 +199,7 @@ fun AppRoutingScreen(
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    text = if (searchQuery.isNotBlank()) "未找到匹配应用" else "暂无应用",
+                                    text = if (searchQuery.isNotBlank()) AppStrings.get("app_no_match_short", lang) else AppStrings.get("app_empty", lang),
                                     color = LoonTextSecondary,
                                     fontSize = 14.sp
                                 )
@@ -208,9 +208,9 @@ fun AppRoutingScreen(
                     }
                 } else {
                     val headerText = if (searchQuery.isNotBlank()) {
-                        "搜索结果 (${displayApps.size})"
+                        AppStrings.get("search_results", lang).replace("{n}", displayApps.size.toString())
                     } else {
-                        "应用列表 (${selectedPackages.size} / ${displayApps.size})"
+                        AppStrings.get("app_list_header", lang).replace("{a}", selectedPackages.size.toString()).replace("{b}", displayApps.size.toString())
                     }
 
                     cupertinoGroupedItems(
@@ -239,11 +239,11 @@ fun AppRoutingScreen(
     if (showActionSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showActionSheet = false },
-            title = "高级操作",
-            message = "当前已勾选 ${selectedPackages.size} 个应用",
+            title = AppStrings.get("app_actions_title", lang),
+            message = AppStrings.get("app_selected_message", lang).replace("{n}", selectedPackages.size.toString()),
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = if (showSystemApps) "隐藏系统应用" else "显示系统应用",
+                    text = if (showSystemApps) AppStrings.get("app_hide_system", lang) else AppStrings.get("app_show_system", lang),
                     onClick = {
                         haptic.selection()
                         showSystemApps = !showSystemApps
@@ -251,7 +251,7 @@ fun AppRoutingScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "全选当前列表 (${displayApps.size} 个)",
+                    text = AppStrings.get("app_select_all", lang).replace("{n}", displayApps.size.toString()),
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
@@ -264,7 +264,7 @@ fun AppRoutingScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "反选当前列表",
+                    text = AppStrings.get("app_invert_selection", lang),
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
@@ -279,7 +279,7 @@ fun AppRoutingScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "清空所有已选应用",
+                    text = AppStrings.get("app_clear_selection", lang),
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
@@ -289,11 +289,11 @@ fun AppRoutingScreen(
                         } else {
                             selectedPackages.forEach { onTogglePackage(it) }
                         }
-                        CupertinoToast.show("已清空已勾选应用")
+                        CupertinoToast.show(AppStrings.get("app_selection_cleared_toast", lang))
                     }
                 )
             ),
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 }
@@ -307,6 +307,7 @@ private fun ModeRow(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -325,7 +326,7 @@ private fun ModeRow(
         if (isSelected) {
             Icon(
                 imageVector = Icons.Default.Check,
-                contentDescription = "已选择",
+                contentDescription = AppStrings.get("selected_desc", lang),
                 tint = IosBlue,
                 modifier = Modifier.size(19.dp)
             )
@@ -342,6 +343,7 @@ private fun AppItemCell(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     Row(
         modifier = Modifier
             .fillMaxWidth()

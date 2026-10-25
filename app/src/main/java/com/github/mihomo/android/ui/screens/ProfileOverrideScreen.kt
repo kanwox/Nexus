@@ -85,7 +85,7 @@ fun ProfileOverrideScreen(
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "保存",
+                        text = AppStrings.get("action_save", lang),
                         color = IosBlue,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp
@@ -103,7 +103,7 @@ fun ProfileOverrideScreen(
         ) {
             item {
                 CupertinoGroupedSection(
-                    header = "配置信息",
+                    header = AppStrings.get("override_profile_info", lang),
                     footer = AppStrings.get("override_desc", lang)
                 ) {
                     CupertinoCell(
@@ -138,14 +138,14 @@ fun ProfileOverrideScreen(
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = "暂无可用脚本",
+                                    text = AppStrings.get("override_no_scripts_title", lang),
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "请点击上方「${AppStrings.get("override_go_scripts", lang)}」创建或导入脚本",
+                                    text = AppStrings.get("override_empty_hint", lang).replace("{link}", AppStrings.get("override_go_scripts", lang)),
                                     fontSize = 12.sp,
                                     color = LoonTextSecondary
                                 )
@@ -156,7 +156,7 @@ fun ProfileOverrideScreen(
                             val isChecked = selectedScriptIds.contains(script.id)
                             CupertinoCell(
                                 title = script.name,
-                                subtitle = if (script.url.isNotBlank()) "远程脚本" else "本地脚本",
+                                subtitle = if (script.url.isNotBlank()) AppStrings.get("script_type_remote", lang) else AppStrings.get("script_type_local", lang),
                                 icon = Icons.Default.Javascript,
                                 iconBg = if (isChecked) IosBlue else IosGray,
                                 trailing = {

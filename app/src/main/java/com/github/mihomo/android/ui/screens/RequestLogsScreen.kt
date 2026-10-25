@@ -13,6 +13,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,11 +32,11 @@ import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-private enum class RequestFilter(val label: String) {
-    ALL("全部"),
-    ACTIVE("活跃"),
-    PROXY("代理"),
-    DIRECT("直连")
+private enum class RequestFilter(val labelKey: String) {
+    ALL("log_level_all"),
+    ACTIVE("filter_active"),
+    PROXY("filter_proxy"),
+    DIRECT("filter_direct")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,7 +49,7 @@ fun RequestLogsScreen(
     val lang = LocalAppLanguage.current
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
-    val records by RequestRepository.recordsFlow.collectAsState()
+    val records by RequestRepository.recordsFlow.collectAsStateWithLifecycle()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(RequestFilter.ALL) }
@@ -116,13 +117,13 @@ fun RequestLogsScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.FilterList,
-                                contentDescription = "连接过滤",
+                                contentDescription = AppStrings.get("requests_filter_desc", lang),
                                 tint = if (selectedFilter != RequestFilter.ALL) IosBlue else LoonTextSecondary,
                                 modifier = Modifier.size(20.dp)
                             )
                             if (selectedFilter != RequestFilter.ALL) {
                                 Text(
-                                    text = selectedFilter.label,
+                                    text = AppStrings.get(selectedFilter.labelKey, lang),
                                     color = IosBlue,
                                     fontSize = 13.5.sp,
                                     fontWeight = FontWeight.SemiBold
@@ -144,7 +145,7 @@ fun RequestLogsScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "清空",
+                                text = AppStrings.get("action_clear", lang),
                                 color = RedDanger,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -172,7 +173,7 @@ fun RequestLogsScreen(
                     CupertinoSearchBar(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = "搜索域名、IP、应用或策略"
+                        placeholder = AppStrings.get("requests_search_placeholder", lang)
                     )
                 }
             }
@@ -195,7 +196,7 @@ fun RequestLogsScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = if (searchQuery.isNotBlank()) "未找到匹配记录" else "暂无请求记录",
+                                text = if (searchQuery.isNotBlank()) AppStrings.get("dns_empty_search", lang) else AppStrings.get("requests_empty", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 14.sp
                             )
@@ -204,12 +205,12 @@ fun RequestLogsScreen(
                 }
             } else {
                 val sectionHeader = when {
-                    searchQuery.isNotBlank() -> "搜索结果 (${filteredRecords.size})"
-                    selectedFilter == RequestFilter.ACTIVE -> "活跃连接 (${filteredRecords.size})"
-                    selectedFilter == RequestFilter.PROXY -> "代理连接 (${filteredRecords.size})"
-                    selectedFilter == RequestFilter.DIRECT -> "直连记录 (${filteredRecords.size})"
-                    activeCount > 0 -> "全部记录 (${filteredRecords.size} · 活跃 $activeCount)"
-                    else -> "全部记录 (${filteredRecords.size})"
+                    searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredRecords.size.toString())
+                    selectedFilter == RequestFilter.ACTIVE -> AppStrings.get("requests_section_active", lang).replace("{n}", filteredRecords.size.toString())
+                    selectedFilter == RequestFilter.PROXY -> AppStrings.get("requests_section_proxy", lang).replace("{n}", filteredRecords.size.toString())
+                    selectedFilter == RequestFilter.DIRECT -> AppStrings.get("requests_section_direct", lang).replace("{n}", filteredRecords.size.toString())
+                    activeCount > 0 -> AppStrings.get("requests_section_all_active", lang).replace("{n}", filteredRecords.size.toString()).replace("{m}", activeCount.toString())
+                    else -> AppStrings.get("requests_section_all", lang).replace("{n}", filteredRecords.size.toString())
                 }
 
                 cupertinoGroupedItems(
@@ -244,7 +245,7 @@ fun RequestLogsScreen(
 
         CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRecord = null },
-            title = "请求详情",
+            title = AppStrings.get("requests_detail_title", lang),
             trailingAction = {
                 if (rec.isActive) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -256,7 +257,7 @@ fun RequestLogsScreen(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "活跃中",
+                            text = AppStrings.get("requests_status_active", lang),
                             color = IosGreen,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -264,7 +265,7 @@ fun RequestLogsScreen(
                     }
                 } else {
                     Text(
-                        text = "已关闭",
+                        text = AppStrings.get("requests_status_closed", lang),
                         color = LoonTextMuted,
                         fontSize = 12.sp
                     )
@@ -281,7 +282,7 @@ fun RequestLogsScreen(
 
                 // Card 1: 目标与网络
                 Text(
-                    text = "目标与网络",
+                    text = AppStrings.get("requests_target_section", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -295,27 +296,27 @@ fun RequestLogsScreen(
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     DetailRow(
-                        label = "目标域名",
+                        label = AppStrings.get("requests_field_host", lang),
                         value = rec.host,
                         showCopy = true,
                         onCopy = {
                             clipboardManager.setText(AnnotatedString(rec.host))
-                            CupertinoToast.show("已复制域名")
+                            CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "目标端点",
+                        label = AppStrings.get("requests_field_endpoint", lang),
                         value = "${rec.destinationIp}:${rec.destinationPort}",
                         showCopy = true,
                         onCopy = {
                             clipboardManager.setText(AnnotatedString("${rec.destinationIp}:${rec.destinationPort}"))
-                            CupertinoToast.show("已复制端点")
+                            CupertinoToast.show(AppStrings.get("copied_endpoint_toast", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "传输协议",
+                        label = AppStrings.get("requests_field_network", lang),
                         value = rec.network
                     )
                 }
@@ -324,7 +325,7 @@ fun RequestLogsScreen(
 
                 // Card 2: 分流与策略
                 Text(
-                    text = "分流与策略",
+                    text = AppStrings.get("requests_policy_section", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -343,12 +344,12 @@ fun RequestLogsScreen(
                         rec.rule
                     }
                     DetailRow(
-                        label = "命中规则",
+                        label = AppStrings.get("requests_field_rule", lang),
                         value = ruleDescription
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "策略节点",
+                        label = AppStrings.get("requests_field_node", lang),
                         value = rec.outbound,
                         valueColor = when {
                             rec.outbound.equals("REJECT", ignoreCase = true) -> RedDanger
@@ -359,7 +360,7 @@ fun RequestLogsScreen(
                     if (rec.chain.size > 1) {
                         Spacer(modifier = Modifier.height(8.dp))
                         DetailRow(
-                            label = "策略链路",
+                            label = AppStrings.get("requests_field_chain", lang),
                             value = rec.chain.joinToString(" ➔ ")
                         )
                     }
@@ -369,7 +370,7 @@ fun RequestLogsScreen(
 
                 // Card 3: 来源与流量统计
                 Text(
-                    text = "来源与流量统计",
+                    text = AppStrings.get("requests_source_section", lang),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
@@ -388,22 +389,22 @@ fun RequestLogsScreen(
                         rec.sourceApp
                     }
                     DetailRow(
-                        label = "发起应用",
+                        label = AppStrings.get("requests_field_app", lang),
                         value = appDisplay
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "流量统计",
+                        label = AppStrings.get("requests_field_traffic", lang),
                         value = "↑ ${formatTraffic(rec.uploadBytes)}   ↓ ${formatTraffic(rec.downloadBytes)}"
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "持续时间",
-                        value = if (rec.isActive) "活跃中" else formatDuration(rec.durationMs)
+                        label = AppStrings.get("requests_field_duration", lang),
+                        value = if (rec.isActive) AppStrings.get("requests_status_active", lang) else formatDuration(rec.durationMs, lang)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
-                        label = "建立时间",
+                        label = AppStrings.get("requests_field_time", lang),
                         value = formattedDetailTime
                     )
                 }
@@ -421,12 +422,12 @@ fun RequestLogsScreen(
                                 haptic.impact()
                                 RequestRepository.closeConnection(rec.id)
                                 activeDetailRecord = null
-                                CupertinoToast.show("已断开连接", isDestructive = true)
+                                CupertinoToast.show(AppStrings.get("requests_closed_toast", lang), isDestructive = true)
                             },
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "断开此连接",
+                            text = AppStrings.get("requests_close_action", lang),
                             color = RedDanger,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold
@@ -441,30 +442,30 @@ fun RequestLogsScreen(
     if (showClearActionSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showClearActionSheet = false },
-            title = "清空请求记录",
-            message = "请选择要执行的清理操作",
+            title = AppStrings.get("requests_clear_title", lang),
+            message = AppStrings.get("requests_clear_message", lang),
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = "清空已完成记录",
+                    text = AppStrings.get("requests_clear_closed", lang),
                     onClick = {
                         haptic.lightTick()
                         showClearActionSheet = false
                         RequestRepository.clearClosed()
-                        CupertinoToast.show("已清理已完成记录")
+                        CupertinoToast.show(AppStrings.get("requests_cleared_closed_toast", lang))
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "断开所有连接并清空",
+                    text = AppStrings.get("requests_clear_all", lang),
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
                         showClearActionSheet = false
                         RequestRepository.clearAll()
-                        CupertinoToast.show("已清空全部连接记录", isDestructive = true)
+                        CupertinoToast.show(AppStrings.get("requests_cleared_all_toast", lang), isDestructive = true)
                     }
                 )
             ),
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 
@@ -472,8 +473,8 @@ fun RequestLogsScreen(
     if (showFilterActionSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showFilterActionSheet = false },
-            title = "连接记录过滤",
-            message = "当前匹配 ${filteredRecords.size} / ${records.size} 条连接",
+            title = AppStrings.get("requests_filter_title", lang),
+            message = AppStrings.get("requests_filter_message", lang).replace("{a}", filteredRecords.size.toString()).replace("{b}", records.size.toString()),
             actions = RequestFilter.entries.map { filter ->
                 val count = when (filter) {
                     RequestFilter.ALL -> records.size
@@ -482,7 +483,7 @@ fun RequestLogsScreen(
                     RequestFilter.DIRECT -> records.count { it.outbound.equals("DIRECT", ignoreCase = true) }
                 }
                 CupertinoActionSheetItem(
-                    text = "${filter.label} ($count)" + if (filter == selectedFilter) "  ✓" else "",
+                    text = AppStrings.get(filter.labelKey, lang) + " ($count)" + if (filter == selectedFilter) "  ✓" else "",
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -490,7 +491,7 @@ fun RequestLogsScreen(
                     }
                 )
             },
-            cancelText = "取消"
+            cancelText = AppStrings.get("cancel", lang)
         )
     }
 }
@@ -505,6 +506,7 @@ private fun RequestRecordCell(
     formattedTime: String,
     onClick: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val (outboundColor, outboundText) = when {
         record.outbound.equals("REJECT", ignoreCase = true) -> Pair(RedDanger, "REJECT")
         record.outbound.equals("DIRECT", ignoreCase = true) -> Pair(LoonTextSecondary, "DIRECT")
@@ -618,7 +620,7 @@ private fun RequestRecordCell(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "活跃",
+                        text = AppStrings.get("filter_active", lang),
                         color = IosGreen,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium
@@ -646,6 +648,7 @@ private fun DetailRow(
     showCopy: Boolean = false,
     onCopy: (() -> Unit)? = null
 ) {
+    val lang = LocalAppLanguage.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -676,7 +679,7 @@ private fun DetailRow(
                 Spacer(modifier = Modifier.width(6.dp))
                 Icon(
                     imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "复制",
+                    contentDescription = AppStrings.get("copy_desc", lang),
                     tint = IosBlue,
                     modifier = Modifier
                         .size(15.dp)
@@ -703,13 +706,13 @@ private fun formatTraffic(bytes: Long): String {
 /**
  * Format duration in milliseconds into human-readable string.
  */
-private fun formatDuration(ms: Long): String {
-    if (ms <= 0) return "< 1秒"
+private fun formatDuration(ms: Long, lang: String): String {
+    if (ms <= 0) return AppStrings.get("duration_lt_second", lang)
     val seconds = ms / 1000
     return when {
-        seconds >= 3600 -> "${seconds / 3600}小时 ${(seconds % 3600) / 60}分"
-        seconds >= 60 -> "${seconds / 60}分 ${seconds % 60}秒"
-        else -> "${seconds}秒"
+        seconds >= 3600 -> AppStrings.get("duration_hm", lang).replace("{h}", (seconds / 3600).toString()).replace("{m}", ((seconds % 3600) / 60).toString())
+        seconds >= 60 -> AppStrings.get("duration_ms", lang).replace("{m}", (seconds / 60).toString()).replace("{s}", (seconds % 60).toString())
+        else -> AppStrings.get("duration_s", lang).replace("{s}", seconds.toString())
     }
 }
 

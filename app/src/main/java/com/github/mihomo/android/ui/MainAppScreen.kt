@@ -373,6 +373,7 @@ fun MainAppScreen(
                         onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
                         onNavigateToRules = { currentSubScreen = SubScreen.RULES },
                         onNavigateToRequests = { currentSubScreen = SubScreen.REQUESTS },
+                        onNavigateToDns = { currentSubScreen = SubScreen.DNS },
                         onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
                         onUpdateVisibleShortcuts = { updated ->
                             visibleShortcuts = updated
@@ -804,7 +805,12 @@ fun MainAppScreen(
                                 onThemeModeChanged = onThemeModeChanged,
                                 onBack = { currentSubScreen = null },
                                 appFont = currentAppFont,
-                                onAppFontChanged = onAppFontChanged
+                                onAppFontChanged = onAppFontChanged,
+                                appLanguage = appLanguage,
+                                onAppLanguageChanged = { code ->
+                                    appLanguage = code
+                                    settingsManager.appLanguage = code
+                                }
                             )
                         }
                     }

@@ -178,8 +178,11 @@ class SettingsManager(context: Context) {
         get() = prefs.getString("node_sort_mode", "DEFAULT") ?: "DEFAULT"
         set(value) = prefs.edit { putString("node_sort_mode", value) }
 
+    // "info" is the lowest level whose connection/DNS lines still feed the request and DNS
+    // views; "debug" makes the core format a log line for every internal event before the
+    // screen-off gate in LogRepository can drop it.
     var logLevel: String
-        get() = prefs.getString("core_log_level", "debug") ?: "debug"
+        get() = prefs.getString("core_log_level", "info") ?: "info"
         set(value) = prefs.edit { putString("core_log_level", value) }
 
     var themeMode: ThemeMode

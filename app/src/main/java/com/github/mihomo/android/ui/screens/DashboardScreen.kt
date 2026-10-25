@@ -128,22 +128,22 @@ fun DashboardScreen(
             "profiles" to ShortcutDef("profiles", AppStrings.get("shortcut_profiles", lang), activeProfileName, { ProfilesIllustration() }) {
                 onNavigateToProfiles()
             },
-            "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) "实时监控" else "未开启", { RequestLogsIllustration() }) {
+            "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) AppStrings.get("subtitle_live_monitoring", lang) else AppStrings.get("subtitle_disabled", lang), { RequestLogsIllustration() }) {
                 onNavigateToRequests()
             },
-            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) "实时解析" else "点击查看", { DnsIllustration() }) {
+            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) AppStrings.get("subtitle_live_resolving", lang) else AppStrings.get("subtitle_tap_to_view", lang), { DnsIllustration() }) {
                 onNavigateToDns()
             },
             "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "1", { RulesIllustration() }) {
                 onNavigateToRules()
             },
-            "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), "规则与黑白名单", { AppRoutingIllustration() }) {
+            "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), AppStrings.get("subtitle_rules_blacklist", lang), { AppRoutingIllustration() }) {
                 onNavigateToAppRouting()
             },
             "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (coreVersion.isNotBlank()) "v${coreVersion.take(8)}" else "Nexus Core", { PluginsIllustration() }) {
-                activeDialogTitle = "内核信息"
-                activeDialogContent = "内核版本: ${coreVersion.ifBlank { "v1.18.x" }}\n" +
-                        "架构支持: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"}"
+                activeDialogTitle = AppStrings.get("shortcut_plugins", lang)
+                activeDialogContent = AppStrings.get("core_info_version", lang).replace("{v}", coreVersion.ifBlank { "v1.18.x" }) + "\n" +
+                        AppStrings.get("core_info_arch", lang).replace("{v}", android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a")
             },
             "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:7890", { NetworkShareIllustration() }) {
                 onNavigateToNetworkShare()
@@ -535,7 +535,7 @@ fun DashboardScreen(
                     },
                     sheetState = quickNodeSheetState,
                     modifier = Modifier.fillMaxHeight(0.60f),
-                    title = "选择节点",
+                    title = AppStrings.get("select_node_title", lang),
                     leadingAction = {
                         Box(
                             modifier = Modifier
@@ -572,7 +572,7 @@ fun DashboardScreen(
                         CupertinoSearchBar(
                             value = quickNodeSearchQuery,
                             onValueChange = { quickNodeSearchQuery = it },
-                            placeholder = "搜索节点"
+                            placeholder = AppStrings.get("quick_node_search_hint", lang)
                         )
                     }
 
@@ -590,7 +590,7 @@ fun DashboardScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = if (mainGroupProxies.isEmpty()) "暂无可用节点" else "未找到匹配节点",
+                                text = if (mainGroupProxies.isEmpty()) AppStrings.get("quick_node_empty", lang) else AppStrings.get("quick_node_no_match", lang),
                                 color = LoonTextSecondary,
                                 fontSize = 14.sp
                             )
@@ -786,9 +786,9 @@ fun DashboardScreen(
                     ) {
                         CupertinoGroupedSection {
                             val modes = listOf(
-                                Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), "根据分流规则匹配分流策略"),
-                                Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), "强制转发至目标节点"),
-                                Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), "所有流量直接连接，不通过代理")
+                                Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), AppStrings.get("mode_rule_desc", lang)),
+                                Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), AppStrings.get("mode_global_desc", lang)),
+                                Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), AppStrings.get("mode_direct_desc", lang))
                             )
 
                             modes.forEachIndexed { index, (mode, title, desc) ->
@@ -842,7 +842,7 @@ fun DashboardScreen(
                 CupertinoAlertDialog(
                     title = activeDialogTitle ?: "",
                     message = activeDialogContent ?: "",
-                    confirmText = "知道了",
+                    confirmText = AppStrings.get("dialog_ok", lang),
                     dismissText = null,
                     onConfirm = { activeDialogTitle = null },
                     onDismissRequest = { activeDialogTitle = null }

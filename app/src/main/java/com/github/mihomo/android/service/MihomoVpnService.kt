@@ -562,9 +562,21 @@ class MihomoVpnService : VpnService() {
         trafficMonitorJob?.cancel()
         startJob?.cancel()
         serviceScope.cancel()
-        runCatching { ClashCore.stopTun() }
-        runCatching { vpnInterface?.close() }
+        val pfd = vpnInterface
         vpnInterface = null
+        // nativeStopTun is a blocking JNI call that can stall for a while with many live
+        // connections; keep it off the main thread. A daemon thread is enough: on process
+        // death the kernel closes the fds anyway. An overlap with an in-flight closeTunnel
+        // is tolerated — the normal stop path already runs stopTun twice (closeTunnel, then
+        // onDestroy), and ParcelFileDescriptor.close is idempotent.
+        Thread {
+            runCatching { ClashCore.stopTun() }
+            runCatching { pfd?.close() }
+        }.apply {
+            name = "mihomo-vpn-teardown"
+            isDaemon = true
+            start()
+        }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         if (_vpnState.value.status != VpnState.Status.STOPPED) {
             _vpnState.value = VpnState(status = VpnState.Status.STOPPED)

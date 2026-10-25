@@ -17,6 +17,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import com.github.mihomo.android.ui.theme.RoundedCornerShape
 import com.github.mihomo.android.ui.theme.LocalAppFont
+import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.ui.theme.LocalAppLanguage
 import com.github.mihomo.android.data.AppFont
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -625,7 +627,7 @@ fun CupertinoNavBar(
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
-                                contentDescription = "返回",
+                                contentDescription = AppStrings.get("back", LocalAppLanguage.current),
                                 tint = IosBlue,
                                 modifier = Modifier.size(17.dp)
                             )
@@ -702,7 +704,7 @@ fun CupertinoActionSheet(
     title: String? = null,
     message: String? = null,
     actions: List<CupertinoActionSheetItem>,
-    cancelText: String = "取消"
+    cancelText: String = AppStrings.get("cancel", LocalAppLanguage.current)
 ) {
     val haptic = rememberIosHaptic()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1029,8 +1031,8 @@ fun CupertinoAlertDialog(
     title: String,
     onDismissRequest: () -> Unit,
     message: String? = null,
-    confirmText: String = "确定",
-    dismissText: String? = "取消",
+    confirmText: String = AppStrings.get("confirm", LocalAppLanguage.current),
+    dismissText: String? = AppStrings.get("cancel", LocalAppLanguage.current),
     isDestructive: Boolean = false,
     onConfirm: () -> Unit,
     onDismiss: (() -> Unit)? = onDismissRequest,
@@ -1176,7 +1178,7 @@ fun CupertinoSearchBar(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    placeholder: String = "搜索",
+    placeholder: String = AppStrings.get("search_placeholder", LocalAppLanguage.current),
     leadingIcon: ImageVector = Icons.Default.Search
 ) {
     val haptic = rememberIosHaptic()
@@ -1243,7 +1245,7 @@ fun CupertinoSearchBar(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Clear,
-                        contentDescription = "清除",
+                        contentDescription = AppStrings.get("clear", LocalAppLanguage.current),
                         tint = Color.White,
                         modifier = Modifier.size(12.dp)
                     )
