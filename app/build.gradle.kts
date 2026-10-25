@@ -33,8 +33,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.0.4-Alpha.5"
+        versionCode = 15
+        versionName = "1.0.4-Alpha.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -56,14 +56,12 @@ android {
 
     buildTypes {
         release {
-            // R8 shrinking is enabled. The original "crashes on startup with the native
-            // core" note had been recorded on the x86_64 emulator, where even non-minified
-            // builds die inside libclash under ARM translation — the crash was an emulator
-            // artifact, not R8. Verified: a minified debug build (with the emulator core
-            // bypass) runs the full UI/config/script pipeline, and a minified release build
-            // reaches the exact same (emulator-only) crash point as the non-minified one.
-            // Keep rules cover the native bridge, quickjs-kt and kotlinx.serialization.
-            // If a real device ever regresses here, flip both flags back to false.
+            // R8 shrinking is enabled. The first minified release (v1.0.4-Alpha.5) crashed
+            // at startup: libbridge.so's JNI_OnLoad looks up kotlinx.coroutines methods by
+            // name, which R8 had stripped — fixed with an explicit keep rule in
+            // proguard-rules.pro. Note an x86_64 emulator cannot verify this path (the
+            // arm64-only Go core dies there under translation regardless); verify on a
+            // real device. If a device ever regresses, flip both flags back to false.
             isMinifyEnabled = true
             isShrinkResources = true
             if (hasReleaseSigning) {

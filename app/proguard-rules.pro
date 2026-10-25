@@ -32,6 +32,13 @@
 -keep class com.dokar.quickjs.** { *; }
 -dontwarn com.dokar.quickjs.**
 
+# The gomobile bridge (libbridge.so) looks up coroutine types BY NAME from native code
+# during JNI_OnLoad (its bind API uses CompletableDeferred, e.g. nativeLoad). R8's
+# reachability analysis cannot see name-based JNI lookups and stripped interface methods,
+# which crashed the first minified release (v1.0.4-Alpha.5) at startup with
+# NoSuchMethodError CompletableDeferred.complete. Keep the whole package.
+-keep class kotlinx.coroutines.** { *; }
+
 # ---------------------------------------------------------------------------
 # Data Models & Serialization (kotlinx.serialization)
 # ---------------------------------------------------------------------------
