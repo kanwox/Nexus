@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nexus</string>
+    <string name="vpn_running">Nexus: прокси подключён</string>
+    <string name="vpn_stopped">Nexus: прокси отключён</string>
+    <string name="vpn_starting">Запуск прокси-сервиса…</string>
+    <string name="notification_restoring">Восстановление прокси-сервиса…</string>
+    <string name="action_stop">Отключить</string>
+    <string name="action_start">Подключить</string>
+    <string name="notification_channel_name">Nexus: статус и трафик</string>
+    <string name="notification_channel_desc">Показывает статус прокси и скорость сети в реальном времени</string>
+</resources>

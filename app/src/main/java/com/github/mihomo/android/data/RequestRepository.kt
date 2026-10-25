@@ -1,96 +1,210 @@
 package com.github.mihomo.android.data
 
+import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Structured connection records polled from the core's external-controller (/connections).
+ * This replaced the previous log-regex parsing: the API reports stable connection ids, real
+ * byte counters, the full proxy chain and close events, so records can be updated in place,
+ * per-connection close actually works, and a core log format change can no longer silently
+ * empty the request view.
+ */
 object RequestRepository {
     private const val MAX_RECORDS = 500
     private const val PUBLISH_INTERVAL_MS = 400L
-    private const val ACTIVE_CONNECTION_TTL_MS = 120_000L
-    private const val TTL_SWEEP_INTERVAL_MS = 15_000L
+    private const val POLL_INTERVAL_MS = 1000L
+
     private val nextId = AtomicLong(1)
     private val recordList = ArrayDeque<RequestRecord>(MAX_RECORDS)
-    private var lastSweepTimestamp = 0L
 
     private val _recordsFlow = MutableStateFlow<List<RequestRecord>>(emptyList())
     val recordsFlow: StateFlow<List<RequestRecord>> = _recordsFlow.asStateFlow()
+
+    /** Live connections from the last successful poll; drives the dashboard connections stat. */
+    private val _activeCountFlow = MutableStateFlow(0)
+    val activeCountFlow: StateFlow<Int> = _activeCountFlow.asStateFlow()
 
     private val publisher = ThrottledPublisher(PUBLISH_INTERVAL_MS, _recordsFlow.subscriptionCount) {
         val snapshot = synchronized(this) { recordList.toList() }
         _recordsFlow.value = snapshot
     }
 
-    private val closeRegex = Regex(
-        """\[(TCP|UDP|ICMP)]\s+(?:connection\s+to\s+)?(?:\[([0-9a-fA-F:]+)]|([^\s:]+))(?::\d+)?\s+closed""",
-        RegexOption.IGNORE_CASE
-    )
+    private var pollJob: Job? = null
+    private var appContext: Context? = null
+    private var uidResolver: ((Int, String, String) -> Int)? = null
 
-    // Handles:
-    // [TCP] 172.19.0.1:54321(com.android.chrome) --> www.google.com:443 match DomainSuffix(google.com) using 🔰 节点选择[🇭🇰 香港 01]
-    // [TCP] 172.19.0.1:54321 --> api.github.com:443 doesn't match any rule using DIRECT
-    // [UDP] 172.19.0.1:12345 --> 8.8.8.8:53 using DIRECT
-    // [TCP] 172.19.0.1:54321 --> [2607:f8b0:4005:805::200e]:443 match GeoIP(US) using Proxy[US 01]
-    private val arrowRegex = Regex(
-        """\[(TCP|UDP|ICMP)]\s+(?:\[?[0-9a-fA-F.:]+]?:\d+)?(?:\(([^)]+)\))?\s+(?:-->|->)\s+(?:\[([0-9a-fA-F:]+)]|([^\s:]+)):?(\d+)?(?:\s+(?:match\s+([a-zA-Z0-9_.-]+)(?:\(([^)]*)\))?|doesn't match any rule))?\s+using\s+(.+)$""",
-        RegexOption.IGNORE_CASE
-    )
+    // uid -> (display label, package name); a long session with many apps must not hammer
+    // PackageManager on every new connection.
+    private val uidLabelCache = HashMap<Int, Pair<String, String?>>()
 
-    // Handles:
-    // [TCP] dial Proxy[HK 01] (match DomainSuffix/github.com) to api.github.com:443
-    // [TCP] dial DIRECT to 127.0.0.1:53
-    private val dialRegex = Regex(
-        """\[(TCP|UDP|ICMP)]\s+dial\s+(.+?)(?:\s+\(match\s+([a-zA-Z0-9_.-]+)(?:[/(]([^/)]+)[)/]?)?\))?\s+to\s+(?:\[([0-9a-fA-F:]+)]|([^\s:]+)):?(\d+)?$""",
-        RegexOption.IGNORE_CASE
-    )
+    /**
+     * Starts the poll loop. [resolver] performs the Android connection-owner lookup
+     * (getConnectionOwnerUid) for a connection's source/dest endpoints; it is invoked on IO.
+     */
+    fun startPolling(scope: CoroutineScope, context: Context, resolver: (Int, String, String) -> Int) {
+        appContext = context.applicationContext
+        uidResolver = resolver
+        if (pollJob?.isActive == true) return
+        pollJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(POLL_INTERVAL_MS)
+                // Screen-off pauses everything non-essential (same gate as LogRepository).
+                if (LogRepository.isScreenOff) continue
+                val snapshot = MihomoApi.connections() ?: continue
+                applySnapshot(snapshot)
+            }
+        }
+    }
+
+    fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+    }
 
     @Synchronized
-    fun addRecord(record: RequestRecord) {
-        val now = record.timestamp
-        if ((now - lastSweepTimestamp) >= TTL_SWEEP_INTERVAL_MS) {
-            lastSweepTimestamp = now
-            for (i in recordList.indices) {
-                val existing = recordList[i]
-                if (existing.isActive && now - existing.timestamp > ACTIVE_CONNECTION_TTL_MS) {
-                    recordList[i] = existing.copy(
-                        isActive = false,
-                        durationMs = now - existing.timestamp
+    internal fun applySnapshot(snapshot: MihomoApi.ConnectionsSnapshot) {
+        val now = System.currentTimeMillis()
+        val liveIds = HashSet<String>(snapshot.connections.size)
+        var changed = false
+
+        for (conn in snapshot.connections) {
+            liveIds.add(conn.id)
+            val index = recordList.indexOfFirst { it.connectionId == conn.id }
+            if (index == -1) {
+                if (recordList.size >= MAX_RECORDS) {
+                    recordList.removeLast()
+                }
+                val (label, pkg) = resolveAppLabel(conn)
+                recordList.addFirst(
+                    RequestRecord(
+                        id = nextId.getAndIncrement(),
+                        connectionId = conn.id,
+                        host = conn.host,
+                        destinationIp = conn.destinationIp.ifBlank { conn.host },
+                        destinationPort = conn.destinationPort,
+                        network = conn.network,
+                        sourceApp = label,
+                        packageName = pkg,
+                        rule = conn.rule.ifBlank { "Match" },
+                        rulePayload = conn.rulePayload,
+                        outbound = conn.chains.firstOrNull()?.uppercase().orEmpty().ifBlank { "DIRECT" },
+                        chain = conn.chains.asReversed(),
+                        uploadBytes = conn.uploadBytes,
+                        downloadBytes = conn.downloadBytes,
+                        isActive = !conn.rule.equals("Reject", ignoreCase = true) &&
+                            !conn.outboundEqualsReject(),
+                        timestamp = if (conn.startMs > 0) conn.startMs else now,
+                        lastSeenMs = now
                     )
+                )
+                changed = true
+            } else {
+                val old = recordList[index]
+                if (old.uploadBytes != conn.uploadBytes || old.downloadBytes != conn.downloadBytes || !old.isActive) {
+                    recordList[index] = old.copy(
+                        uploadBytes = conn.uploadBytes,
+                        downloadBytes = conn.downloadBytes,
+                        isActive = true,
+                        lastSeenMs = now
+                    )
+                    changed = true
+                } else if (now - old.lastSeenMs > 5000L) {
+                    // Keep lastSeen fresh without triggering a publish; a stale lastSeen would
+                    // inflate durations when the poll loop resumes after a long pause.
+                    recordList[index] = old.copy(lastSeenMs = now)
                 }
             }
         }
-        if (recordList.size >= MAX_RECORDS) {
-            recordList.removeLast()
+
+        for (index in recordList.indices) {
+            val record = recordList[index]
+            if (record.isActive && record.connectionId != null && record.connectionId !in liveIds) {
+                val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: now
+                recordList[index] = record.copy(
+                    isActive = false,
+                    durationMs = (closedAt - record.timestamp).coerceAtLeast(0L),
+                    lastSeenMs = now
+                )
+                changed = true
+            }
         }
-        recordList.addFirst(record)
-        publisher.request()
+
+        if (_activeCountFlow.value != liveIds.size) {
+            _activeCountFlow.value = liveIds.size
+        }
+        if (changed) {
+            publisher.request()
+        }
+    }
+
+    private fun MihomoApi.ApiConnection.outboundEqualsReject(): Boolean =
+        chains.firstOrNull()?.equals("REJECT", ignoreCase = true) == true
+
+    private fun resolveAppLabel(conn: MihomoApi.ApiConnection): Pair<String, String?> {
+        val resolver = uidResolver ?: return "系统" to null
+        val uid = runCatching {
+            resolver(
+                if (conn.network == "UDP") android.system.OsConstants.IPPROTO_UDP
+                else android.system.OsConstants.IPPROTO_TCP,
+                "${conn.sourceIp}:${conn.sourcePort}",
+                "${conn.destinationIp.ifBlank { conn.host }}:${conn.destinationPort}"
+            )
+        }.getOrDefault(0)
+        if (uid <= 0) return "系统" to null
+        synchronized(uidLabelCache) {
+            uidLabelCache[uid]?.let { return it }
+        }
+        val context = appContext
+        val pkg = context?.packageManager?.getPackagesForUid(uid)?.firstOrNull()
+        val label = pkg?.let { name ->
+            runCatching {
+                context.packageManager.getApplicationLabel(
+                    context.packageManager.getApplicationInfo(name, 0)
+                ).toString()
+            }.getOrNull()
+        } ?: "UID $uid"
+        val pair = label to pkg
+        synchronized(uidLabelCache) {
+            if (uidLabelCache.size > 500) uidLabelCache.clear()
+            uidLabelCache[uid] = pair
+        }
+        return pair
+    }
+
+    /** Asks the core to drop the connection behind [id]; the record is closed either way. */
+    suspend fun closeConnection(id: Long): Boolean = withContext(Dispatchers.IO) {
+        val connectionId = synchronized(this@RequestRepository) {
+            recordList.firstOrNull { it.id == id }?.connectionId
+        }
+        val requested = if (connectionId != null) MihomoApi.closeConnection(connectionId) else false
+        markClosed(id)
+        requested
     }
 
     @Synchronized
-    fun closeConnection(id: Long) {
+    private fun markClosed(id: Long) {
         val index = recordList.indexOfFirst { it.id == id }
         if (index != -1) {
             val old = recordList[index]
-            recordList[index] = old.copy(
-                isActive = false,
-                durationMs = if (old.durationMs > 0) old.durationMs else (System.currentTimeMillis() - old.timestamp)
-            )
-            publisher.request()
-        }
-    }
-
-    @Synchronized
-    fun markHostClosed(host: String) {
-        val cleanHost = host.trim().lowercase()
-        val index = recordList.indexOfFirst { it.isActive && it.host.lowercase() == cleanHost }
-        if (index != -1) {
-            val old = recordList[index]
-            recordList[index] = old.copy(
-                isActive = false,
-                durationMs = if (old.durationMs > 0) old.durationMs else (System.currentTimeMillis() - old.timestamp)
-            )
-            publisher.request()
+            if (old.isActive) {
+                val closedAt = old.lastSeenMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+                recordList[index] = old.copy(
+                    isActive = false,
+                    durationMs = (closedAt - old.timestamp).coerceAtLeast(0L)
+                )
+                publisher.request()
+            }
         }
     }
 
@@ -103,155 +217,24 @@ object RequestRepository {
     @Synchronized
     fun clearAll() {
         recordList.clear()
+        _activeCountFlow.value = 0
         publisher.publishNow()
     }
 
-    private fun parseChain(rawOutbound: String): List<String> {
-        val trimmed = rawOutbound.trim()
-        if (trimmed.equals("DIRECT", ignoreCase = true) || trimmed.equals("REJECT", ignoreCase = true)) {
-            return listOf(trimmed.uppercase())
-        }
-        // Check for Proxy[name] or Group[Node] format: e.g. 🔰 节点选择[🇭🇰 香港 01]
-        val bracketMatch = Regex("""^(.*?)\s*\[(.*?)]$""").find(trimmed)
-        if (bracketMatch != null) {
-            val group = bracketMatch.groupValues[1].trim()
-            val node = bracketMatch.groupValues[2].trim()
-            return if (group.isNotBlank() && !group.equals("Proxy", ignoreCase = true)) {
-                listOf(group, node)
-            } else {
-                listOf(node)
-            }
-        }
-        return listOf("🔰 节点选择", trimmed)
-    }
-
-    fun parseFromLog(message: String) {
-        try {
-            val trimmed = message.trim()
-
-            // 1. Check for connection closed events: e.g. [TCP] connection to api.github.com:443 closed
-            if (trimmed.contains("closed", ignoreCase = true)) {
-                val closeMatch = closeRegex.find(trimmed)
-                if (closeMatch != null) {
-                    val host = (closeMatch.groupValues[2].takeIf { it.isNotBlank() }
-                        ?: closeMatch.groupValues[3]).trim()
-                    markHostClosed(host)
-                    return
-                }
-            }
-
-            // Quick pre-filtering
-            if (!trimmed.contains("-->") && !trimmed.contains("->") && !trimmed.contains("dial", ignoreCase = true)) {
-                return
-            }
-
-            // 2. Format: [TCP] 172.19.0.1:54321(com.android.chrome) --> www.google.com:443 match DomainSuffix(google.com) using 🔰 节点选择[🇭🇰 香港 01]
-            val arrowMatch = arrowRegex.find(trimmed)
-            if (arrowMatch != null) {
-                val net = arrowMatch.groupValues[1].uppercase()
-                val pkgName = arrowMatch.groupValues[2].takeIf { it.isNotBlank() }
-                val host = (arrowMatch.groupValues[3].takeIf { it.isNotBlank() }
-                    ?: arrowMatch.groupValues[4]).trim()
-                val port = arrowMatch.groupValues[5].toIntOrNull() ?: 443
-                val rawRule = arrowMatch.groupValues[6].takeIf { it.isNotBlank() }
-                val ruleType = when {
-                    rawRule != null -> rawRule
-                    trimmed.contains("doesn't match any rule", ignoreCase = true) -> "Direct/Default"
-                    else -> "Match"
-                }
-                val rulePayload = arrowMatch.groupValues[7].trim()
-                val rawOutbound = arrowMatch.groupValues[8].trim()
-                val outbound = if (rawOutbound.startsWith("Proxy[") && rawOutbound.endsWith("]")) {
-                    rawOutbound.removePrefix("Proxy[").removeSuffix("]").trim()
-                } else {
-                    rawOutbound
-                }
-
-                val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
-                val isReject = outbound.equals("REJECT", ignoreCase = true)
-
-                // Only mirror genuinely resolved domains into the DNS view. Synthesizing a
-                // fake "198.18.0.x (Proxy)" entry polluted the DNS list with non-DNS data
-                // and poisoned the domain→IP map used to fill destinationIp elsewhere.
-                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$""")) && resolvedIp != host) {
-                    DnsRepository.addRecord(
-                        domain = host,
-                        ip = resolvedIp,
-                        isFakeIp = resolvedIp.startsWith("198.18.") || resolvedIp.startsWith("198.19."),
-                        server = outbound
-                    )
-                }
-
-                addRecord(
-                    RequestRecord(
-                        id = nextId.getAndIncrement(),
-                        host = host,
-                        destinationIp = resolvedIp,
-                        destinationPort = port,
-                        network = net,
-                        sourceApp = pkgName ?: "系统",
-                        packageName = pkgName,
-                        rule = ruleType,
-                        rulePayload = rulePayload,
-                        outbound = outbound,
-                        chain = parseChain(rawOutbound),
-                        isActive = !isReject,
-                        timestamp = System.currentTimeMillis()
-                    )
-                )
-                return
-            }
-
-            // 3. Format: [TCP] dial Proxy[HK 01] (match DomainSuffix/github.com) to api.github.com:443
-            val dialMatch = dialRegex.find(trimmed)
-            if (dialMatch != null) {
-                val net = dialMatch.groupValues[1].uppercase()
-                val rawOutbound = dialMatch.groupValues[2].trim()
-                val outbound = if (rawOutbound.startsWith("Proxy[") && rawOutbound.endsWith("]")) {
-                    rawOutbound.removePrefix("Proxy[").removeSuffix("]").trim()
-                } else {
-                    rawOutbound
-                }
-                val ruleType = dialMatch.groupValues[3].ifBlank { "Match" }
-                val rulePayload = dialMatch.groupValues[4].trim()
-                val host = (dialMatch.groupValues[5].takeIf { it.isNotBlank() }
-                    ?: dialMatch.groupValues[6]).trim()
-                val port = dialMatch.groupValues[7].toIntOrNull() ?: 443
-
-                val resolvedIp = DnsRepository.findIpForDomain(host) ?: host
-                val isReject = outbound.equals("REJECT", ignoreCase = true)
-
-                // See the arrow-log branch above: only record real resolutions, never
-                // synthetic placeholder IPs.
-                if (host.contains('.') && !host.matches(Regex("""^[0-9.:]+$""")) && resolvedIp != host) {
-                    DnsRepository.addRecord(
-                        domain = host,
-                        ip = resolvedIp,
-                        isFakeIp = resolvedIp.startsWith("198.18.") || resolvedIp.startsWith("198.19."),
-                        server = outbound
-                    )
-                }
-
-                addRecord(
-                    RequestRecord(
-                        id = nextId.getAndIncrement(),
-                        host = host,
-                        destinationIp = resolvedIp,
-                        destinationPort = port,
-                        network = net,
-                        sourceApp = "系统",
-                        packageName = null,
-                        rule = ruleType,
-                        rulePayload = rulePayload,
-                        outbound = outbound,
-                        chain = parseChain(rawOutbound),
-                        isActive = !isReject,
-                        timestamp = System.currentTimeMillis()
-                    )
+    /** Aggregated per-host totals over the currently tracked records (for the ranking card). */
+    @Synchronized
+    fun topHostsByTraffic(limit: Int = 5): List<Triple<String, Long, Long>> {
+        return recordList.asSequence()
+            .filter { it.host.isNotBlank() }
+            .groupBy { it.host.lowercase() }
+            .map { (host, records) ->
+                Triple(
+                    host,
+                    records.sumOf { it.uploadBytes },
+                    records.sumOf { it.downloadBytes }
                 )
             }
-        } catch (e: Exception) {
-            android.util.Log.d("RequestRepository", "parseFromLog failed: ${e.message}")
-        }
+            .sortedByDescending { it.second + it.third }
+            .take(limit)
     }
 }

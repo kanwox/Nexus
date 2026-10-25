@@ -281,6 +281,12 @@ class MihomoVpnService : VpnService() {
                 val settings = SettingsManager(this@MihomoVpnService)
                 val profiles = ConfigManager.getProfiles(this@MihomoVpnService)
                 val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
+                if (activeProfile != null && activeProfile.id != settings.selectedProfileId) {
+                    com.github.mihomo.android.data.LogRepository.addLog(
+                        "warning",
+                        "选中的配置不存在，已回退到 ${activeProfile.name}"
+                    )
+                }
 
                 val configFile = ConfigManager.prepareConfig(this@MihomoVpnService, activeProfile?.file)
 
@@ -313,11 +319,24 @@ class MihomoVpnService : VpnService() {
                 var ipv6TunActive = false
                 val builder = Builder().apply {
                     setSession("Nexus")
-                    setMtu(9000)
+                    setMtu(settings.tunMtu)
                     addAddress("172.19.0.1", 30)
                     addRoute("0.0.0.0", 0)
                     addRoute("198.18.0.0", 16) // Explicit route for Fake-IP range!
                     addDnsServer("172.19.0.2")
+
+                    // Kill switch: while the service holds the interface, apps are blocked
+                    // from network access whenever the tunnel is not fully connected, so a
+                    // stalled reconnect cannot leak the real IP.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && settings.killSwitchEnabled) {
+                        runCatching { setBlocking(true) }
+                            .onFailure { Log.w(TAG, "setBlocking (kill switch) failed", it) }
+                    }
+                    // Lets LAN-only apps (casting, printers) bind around the tunnel when the
+                    // user accepts the tradeoff.
+                    if (settings.allowBypassEnabled) {
+                        runCatching { allowBypass() }
+                    }
 
                     // Route IPv6 only when the user enabled it: the injected config sets the
                     // core's top-level `ipv6` from the same switch, so a disabled switch keeps
@@ -395,6 +414,15 @@ class MihomoVpnService : VpnService() {
                     error = null
                 )
 
+                // Structured connection tracking via the external-controller API.
+                com.github.mihomo.android.data.RequestRepository.startPolling(
+                    scope = serviceScope,
+                    context = this@MihomoVpnService,
+                    resolver = { protocol, source, target ->
+                        queryConnectionOwnerUid(protocol, source, target)
+                    }
+                )
+
                 ClashCore.setSuspended(!isScreenInteractive)
                 if (isScreenInteractive) {
                     startTrafficMonitor()
@@ -420,6 +448,27 @@ class MihomoVpnService : VpnService() {
 
     private var lastNotificationUpdateTimeMs: Long = 0L
 
+    /** Connection-owner lookup for RequestRepository (API 29+ only, returns 0 below). */
+    private fun queryConnectionOwnerUid(protocol: Int, source: String, target: String): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return 0
+        return runCatching {
+            val srcAddr = parseEndpoint(source)
+            val dstAddr = parseEndpoint(target)
+            if (srcAddr != null && dstAddr != null) {
+                cm.getConnectionOwnerUid(protocol, srcAddr, dstAddr)
+            } else 0
+        }.getOrDefault(0)
+    }
+
+    private fun parseEndpoint(endpoint: String): java.net.InetSocketAddress? {
+        val lastColon = endpoint.lastIndexOf(':')
+        if (lastColon <= 0 || lastColon == endpoint.lastIndex) return null
+        val host = endpoint.substring(0, lastColon).removeSurrounding("[", "]")
+        val port = endpoint.substring(lastColon + 1).toIntOrNull() ?: return null
+        return java.net.InetSocketAddress(host, port)
+    }
+
     private fun startTrafficMonitor() {
         trafficMonitorJob?.cancel()
         if (!isScreenInteractive) return
@@ -429,6 +478,8 @@ class MihomoVpnService : VpnService() {
                 delay(pollIntervalMs)
                 if (!isScreenInteractive || _vpnState.value.status != VpnState.Status.RUNNING) break
                 val now = ClashCore.queryTrafficNow()
+                // Chart history samples raw bytes/sec; cheap and only while the screen is on.
+                TrafficHistory.append(now.rawUpload(), now.rawDownload())
 
                 val upStr = now.trafficSpeedUpload()
                 val downStr = now.trafficSpeedDownload()
@@ -487,6 +538,7 @@ class MihomoVpnService : VpnService() {
 
     private fun closeTunnel() {
         try {
+            com.github.mihomo.android.data.RequestRepository.stopPolling()
             ClashCore.stopTun()
             vpnInterface?.close()
             vpnInterface = null
@@ -557,6 +609,7 @@ class MihomoVpnService : VpnService() {
         super.onDestroy()
         // The service can be destroyed without ACTION_STOP (process death, low memory), so the
         // native tunnel and the shared state are cleaned up here as well.
+        com.github.mihomo.android.data.RequestRepository.stopPolling()
         unregisterScreenStateReceiver()
         unregisterPhysicalNetworkCallback()
         trafficMonitorJob?.cancel()

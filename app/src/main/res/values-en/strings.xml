@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nexus</string>
+    <string name="vpn_running">Nexus proxy connected</string>
+    <string name="vpn_stopped">Nexus proxy disconnected</string>
+    <string name="vpn_starting">Starting proxy service…</string>
+    <string name="notification_restoring">Restoring proxy service…</string>
+    <string name="action_stop">Disconnect</string>
+    <string name="action_start">Connect</string>
+    <string name="notification_channel_name">Nexus status &amp; traffic</string>
+    <string name="notification_channel_desc">Shows the live proxy status and network upload/download speed</string>
+</resources>

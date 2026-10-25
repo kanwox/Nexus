@@ -1,9 +1,14 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.github.mihomo.android.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -11,7 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -30,6 +35,79 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val SUBTITLE_PREVIEW_LIMIT = 24
+
+/** One trimmed, non-empty line per entry. */
+private fun parseOverrideLines(raw: String): List<String> {
+    return raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+}
+
+/** Normalizes "domain: target" lines; the part before ':' is the key, invalid lines are dropped. */
+private fun parseHostEntries(raw: String): List<String> {
+    return raw.split('\n').mapNotNull { line ->
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) {
+            null
+        } else {
+            val domain = trimmed.substringBefore(':').trim()
+            val target = trimmed.substringAfter(':', "").trim()
+            if (domain.isEmpty() || target.isEmpty()) null else "$domain: $target"
+        }
+    }
+}
+
+/** Shows the configured entry count, or a truncated hint when nothing is configured yet. */
+private fun overrideSubtitle(count: Int, desc: String): String {
+    return if (count > 0) {
+        count.toString()
+    } else if (desc.length > SUBTITLE_PREVIEW_LIMIT) {
+        desc.take(SUBTITLE_PREVIEW_LIMIT) + "…"
+    } else {
+        desc
+    }
+}
+
+/** Multi-line iOS-styled code area (tertiary surface + global typography inheritance). */
+@Composable
+private fun OverrideTextArea(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = ""
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = LoonTertiaryBg
+    ) {
+        Box(
+            modifier = Modifier
+                .heightIn(min = 220.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            if (value.isEmpty() && placeholder.isNotBlank()) {
+                Text(
+                    text = placeholder,
+                    color = LoonTextMuted,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                textStyle = LocalTextStyle.current.copy(
+                    color = LoonTextPrimary,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                ),
+                cursorBrush = SolidColor(IosBlue),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
 @Composable
 fun ProfileOverrideScreen(
     profile: ProfileItem,
@@ -46,6 +124,12 @@ fun ProfileOverrideScreen(
         allScripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
     }
     val selectedScriptIds = remember(profile) { profile.scriptIds.toMutableStateList() }
+
+    // Structured override drafts; parsed and persisted by the top-right save action.
+    var rulesText by remember(profile) { mutableStateOf(profile.prependRules.joinToString("\n")) }
+    var hostsText by remember(profile) { mutableStateOf(profile.hostsEntries.joinToString("\n")) }
+    var dnsText by remember(profile) { mutableStateOf(profile.dnsServersOverride.joinToString("\n")) }
+    var editingOverride by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -66,7 +150,10 @@ fun ProfileOverrideScreen(
                         .clickable {
                             val updated = profile.copy(
                                 scriptEnabled = selectedScriptIds.isNotEmpty(),
-                                scriptIds = selectedScriptIds.toList()
+                                scriptIds = selectedScriptIds.toList(),
+                                prependRules = parseOverrideLines(rulesText),
+                                hostsEntries = parseHostEntries(hostsText),
+                                dnsServersOverride = parseOverrideLines(dnsText)
                             )
                             ConfigManager.updateProfile(context, updated)
                             ProfileParser.clearCache()
@@ -125,6 +212,39 @@ fun ProfileOverrideScreen(
                 }
             }
 
+            item(key = "override_rules_section") {
+                CupertinoGroupedSection(
+                    header = AppStrings.current("profile_override_title")
+                ) {
+                    CupertinoCell(
+                        title = AppStrings.current("override_rules_section"),
+                        subtitle = overrideSubtitle(parseOverrideLines(rulesText).size, AppStrings.current("override_rules_desc")),
+                        icon = Icons.Default.Rule,
+                        iconBg = IosBlue,
+                        showChevron = true,
+                        onClick = { editingOverride = "rules" }
+                    )
+                    CupertinoIndentedDivider()
+                    CupertinoCell(
+                        title = AppStrings.current("override_hosts_section"),
+                        subtitle = overrideSubtitle(parseHostEntries(hostsText).size, AppStrings.current("override_hosts_desc")),
+                        icon = Icons.Default.Public,
+                        iconBg = IosTeal,
+                        showChevron = true,
+                        onClick = { editingOverride = "hosts" }
+                    )
+                    CupertinoIndentedDivider()
+                    CupertinoCell(
+                        title = AppStrings.current("override_dns_section"),
+                        subtitle = overrideSubtitle(parseOverrideLines(dnsText).size, AppStrings.current("override_dns_desc")),
+                        icon = Icons.Default.Dns,
+                        iconBg = IosIndigo,
+                        showChevron = true,
+                        onClick = { editingOverride = "dns" }
+                    )
+                }
+            }
+
             item {
                 CupertinoGroupedSection(
                     header = AppStrings.get("override_select_scripts", lang)
@@ -179,6 +299,60 @@ fun ProfileOverrideScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    if (editingOverride != null) {
+        val sheetTitle: String
+        val sheetDesc: String
+        val sheetValue: String
+        val onSheetValue: (String) -> Unit
+        when (editingOverride) {
+            "rules" -> {
+                sheetTitle = AppStrings.current("override_rules_section")
+                sheetDesc = AppStrings.current("override_rules_desc")
+                sheetValue = rulesText
+                onSheetValue = { rulesText = it }
+            }
+            "hosts" -> {
+                sheetTitle = AppStrings.current("override_hosts_section")
+                sheetDesc = AppStrings.current("override_hosts_desc")
+                sheetValue = hostsText
+                onSheetValue = { hostsText = it }
+            }
+            else -> {
+                sheetTitle = AppStrings.current("override_dns_section")
+                sheetDesc = AppStrings.current("override_dns_desc")
+                sheetValue = dnsText
+                onSheetValue = { dnsText = it }
+            }
+        }
+
+        CupertinoModalBottomSheet(
+            onDismissRequest = { editingOverride = null },
+            title = sheetTitle,
+            doneText = AppStrings.current("action_save")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Spacer(modifier = Modifier.height(4.dp))
+                OverrideTextArea(
+                    value = sheetValue,
+                    onValueChange = onSheetValue
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = sheetDesc,
+                    color = LoonTextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
     }

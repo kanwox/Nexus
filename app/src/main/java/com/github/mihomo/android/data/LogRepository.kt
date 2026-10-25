@@ -114,7 +114,6 @@ object LogRepository {
         if (!isScreenOff) {
             runCatching {
                 DnsRepository.parseFromLog(message)
-                RequestRepository.parseFromLog(message)
             }
         }
         if (appendedNewEntry && (normalizedLevel == "error" || normalizedLevel == "warning")) {

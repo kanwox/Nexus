@@ -6,6 +6,8 @@ package com.github.mihomo.android.data
  */
 data class RequestRecord(
     val id: Long,
+    /** Stable id from the core's /connections API; null for legacy log-parsed records. */
+    val connectionId: String? = null,
     val host: String,
     val destinationIp: String,
     val destinationPort: Int = 443,
@@ -20,5 +22,7 @@ data class RequestRecord(
     val downloadBytes: Long = 0L,
     val isActive: Boolean = false,
     val timestamp: Long = System.currentTimeMillis(),
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    /** Last time the poller confirmed this connection alive (drives duration on close). */
+    val lastSeenMs: Long = 0L
 )

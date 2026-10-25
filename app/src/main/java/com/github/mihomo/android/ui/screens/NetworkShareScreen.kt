@@ -32,7 +32,6 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.*
 
-@Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
 fun NetworkShareScreen(
     allowLan: Boolean,
@@ -40,6 +39,7 @@ fun NetworkShareScreen(
     allowLanPassword: String,
     onAllowLanPasswordChanged: (String) -> Unit,
     vpnStatus: VpnState.Status,
+    mixedPort: Int = 7890,
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
@@ -51,7 +51,7 @@ fun NetworkShareScreen(
         getLocalIpAddress(context)
     }
 
-    val proxyPort = 7890
+    val proxyPort = mixedPort
     val fullProxyAddress = remember(localIp) {
         if (!localIp.isNullOrBlank()) "$localIp:$proxyPort" else "127.0.0.1:$proxyPort"
     }

@@ -33,6 +33,7 @@ import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.core.model.TunnelMode
 import com.github.mihomo.android.data.*
 import com.github.mihomo.android.service.MihomoVpnService
+import com.github.mihomo.android.service.TrafficHistory
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -45,6 +46,7 @@ import com.github.mihomo.android.ui.components.CupertinoToast
 import com.github.mihomo.android.ui.components.CupertinoToastHost
 import com.github.mihomo.android.ui.components.LoonFloatingBottomBar
 import com.github.mihomo.android.ui.screens.*
+import com.github.mihomo.android.ui.theme.AppStrings
 import com.github.mihomo.android.ui.theme.LoonBg
 import com.github.mihomo.android.ui.theme.LocalAppLanguage
 import kotlinx.coroutines.Dispatchers
@@ -65,7 +67,9 @@ enum class SubScreen {
     DNS_SETTINGS,
     REQUESTS,
     NETWORK_SHARE,
-    APPEARANCE
+    APPEARANCE,
+    CORE,
+    QR_SCAN
 }
 
 /** Persists the current sub-screen across configuration changes. */
@@ -157,6 +161,27 @@ fun MainAppScreen(
     var ipv6Enabled by remember { mutableStateOf(settingsManager.ipv6Enabled) }
     var allowLanPassword by remember { mutableStateOf(settingsManager.allowLanPassword) }
     var fakeIpEnabled by remember { mutableStateOf(settingsManager.fakeIpEnabled) }
+
+    // --- v1.1: dashboard stats / QR prefill / backup wiring state ---
+    val connectionsCount by RequestRepository.activeCountFlow.collectAsStateWithLifecycle()
+    var memoryBytes by remember { mutableLongStateOf(0L) }
+    var trafficHistory by remember { mutableStateOf(emptyList<TrafficHistory.Sample>()) }
+    var qrPrefillUrl by remember { mutableStateOf<String?>(null) }
+
+    // Memory readout + rolling chart samples only while the dashboard is visible.
+    val dashboardVisible = currentSubScreen == null && currentTab == 0
+    LaunchedEffect(dashboardVisible, vpnStatus) {
+        if (dashboardVisible && vpnStatus == VpnState.Status.RUNNING) {
+            while (isActive) {
+                delay(1000L)
+                trafficHistory = TrafficHistory.snapshot()
+                withContext(Dispatchers.IO) {
+                    MihomoApi.memoryInuse()?.let { memoryBytes = it }
+                }
+            }
+        }
+    }
+
     val settingsScrollState = rememberScrollState()
     val dashboardScrollState = rememberScrollState()
     val proxiesTabsListState = rememberLazyListState()
@@ -354,13 +379,26 @@ fun MainAppScreen(
                         activeNodeName = currentMainActiveNode,
                         totalNodes = parsedProfile.totalNodes,
                         totalRules = parsedProfile.totalRules,
+                        trafficHistory = trafficHistory,
+                        connectionsCount = connectionsCount,
+                        memoryBytes = memoryBytes,
                         visibleShortcuts = visibleShortcuts,
                         shortcutOrder = shortcutOrder,
                         onToggleVpn = { onToggleVpn() },
                         onModeSelected = { newMode ->
                             tunnelMode = newMode
                             settingsManager.tunnelMode = newMode.value
-                            if (coreActive) {
+                            if (vpnStatus == VpnState.Status.RUNNING) {
+                                // The REST API switches the running mode without tearing the
+                                // tunnel down; fall back to a full config reload if it fails.
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    val patched = MihomoApi.patchMode(newMode.value)
+                                    if (!patched) {
+                                        ClashCore.reloadActiveConfig(activity)
+                                    }
+                                    refreshProxiesOnline()
+                                }
+                            } else if (coreActive) {
                                 coroutineScope.launch(Dispatchers.IO) {
                                     ClashCore.reloadActiveConfig(activity)
                                     refreshProxiesOnline()
@@ -375,6 +413,8 @@ fun MainAppScreen(
                         onNavigateToRequests = { currentSubScreen = SubScreen.REQUESTS },
                         onNavigateToDns = { currentSubScreen = SubScreen.DNS },
                         onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
+                        onNavigateToCore = { currentSubScreen = SubScreen.CORE },
+                        mixedPort = settingsManager.mixedPort,
                         onUpdateVisibleShortcuts = { updated ->
                             visibleShortcuts = updated
                             settingsManager.visibleShortcuts = updated
@@ -468,6 +508,98 @@ fun MainAppScreen(
                     fakeIpEnabled = fakeIpEnabled,
                     ipv6Enabled = ipv6Enabled,
                     themeMode = currentThemeMode,
+                    killSwitchEnabled = settingsManager.killSwitchEnabled,
+                    onKillSwitchChanged = { enabled ->
+                        settingsManager.killSwitchEnabled = enabled
+                        // Applied at tunnel establishment; a running tunnel must rebuild.
+                        if (vpnStatus == VpnState.Status.RUNNING) {
+                            MihomoVpnService.restart(activity)
+                        }
+                    },
+                    allowBypassEnabled = settingsManager.allowBypassEnabled,
+                    onAllowBypassChanged = { enabled ->
+                        settingsManager.allowBypassEnabled = enabled
+                        if (vpnStatus == VpnState.Status.RUNNING) {
+                            MihomoVpnService.restart(activity)
+                        }
+                    },
+                    mixedPort = settingsManager.mixedPort,
+                    onMixedPortChanged = { port ->
+                        settingsManager.mixedPort = port
+                        if (coreActive) {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                ClashCore.reloadActiveConfig(activity)
+                            }
+                        }
+                    },
+                    tunMtu = settingsManager.tunMtu,
+                    onTunMtuChanged = { mtu ->
+                        settingsManager.tunMtu = mtu
+                        if (vpnStatus == VpnState.Status.RUNNING) {
+                            MihomoVpnService.restart(activity)
+                        }
+                    },
+                    allowPrivateSubs = settingsManager.allowPrivateSubscriptionHosts,
+                    onAllowPrivateSubsChanged = { enabled ->
+                        settingsManager.allowPrivateSubscriptionHosts = enabled
+                    },
+                    appLockEnabled = settingsManager.appLockEnabled,
+                    onAppLockChanged = { enabled ->
+                        settingsManager.appLockEnabled = enabled
+                    },
+                    preventScreenshots = settingsManager.preventScreenshots,
+                    onPreventScreenshotsChanged = { enabled ->
+                        settingsManager.preventScreenshots = enabled
+                    },
+                    onNavigateToCore = { currentSubScreen = SubScreen.CORE },
+                    onExportBackup = { uri ->
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val result = runCatching {
+                                activity.contentResolver.openOutputStream(uri)?.use { output ->
+                                    BackupManager.exportBackup(activity, output)
+                                } ?: error("无法写入所选位置")
+                            }
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                result.fold(
+                                    onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
+                                    onFailure = {
+                                        CupertinoToast.show(
+                                            AppStrings.get("settings_backup_failed", appLanguage)
+                                                .replace("{reason}", it.message ?: "未知错误"),
+                                            isDestructive = true
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    onImportBackup = { uri ->
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val result = runCatching {
+                                val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
+                                    BackupManager.importBackup(activity, input)
+                                } ?: error("无法读取所选文件")
+                                inner.getOrThrow()
+                            }
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                result.fold(
+                                    onSuccess = { count ->
+                                        vm.reloadProfiles()
+                                        CupertinoToast.show(
+                                            AppStrings.get("settings_backup_restored", appLanguage) + " ($count)"
+                                        )
+                                    },
+                                    onFailure = {
+                                        CupertinoToast.show(
+                                            AppStrings.get("settings_backup_failed", appLanguage)
+                                                .replace("{reason}", it.message ?: "未知错误"),
+                                            isDestructive = true
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    },
                     onTunStackChanged = { stack ->
                         tunStack = stack
                         settingsManager.tunStack = stack
@@ -601,7 +733,7 @@ fun MainAppScreen(
                         null -> 0
                         SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
                         SubScreen.RULES, SubScreen.DNS, SubScreen.DNS_SETTINGS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
-                        SubScreen.APPEARANCE -> 1
+                        SubScreen.APPEARANCE, SubScreen.CORE, SubScreen.QR_SCAN -> 1
                         SubScreen.PROFILE_OVERRIDE -> 2
                         SubScreen.SCRIPTS -> 3
                     }
@@ -635,6 +767,8 @@ fun MainAppScreen(
                                 profiles = profiles,
                                 selectedProfileId = selectedProfileId,
                                 onBack = { currentSubScreen = null },
+                                preFillSubscriptionUrl = qrPrefillUrl,
+                                onPreFillConsumed = { qrPrefillUrl = null },
                                 onSelectProfile = { profile ->
                                     vm.selectProfile(profile, coreActive)
                                 },
@@ -665,6 +799,7 @@ fun MainAppScreen(
                                 onReorderProfiles = { newOrderList ->
                                     vm.reorderProfiles(newOrderList)
                                 },
+                                onNavigateToQrScan = { currentSubScreen = SubScreen.QR_SCAN },
                                 onNavigateToOverride = { profile ->
                                     overrideTargetProfile = profile
                                     overrideTargetProfileId = profile.id
@@ -683,6 +818,11 @@ fun MainAppScreen(
                                         overrideTargetProfile = updated
                                         overrideTargetProfileId = updated.id
                                         vm.onProfileMetadataUpdated()
+                                        if (updated.id == selectedProfileId && coreActive) {
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                ClashCore.reloadActiveConfig(activity)
+                                            }
+                                        }
                                     }
                                 )
                             } else {
@@ -769,6 +909,19 @@ fun MainAppScreen(
                                         }
                                     }
                                 },
+                                nameservers = settingsManager.dnsNameservers,
+                                fallbackServers = settingsManager.dnsFallbackServers,
+                                blockThirdPartyDns = settingsManager.blockThirdPartyDns,
+                                onSaveDns = { nameservers, fallback, blockDns ->
+                                    settingsManager.dnsNameservers = nameservers
+                                    settingsManager.dnsFallbackServers = fallback
+                                    settingsManager.blockThirdPartyDns = blockDns
+                                    if (coreActive) {
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            ClashCore.reloadActiveConfig(activity)
+                                        }
+                                    }
+                                },
                                 onBack = { currentSubScreen = null }
                             )
                         }
@@ -795,6 +948,7 @@ fun MainAppScreen(
                                     allowLanPassword = pwd
                                     settingsManager.allowLanPassword = pwd
                                 },
+                                mixedPort = settingsManager.mixedPort,
                                 vpnStatus = vpnStatus,
                                 onBack = { currentSubScreen = null }
                             )
@@ -810,6 +964,21 @@ fun MainAppScreen(
                                 onAppLanguageChanged = { code ->
                                     appLanguage = code
                                     settingsManager.appLanguage = code
+                                }
+                            )
+                        }
+                        SubScreen.CORE -> {
+                            CoreScreen(
+                                onBack = { currentSubScreen = null }
+                            )
+                        }
+                        SubScreen.QR_SCAN -> {
+                            QrScanScreen(
+                                onBack = { currentSubScreen = null },
+                                onResult = { url ->
+                                    qrPrefillUrl = url
+                                    CupertinoToast.show(AppStrings.get("qr_scan_result", appLanguage))
+                                    currentSubScreen = SubScreen.PROFILES
                                 }
                             )
                         }

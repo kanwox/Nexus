@@ -157,10 +157,13 @@ object ScriptManager {
         ProfileParser.clearCache()
     }
 
-    suspend fun fetchRemoteScriptContent(url: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun fetchRemoteScriptContent(
+        url: String,
+        allowPrivateHosts: Boolean = true
+    ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanUrl = url.trim()
-            requireSecureRemoteUrl(cleanUrl)
+            requireSecureRemoteUrl(cleanUrl, allowPrivateHosts)
             fetchUrl(cleanUrl)
         }
     }
@@ -230,7 +233,7 @@ object ScriptManager {
         type: String
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
-            requireSecureRemoteUrl(url)
+            requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
             val body = fetchUrl(url)
 
             val id = java.util.UUID.randomUUID().toString()
@@ -327,7 +330,7 @@ object ScriptManager {
     suspend fun updateScriptFromRemote(context: Context, script: ScriptItem): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
             if (script.url.isBlank()) error("无远程更新链接")
-            requireSecureRemoteUrl(script.url)
+            requireSecureRemoteUrl(script.url, SettingsManager(context).allowPrivateSubscriptionHosts)
             val body = fetchUrl(script.url)
 
             val newHash = sha256(body)

@@ -55,7 +55,9 @@ object ClashCore {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val activeNet = cm?.activeNetwork
             val linkProps = cm?.getLinkProperties(activeNet)
-            val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress }?.filter { !it.contains(":") } ?: emptyList()
+            // Both A and AAAA records are reported: on IPv6-only networks dropping the v6
+            // servers used to force a fallback to hardcoded resolvers that may be unreachable.
+            val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
             val dnsStr = if (dnsServers.isNotEmpty()) dnsServers.joinToString(",") else "223.5.5.5,119.29.29.29"
             Bridge.nativeNotifyDnsChanged(dnsStr)
             Bridge.nativeNotifyTimeZoneChanged(

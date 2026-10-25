@@ -79,12 +79,11 @@ class MihomoTileService : TileService() {
                 setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_connected"))
             }
             VpnState.Status.STARTING -> {
-                tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_connecting"))
+                // Keep the last settled state during transitions: flipping to ACTIVE before
+                // the tunnel exists (and back to INACTIVE mid-stop) made the tile lie about
+                // what a tap would do.
             }
             VpnState.Status.STOPPING -> {
-                tile.state = Tile.STATE_INACTIVE
-                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_disconnecting"))
             }
             VpnState.Status.STOPPED -> {
                 tile.state = Tile.STATE_INACTIVE

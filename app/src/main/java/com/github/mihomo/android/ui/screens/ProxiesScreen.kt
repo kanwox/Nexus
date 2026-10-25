@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.github.mihomo.android.ui.screens
 
 import androidx.compose.animation.*
@@ -5,6 +7,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
+import com.github.mihomo.android.data.MihomoApi
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 
@@ -117,6 +122,8 @@ fun ProxiesScreen(
 ) {
     val haptic = rememberIosHaptic()
     var showOptionsMenu by remember { mutableStateOf(false) }
+    // Long-pressed node for the detail sheet: (groupName, nodeName), null = closed.
+    var nodeDetailTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val isListMode = currentViewMode == "LIST"
     val visibleGroups = remember(groups, groupMap) {
@@ -499,6 +506,9 @@ fun ProxiesScreen(
                                             onTestSingleNode = {
                                                 haptic.lightTick()
                                                 onTestSingleNode(targetGroupName, proxy.name)
+                                            },
+                                            onLongPress = {
+                                                nodeDetailTarget = targetGroupName to proxy.name
                                             }
                                         )
                                     }
@@ -613,6 +623,9 @@ fun ProxiesScreen(
                                                             onTestSingleNode = {
                                                                 haptic.lightTick()
                                                                 onTestSingleNode(groupName, proxy.name)
+                                                            },
+                                                            onLongPress = {
+                                                                nodeDetailTarget = groupName to proxy.name
                                                             }
                                                         )
                                                     }
@@ -632,6 +645,182 @@ fun ProxiesScreen(
                     }
                 }
             }
+        }
+    }
+
+    // =================================================================
+    // Node Detail Sheet (long-press): protocol info + latency history
+    // =================================================================
+    nodeDetailTarget?.let { (detailGroup, detailNode) ->
+        NodeDetailSheet(
+            groupName = detailGroup,
+            nodeName = detailNode,
+            group = groupMap[detailGroup],
+            onDismiss = { nodeDetailTarget = null },
+            onSelect = { proxy ->
+                nodeDetailTarget = null
+                onSelectProxy(detailGroup, proxy)
+            },
+            onTest = {
+                onTestSingleNode(detailGroup, detailNode)
+            }
+        )
+    }
+}
+
+// =============================================================================
+// Node Detail Sheet: live protocol/availability/latency history from the core's
+// external-controller API, falling back to the locally parsed profile data.
+// =============================================================================
+@Composable
+private fun NodeDetailSheet(
+    groupName: String,
+    nodeName: String,
+    group: ProxyGroup?,
+    onDismiss: () -> Unit,
+    onSelect: (Proxy) -> Unit,
+    onTest: () -> Unit
+) {
+    val lang = LocalAppLanguage.current
+    val localProxy = group?.proxies?.find { it.name == nodeName }
+    var detail by remember(nodeName) { mutableStateOf<MihomoApi.ApiProxy?>(null) }
+
+    LaunchedEffect(nodeName) {
+        detail = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            MihomoApi.proxyDetail(nodeName)
+        }
+    }
+
+    CupertinoModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = nodeName,
+        doneText = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            CupertinoGroupedSection(title = AppStrings.get("node_detail_title", lang)) {
+                DetailInfoRow(AppStrings.get("node_detail_type", lang), (detail?.type ?: localProxy?.type ?: "—").uppercase())
+                CupertinoIndentedDivider()
+                val udpSupported = detail?.udp ?: false
+                DetailInfoRow(
+                    AppStrings.get("node_detail_udp", lang),
+                    AppStrings.get(if (udpSupported) "node_udp_yes" else "node_udp_no", lang),
+                    valueColor = if (udpSupported) IosGreen else LoonTextSecondary
+                )
+                CupertinoIndentedDivider()
+                val alive = detail?.alive ?: ((localProxy?.delay ?: 0) > 0)
+                DetailInfoRow(
+                    AppStrings.get("node_detail_alive", lang),
+                    AppStrings.get(if (alive) "node_detail_alive_ok" else "node_detail_alive_dead", lang),
+                    valueColor = if (alive) IosGreen else RedDanger
+                )
+                CupertinoIndentedDivider()
+                DetailInfoRow(AppStrings.get("node_detail_groups", lang), groupName)
+            }
+
+            CupertinoGroupedSection(title = AppStrings.get("node_detail_history", lang)) {
+                val history = detail?.history.orEmpty().takeLast(12)
+                if (history.isEmpty()) {
+                    Text(
+                        text = AppStrings.get("node_detail_no_history", lang),
+                        fontSize = 13.sp,
+                        color = LoonTextSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                    )
+                } else {
+                    androidx.compose.foundation.lazy.LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(history.size) { index ->
+                            val (timeMs, delay) = history[index]
+                            val (color, label) = when {
+                                delay <= 0 -> RedDanger to "×"
+                                delay <= 250 -> IosGreen to "${delay}ms"
+                                delay <= 600 -> IosOrange to "${delay}ms"
+                                else -> RedDanger to "${delay}ms"
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(text = label, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+                                        .format(java.util.Date(timeMs)),
+                                    color = LoonTextSecondary,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                DetailActionButton(
+                    label = AppStrings.get("proxies_test", lang),
+                    emphasized = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onTest()
+                        onDismiss()
+                    }
+                )
+                if (group != null && localProxy != null) {
+                    DetailActionButton(
+                        label = AppStrings.get("node_select", lang),
+                        emphasized = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSelect(localProxy) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailInfoRow(label: String, value: String, valueColor: Color = LoonTextPrimary) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = label, color = LoonTextPrimary, fontSize = 15.sp)
+        Text(text = value, color = valueColor, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun DetailActionButton(
+    label: String,
+    emphasized: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier.height(44.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = if (emphasized) IosBlue else LoonTertiaryBg,
+        onClick = onClick
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                color = if (emphasized) Color.White else IosBlue,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -819,7 +1008,8 @@ private fun LoonProxyItemCard(
     columns: Int = 1,
     isTesting: Boolean = false,
     onClick: () -> Unit,
-    onTestSingleNode: () -> Unit = {}
+    onTestSingleNode: () -> Unit = {},
+    onLongPress: () -> Unit = {}
 ) {
     val isDark = LocalLoonColors.current.isDark
     val cardBg = if (isSelected) {
@@ -847,6 +1037,11 @@ private fun LoonProxyItemCard(
                 color = borderColor,
                 shape = cardShape
             )
+            // Long press opens the node detail sheet; the regular tap still goes to the
+            // card's own pressable handler.
+            .pointerInput(proxy.name) {
+                detectTapGestures(onLongPress = { onLongPress() })
+            }
             .iosPressable(pressedScale = 0.97f) { onClick() },
         color = cardBg,
         shape = cardShape

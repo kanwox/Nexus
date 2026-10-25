@@ -3,7 +3,10 @@ package com.github.mihomo.android.data
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -28,6 +31,13 @@ object UpdateChecker {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** One downloadable release artifact (GitHub release asset). */
+    @Serializable
+    data class ReleaseAsset(
+        val name: String = "",
+        @SerialName("browser_download_url") val browserDownloadUrl: String = ""
+    )
+
     data class UpdateInfo(
         /** Latest tag name, e.g. "v1.0.2" */
         val tagName: String,
@@ -37,6 +47,11 @@ object UpdateChecker {
         val releaseNotes: String,
         /** Browser URL of the release page */
         val htmlUrl: String,
+        /**
+         * First .apk asset of the release, when present — enables the in-app download and
+         * install path instead of opening the browser. Null when the release ships no apk.
+         */
+        val apkAsset: ReleaseAsset? = null,
         /** Whether the latest release is newer than the installed version */
         val isNewer: Boolean
     )
@@ -82,6 +97,11 @@ object UpdateChecker {
                 val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
                 val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(1000)
                 val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
+                val apkAsset = obj["assets"]?.let { assetsElement ->
+                    runCatching {
+                        json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
+                    }.getOrDefault(emptyList())
+                }?.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
 
                 val latestVersion = tagName.trimStart('v', 'V')
                 val isNewer = isVersionNewer(latestVersion, currentVersion)
@@ -92,6 +112,7 @@ object UpdateChecker {
                         releaseName = releaseName,
                         releaseNotes = releaseNotes,
                         htmlUrl = htmlUrl,
+                        apkAsset = apkAsset,
                         isNewer = isNewer
                     )
                 )

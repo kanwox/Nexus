@@ -33,8 +33,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.0.4"
+        versionCode = 17
+        versionName = "1.0.5-Alpha.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -133,6 +133,20 @@ dependencies {
     // native evaluation (evaluationTimeoutMillis), so an infinite-loop script can no longer
     // leak a spinning thread past its timeout.
     implementation("io.github.dokar3:quickjs-kt-android:1.0.15")
+
+    // Background subscription auto-update scheduling
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // App lock (biometric / device credential)
+    implementation("androidx.biometric:biometric:1.1.0")
+    // biometric 1.1.0 pulls fragment 1.0.0; activity's ActivityResult APIs require >= 1.3.0.
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+
+    // QR subscription import: zxing decodes, CameraX feeds the analyzer
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.5")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.5")

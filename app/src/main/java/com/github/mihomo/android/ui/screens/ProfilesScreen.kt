@@ -1,14 +1,20 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.github.mihomo.android.ui.screens
 
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -23,17 +29,44 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
+
+private const val DAY_MS = 86_400_000L
+private const val EXPIRE_WARN_DAYS = 7L
+private const val DRAG_LIFT_SCALE = 1.03f
+private const val DRAG_SHADOW_ELEVATION = 24f
+private const val LIST_ITEM_SPACING_DP = 10
+
+private val expireDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+/** Auto-update cadence options: interval in minutes -> localized label key. */
+private val autoUpdateIntervals = listOf(
+    30 to "profile_interval_30m",
+    60 to "profile_interval_1h",
+    180 to "profile_interval_3h",
+    360 to "profile_interval_6h",
+    720 to "profile_interval_12h",
+    1440 to "profile_interval_24h",
+    4320 to "profile_interval_72h"
+)
 
 private fun formatRelativeTime(timestamp: Long, lang: String): String {
     if (timestamp <= 0L) return AppStrings.get("time_never_updated", lang)
@@ -69,7 +102,6 @@ private fun formatTraffic(bytes: Long): String {
     }
 }
 
-@Suppress("UnusedParameter")
 @Composable
 fun ProfilesScreen(
     profiles: List<ProfileItem>,
@@ -82,14 +114,21 @@ fun ProfilesScreen(
     onRefreshSubscription: (ProfileItem) -> Unit = onUpdateProfile,
     onImportLocalFile: (() -> Unit)? = null,
     onReorderProfiles: ((List<ProfileItem>) -> Unit)? = null,
-    onNavigateToOverride: ((ProfileItem) -> Unit)? = null
+    onNavigateToOverride: ((ProfileItem) -> Unit)? = null,
+    onNavigateToQrScan: () -> Unit = {},
+    preFillSubscriptionUrl: String? = null,
+    onPreFillConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val haptic = rememberIosHaptic()
     val lang = LocalAppLanguage.current
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val itemSpacingPx = with(LocalDensity.current) { LIST_ITEM_SPACING_DP.dp.toPx() }
 
     var showAddSheet by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var addDialogFromPrefill by remember { mutableStateOf(false) }
     var newSubName by remember { mutableStateOf("") }
     var newSubUrl by remember { mutableStateOf("") }
 
@@ -99,6 +138,35 @@ fun ProfilesScreen(
     var editUrl by remember { mutableStateOf("") }
 
     var deletingProfile by remember { mutableStateOf<ProfileItem?>(null) }
+
+    // Auto-update editor sheet draft state.
+    var autoUpdateProfile by remember { mutableStateOf<ProfileItem?>(null) }
+    var draftAutoUpdate by remember { mutableStateOf(false) }
+    var draftInterval by remember { mutableStateOf(1440) }
+
+    // Long-press drag reorder state. Data swaps happen live while dragging; the dragged
+    // card keeps following the finger through dragOffsetY, re-based after every swap.
+    var draggedId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var localProfiles by remember(profiles) { mutableStateOf(profiles) }
+    val canReorder = profiles.size > 1 && onReorderProfiles != null
+
+    LaunchedEffect(preFillSubscriptionUrl) {
+        if (!preFillSubscriptionUrl.isNullOrBlank()) {
+            newSubName = ""
+            newSubUrl = preFillSubscriptionUrl
+            addDialogFromPrefill = true
+            showAddDialog = true
+        }
+    }
+
+    val closeAddDialog: () -> Unit = {
+        showAddDialog = false
+        if (addDialogFromPrefill) {
+            addDialogFromPrefill = false
+            onPreFillConsumed()
+        }
+    }
 
     val localFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -147,11 +215,13 @@ fun ProfilesScreen(
         )
 
         LazyColumn(
+            state = listState,
+            userScrollEnabled = draggedId == null,
             modifier = Modifier
                 .fillMaxSize()
                 .bounceOverscroll(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(LIST_ITEM_SPACING_DP.dp)
         ) {
             if (profiles.isEmpty()) {
                 item {
@@ -178,9 +248,32 @@ fun ProfilesScreen(
                     }
                 }
             } else {
-                items(profiles, key = { it.id }) { profile ->
+                if (profiles.size > 1) {
+                    item(key = "profile_reorder_hint") {
+                        Text(
+                            text = AppStrings.current("profile_reorder_hint"),
+                            color = LoonTextMuted,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                }
+                items(localProfiles, key = { it.id }) { profile ->
                     val isSelected = profile.id == selectedProfileId
                     val isSub = !profile.url.isNullOrBlank()
+                    val isDragging = draggedId == profile.id
+                    val dragTranslationY = remember { Animatable(0f) }
+                    val settleDragCard: () -> Unit = {
+                        onReorderProfiles?.invoke(localProfiles)
+                        val residual = dragOffsetY
+                        scope.launch {
+                            // Settle the card into its new slot instead of snapping to it.
+                            dragTranslationY.snapTo(residual)
+                            draggedId = null
+                            dragOffsetY = 0f
+                            dragTranslationY.animateTo(0f, spring(dampingRatio = 1f, stiffness = 380f))
+                        }
+                    }
 
                     val metadataStr = remember(profile, lang) {
                         val timePart = formatRelativeTime(profile.lastUpdated, lang)
@@ -194,6 +287,97 @@ fun ProfilesScreen(
                         }
                     }
 
+                    val usageFraction: Float? = if (profile.totalBytes > 0L) {
+                        ((profile.uploadBytes + profile.downloadBytes).toFloat() / profile.totalBytes.toFloat())
+                            .coerceIn(0f, 1f)
+                    } else {
+                        null
+                    }
+                    val usageColor = when {
+                        usageFraction != null && usageFraction >= 0.95f -> RedDanger
+                        usageFraction != null && usageFraction >= 0.8f -> IosOrange
+                        else -> IosBlue
+                    }
+                    val usagePercent = usageFraction?.let { String.format(Locale.US, "%.0f%%", it * 100) } ?: ""
+
+                    val expireText: String?
+                    val expireColor: Color
+                    if (profile.expireTimestamp > 0L) {
+                        val expireMillis = profile.expireTimestamp * 1000L
+                        val now = System.currentTimeMillis()
+                        if (expireMillis <= now) {
+                            expireText = AppStrings.current("profile_expired")
+                            expireColor = RedDanger
+                        } else {
+                            val daysLeft = (expireMillis - now + DAY_MS - 1L) / DAY_MS
+                            expireText = if (daysLeft <= EXPIRE_WARN_DAYS) {
+                                AppStrings.current("profile_expire_days_left").replace("{days}", daysLeft.toString())
+                            } else {
+                                AppStrings.current("profile_expire_at")
+                                    .replace("{date}", expireDateFormat.format(Date(expireMillis)))
+                            }
+                            expireColor = if (daysLeft <= EXPIRE_WARN_DAYS) IosOrange else LoonTextSecondary
+                        }
+                    } else {
+                        expireText = null
+                        expireColor = LoonTextSecondary
+                    }
+
+                    val dragModifier = if (canReorder) {
+                        Modifier.pointerInput(profile.id) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    draggedId = profile.id
+                                    dragOffsetY = 0f
+                                    scope.launch { dragTranslationY.snapTo(0f) }
+                                },
+                                onDragEnd = { settleDragCard() },
+                                onDragCancel = { settleDragCard() },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    if (draggedId != profile.id) return@detectDragGesturesAfterLongPress
+                                    dragOffsetY += dragAmount.y
+
+                                    val visibleItems = listState.layoutInfo.visibleItemsInfo
+                                    val fromInfo = visibleItems.firstOrNull { it.key == profile.id }
+                                        ?: return@detectDragGesturesAfterLongPress
+                                    val fromIndex = localProfiles.indexOfFirst { it.id == profile.id }
+                                    if (fromIndex == -1) return@detectDragGesturesAfterLongPress
+
+                                    val draggedCenter = fromInfo.offset + fromInfo.size / 2f + dragOffsetY
+                                    val targetInfo = visibleItems.firstOrNull { candidate ->
+                                        candidate.key != profile.id &&
+                                            draggedCenter >= candidate.offset &&
+                                            draggedCenter <= candidate.offset + candidate.size
+                                    } ?: return@detectDragGesturesAfterLongPress
+                                    val toIndex = localProfiles.indexOfFirst { it.id == targetInfo.key }
+                                    if (toIndex == -1 || toIndex == fromIndex) {
+                                        return@detectDragGesturesAfterLongPress
+                                    }
+
+                                    val reordered = localProfiles.toMutableList()
+                                    val moved = reordered.removeAt(fromIndex)
+                                    reordered.add(toIndex, moved)
+                                    localProfiles = reordered
+
+                                    // Predict where the next layout pass will place this card and
+                                    // re-base the drag offset so it stays glued to the finger. The
+                                    // list re-anchors on the first visible item (keeping its viewport
+                                    // offset), which changes the prediction.
+                                    val anchorKey = visibleItems.firstOrNull()?.key
+                                    val newOffset = when (anchorKey) {
+                                        profile.id -> fromInfo.offset.toFloat()
+                                        targetInfo.key -> targetInfo.offset - fromInfo.size - itemSpacingPx
+                                        else -> targetInfo.offset.toFloat()
+                                    }
+                                    dragOffsetY = fromInfo.offset + dragOffsetY - newOffset
+                                }
+                            )
+                        }
+                    } else {
+                        Modifier
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = LoonCard,
@@ -203,7 +387,17 @@ fun ProfilesScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .zIndex(if (isDragging) 100f else 1f)
+                            .graphicsLayer {
+                                translationY = if (isDragging) dragOffsetY else dragTranslationY.value
+                                val lift = if (isDragging) DRAG_LIFT_SCALE else 1f
+                                scaleX = lift
+                                scaleY = lift
+                                shadowElevation = if (isDragging) DRAG_SHADOW_ELEVATION else 0f
+                                shape = RoundedCornerShape(14.dp)
+                            }
                             .clip(RoundedCornerShape(14.dp))
+                            .then(dragModifier)
                             .iosPressable {
                                 haptic.selection()
                                 onSelectProfile(profile)
@@ -249,6 +443,44 @@ fun ProfilesScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                if (usageFraction != null) {
+                                    Spacer(modifier = Modifier.height(7.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(3.dp)
+                                                .clip(RoundedCornerShape(1.5.dp))
+                                                .background(LoonTertiaryBg)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxHeight()
+                                                    .fillMaxWidth(usageFraction)
+                                                    .clip(RoundedCornerShape(1.5.dp))
+                                                    .background(usageColor)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = usagePercent,
+                                            color = usageColor,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                                if (expireText != null) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = expireText,
+                                        color = expireColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(8.dp))
@@ -304,6 +536,14 @@ fun ProfilesScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
+                    text = AppStrings.get("qr_scan_title", lang),
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = false
+                        onNavigateToQrScan()
+                    }
+                ),
+                CupertinoActionSheetItem(
                     text = AppStrings.get("profiles_import_file", lang),
                     onClick = {
                         haptic.selection()
@@ -328,15 +568,15 @@ fun ProfilesScreen(
             onConfirm = {
                 val url = newSubUrl.trim()
                 if (url.isNotBlank()) {
-                    showAddDialog = false
+                    closeAddDialog()
                     val name = newSubName.trim().ifBlank { AppStrings.get("default_sub_name", lang) }
                     onAddSubscription(name, url)
                 } else {
                     CupertinoToast.show(AppStrings.get("profile_url_required", lang), isDestructive = true)
                 }
             },
-            onDismiss = { showAddDialog = false },
-            onDismissRequest = { showAddDialog = false }
+            onDismiss = closeAddDialog,
+            onDismissRequest = closeAddDialog
         ) {
             Spacer(modifier = Modifier.height(14.dp))
             CupertinoTextField(
@@ -358,6 +598,7 @@ fun ProfilesScreen(
     if (actionSheetProfile != null) {
         val target = actionSheetProfile!!
         val isSub = !target.url.isNullOrBlank()
+        val autoUpdateLabel = AppStrings.current("profile_auto_update")
 
         val actions = buildList {
             if (isSub) {
@@ -368,6 +609,18 @@ fun ProfilesScreen(
                             haptic.lightTick()
                             actionSheetProfile = null
                             onRefreshSubscription(target)
+                        }
+                    )
+                )
+                add(
+                    CupertinoActionSheetItem(
+                        text = autoUpdateLabel,
+                        onClick = {
+                            haptic.selection()
+                            actionSheetProfile = null
+                            draftAutoUpdate = target.autoUpdate
+                            draftInterval = target.autoUpdateInterval
+                            autoUpdateProfile = target
                         }
                     )
                 )
@@ -415,6 +668,86 @@ fun ProfilesScreen(
             actions = actions,
             cancelText = AppStrings.get("cancel", lang)
         )
+    }
+
+    if (autoUpdateProfile != null) {
+        val target = autoUpdateProfile!!
+        CupertinoModalBottomSheet(
+            onDismissRequest = { autoUpdateProfile = null },
+            title = AppStrings.current("profile_auto_update"),
+            doneText = null,
+            trailingAction = {
+                Box(
+                    modifier = Modifier
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable {
+                            val updated = target.copy(
+                                autoUpdate = draftAutoUpdate,
+                                autoUpdateInterval = draftInterval
+                            )
+                            ConfigManager.updateProfile(context, updated)
+                            autoUpdateProfile = null
+                            onUpdateProfile(updated)
+                        }
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = AppStrings.current("action_save"),
+                        color = IosBlue,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        ) {
+            Spacer(modifier = Modifier.height(2.dp))
+            CupertinoGroupedSection {
+                CupertinoCell(
+                    title = AppStrings.current("profile_auto_update"),
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = draftAutoUpdate,
+                            onCheckedChange = { draftAutoUpdate = it }
+                        )
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            CupertinoGroupedSection(header = AppStrings.current("profile_auto_update_interval")) {
+                autoUpdateIntervals.forEachIndexed { index, option ->
+                    val selected = draftInterval == option.first
+                    CupertinoCell(
+                        title = AppStrings.current(option.second),
+                        showChevron = false,
+                        trailing = {
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = IosBlue,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        },
+                        onClick = { draftInterval = option.first }
+                    )
+                    if (index < autoUpdateIntervals.lastIndex) {
+                        CupertinoIndentedDivider()
+                    }
+                }
+            }
+            Text(
+                text = AppStrings.current("profile_auto_update_desc"),
+                color = LoonTextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 30.dp, vertical = 10.dp)
+            )
+        }
     }
 
     if (editingProfile != null) {
@@ -485,7 +818,8 @@ fun ProfilesScreenPreview() {
             lastUpdated = System.currentTimeMillis() - 3600_000L * 2,
             uploadBytes = 1024L * 1024L * 500L,
             downloadBytes = 1024L * 1024L * 1024L * 5L,
-            totalBytes = 1024L * 1024L * 1024L * 100L
+            totalBytes = 1024L * 1024L * 1024L * 100L,
+            expireTimestamp = System.currentTimeMillis() / 1000L + 86_400L * 5
         ),
         ProfileItem(
             id = "profile_2",

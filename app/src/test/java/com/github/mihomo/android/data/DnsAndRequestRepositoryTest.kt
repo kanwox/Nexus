@@ -16,6 +16,30 @@ class DnsAndRequestRepositoryTest {
         LogRepository.clear()
     }
 
+    private fun conn(
+        id: String,
+        host: String,
+        chains: List<String> = listOf("🇭🇰 香港 01", "🔰 节点选择"),
+        upload: Long = 100L,
+        download: Long = 200L,
+        rule: String = "DomainSuffix",
+        network: String = "TCP"
+    ) = MihomoApi.ApiConnection(
+        id = id,
+        host = host,
+        destinationIp = "1.2.3.4",
+        destinationPort = 443,
+        network = network,
+        sourceIp = "172.19.0.1",
+        sourcePort = 54321,
+        rule = rule,
+        rulePayload = "google.com",
+        chains = chains,
+        uploadBytes = upload,
+        downloadBytes = download,
+        startMs = System.currentTimeMillis()
+    )
+
     @Test
     fun `test DnsRepository parses real Mihomo DNS formats`() {
         // 1. Direct resolution
@@ -47,57 +71,100 @@ class DnsAndRequestRepositoryTest {
     }
 
     @Test
-    fun `test RequestRepository parses complex Mihomo routing with unicode group names`() {
-        val log1 = "[TCP] 172.19.0.1:54321(com.android.chrome) --> www.google.com:443 match DomainSuffix(google.com) using 🔰 节点选择[🇭🇰 香港 01]"
-        RequestRepository.parseFromLog(log1)
-
-        val records = RequestRepository.recordsFlow.value
-        assertEquals(1, records.size)
-        val r1 = records.first()
-        assertEquals("www.google.com", r1.host)
-        assertEquals(443, r1.destinationPort)
-        assertEquals("TCP", r1.network)
-        assertEquals("com.android.chrome", r1.packageName)
-        assertEquals("DomainSuffix", r1.rule)
-        assertEquals("google.com", r1.rulePayload)
-        assertEquals("🔰 节点选择[🇭🇰 香港 01]", r1.outbound)
-        assertEquals(listOf("🔰 节点选择", "🇭🇰 香港 01"), r1.chain)
-        assertTrue(r1.isActive)
-    }
-
-    @Test
-    fun `test RequestRepository parses doesn't match any rule format`() {
-        val log = "[TCP] 172.19.0.1:54321 --> api.github.com:443 doesn't match any rule using DIRECT"
-        RequestRepository.parseFromLog(log)
+    fun `test RequestRepository maps structured connections with reversed chains`() {
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(conn("c1", "www.google.com")),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
 
         val records = RequestRepository.recordsFlow.value
         assertEquals(1, records.size)
         val r = records.first()
-        assertEquals("api.github.com", r.host)
-        assertEquals("DIRECT", r.outbound)
-        assertEquals(listOf("DIRECT"), r.chain)
+        assertEquals("www.google.com", r.host)
+        assertEquals(443, r.destinationPort)
+        assertEquals("TCP", r.network)
+        assertEquals("c1", r.connectionId)
+        assertEquals("DomainSuffix", r.rule)
+        assertEquals("google.com", r.rulePayload)
+        // API chains run [exitNode, ..., entryGroup]: the direct outbound is the exit node.
+        assertEquals("🇭🇰 香港 01", r.outbound)
+        assertEquals(listOf("🔰 节点选择", "🇭🇰 香港 01"), r.chain)
+        assertEquals(100L, r.uploadBytes)
+        assertEquals(200L, r.downloadBytes)
+        assertTrue(r.isActive)
     }
 
     @Test
-    fun `test LogRepository raw logcat json dispatches to DNS and Request repositories`() {
-        // CFA JSON payload
-        val rawJson = """{"level":"info","message":"[TCP] 172.19.0.1:54321 --> www.apple.com:443 match DomainSuffix(apple.com) using DIRECT","time":"2026-10-24T15:30:00Z"}"""
-        LogRepository.addRawLogcat(rawJson)
-
-        val requests = RequestRepository.recordsFlow.value
-        assertEquals(1, requests.size)
-        assertEquals("www.apple.com", requests.first().host)
-        assertEquals("DIRECT", requests.first().outbound)
-    }
-
-    @Test
-    fun `test RequestRepository handles connection closed`() {
-        val logOpen = "[TCP] 172.19.0.1:54321 --> api.openai.com:443 match DomainSuffix(openai.com) using 节点选择[US 01]"
-        RequestRepository.parseFromLog(logOpen)
+    fun `test RequestRepository closes connections missing from the snapshot`() {
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(conn("c1", "api.github.com")),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
         assertTrue(RequestRepository.recordsFlow.value.first().isActive)
 
-        val logClose = "[TCP] connection to api.openai.com:443 closed"
-        RequestRepository.parseFromLog(logClose)
-        assertFalse(RequestRepository.recordsFlow.value.first().isActive)
+        // Empty snapshot: the connection disappeared, so the record is closed.
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(connections = emptyList(), uploadTotal = 0L, downloadTotal = 0L)
+        )
+        val closed = RequestRepository.recordsFlow.value.first()
+        assertFalse(closed.isActive)
+        assertTrue(closed.durationMs >= 0L)
+    }
+
+    @Test
+    fun `test RequestRepository updates byte counters in place`() {
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(conn("c1", "www.google.com", upload = 10L, download = 20L)),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(conn("c1", "www.google.com", upload = 30L, download = 40L)),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+
+        val records = RequestRepository.recordsFlow.value
+        assertEquals(1, records.size)
+        assertEquals(30L, records.first().uploadBytes)
+        assertEquals(40L, records.first().downloadBytes)
+    }
+
+    @Test
+    fun `test RequestRepository ranks hosts by traffic`() {
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(
+                    conn("c1", "a.example.com", upload = 100L, download = 900L),
+                    conn("c2", "a.example.com", upload = 500L, download = 500L),
+                    conn("c3", "b.example.com", upload = 10L, download = 10L)
+                ),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+
+        val ranking = RequestRepository.topHostsByTraffic(2)
+        assertEquals(2, ranking.size)
+        assertEquals("a.example.com", ranking.first().first)
+        assertEquals(600L, ranking.first().second)
+        assertEquals(1400L, ranking.first().third)
+    }
+
+    @Test
+    fun `test LogRepository raw logcat still dispatches DNS lines`() {
+        val rawJson = """{"level":"info","message":"[DNS] www.apple.com --> 17.253.144.10","time":"2026-10-26T10:00:00Z"}"""
+        LogRepository.addRawLogcat(rawJson)
+        assertEquals("17.253.144.10", DnsRepository.findIpForDomain("www.apple.com"))
     }
 }

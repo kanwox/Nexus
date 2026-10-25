@@ -1,7 +1,13 @@
 package com.github.mihomo.android.ui.screens
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -30,9 +36,102 @@ import com.github.mihomo.android.data.UpdateChecker
 import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import java.util.Locale
+
+/**
+ * Strings that have no AppStrings entry yet (they live outside the shared table so the
+ * dictionaries stay untouched) are picked by the active app language.
+ */
+private fun localeText(lang: String, zh: String, en: String): String {
+    val effective = if (lang == "SYSTEM") Locale.getDefault().language else lang
+    return if (effective.startsWith("zh", ignoreCase = true)) zh else en
+}
+
+/** Streams the release apk into cacheDir/updates/, replacing any previously downloaded one. */
+private suspend fun downloadUpdateApk(context: Context, asset: UpdateChecker.ReleaseAsset): File? =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val fileName = asset.browserDownloadUrl.substringAfterLast('/').ifBlank { "nexus-update.apk" }
+            val target = File(dir, fileName)
+            val request = Request.Builder().url(asset.browserDownloadUrl).build()
+            OkHttpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("HTTP ${response.code}")
+                val body = response.body ?: error("Empty response body")
+                body.byteStream().use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+            target
+        }.getOrNull()
+    }
+
+/** Fires the package installer for [apk], routing through the unknown-sources gate first. */
+private fun installUpdateApk(context: Context, apk: File, lang: String) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+        !context.packageManager.canRequestPackageInstalls()
+    ) {
+        runCatching {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    "package:${context.packageName}".toUri()
+                )
+            )
+        }
+        CupertinoToast.show(
+            localeText(lang, "请先允许安装未知来源应用", "Allow installing unknown apps first"),
+            isDestructive = true
+        )
+        return
+    }
+    runCatching {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    }.onFailure {
+        CupertinoToast.show(
+            AppStrings.get("settings_update_install_failed", lang).replace("{reason}", it.message ?: ""),
+            isDestructive = true
+        )
+    }
+}
+
+/** Downloads the release apk off the main thread, then either installs it or reports the failure. */
+private fun beginUpdateDownload(
+    context: Context,
+    asset: UpdateChecker.ReleaseAsset,
+    lang: String,
+    scope: CoroutineScope,
+    setDownloading: (Boolean) -> Unit
+) {
+    CupertinoToast.show(AppStrings.get("settings_update_downloading", lang))
+    scope.launch {
+        val apk = downloadUpdateApk(context, asset)
+        setDownloading(false)
+        if (apk == null) {
+            CupertinoToast.show(
+                AppStrings.get("settings_update_install_failed", lang)
+                    .replace("{reason}", localeText(lang, "下载失败", "download failed")),
+                isDestructive = true
+            )
+        } else {
+            CupertinoToast.show(AppStrings.get("settings_update_ready", lang))
+            installUpdateApk(context, apk, lang)
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,7 +152,24 @@ fun SettingsScreen(
     onNavigateToAppRouting: () -> Unit,
     onNavigateToLogs: () -> Unit,
     onNavigateToAppearance: () -> Unit = {},
-    onNavigateToDnsSettings: () -> Unit = {}
+    onNavigateToDnsSettings: () -> Unit = {},
+    killSwitchEnabled: Boolean = true,
+    onKillSwitchChanged: (Boolean) -> Unit = {},
+    allowBypassEnabled: Boolean = true,
+    onAllowBypassChanged: (Boolean) -> Unit = {},
+    mixedPort: Int = 7890,
+    onMixedPortChanged: (Int) -> Unit = {},
+    tunMtu: Int = 9000,
+    onTunMtuChanged: (Int) -> Unit = {},
+    allowPrivateSubs: Boolean = true,
+    onAllowPrivateSubsChanged: (Boolean) -> Unit = {},
+    appLockEnabled: Boolean = false,
+    onAppLockChanged: (Boolean) -> Unit = {},
+    preventScreenshots: Boolean = false,
+    onPreventScreenshotsChanged: (Boolean) -> Unit = {},
+    onNavigateToCore: () -> Unit = {},
+    onExportBackup: (Uri) -> Unit = {},
+    onImportBackup: (Uri) -> Unit = {}
 ) {
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
@@ -72,6 +188,26 @@ fun SettingsScreen(
     var isCheckingUpdate by remember { mutableStateOf(false) }
     var updateResult by remember { mutableStateOf<UpdateChecker.CheckResult?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+
+    // Numeric-network-field dialogs (mixed port / TUN MTU)
+    var showMixedPortDialog by remember { mutableStateOf(false) }
+    var showTunMtuDialog by remember { mutableStateOf(false) }
+
+    // Backup import needs an explicit confirmation before overwriting local data
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) onExportBackup(uri)
+    }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) pendingImportUri = uri
+    }
 
     val installedVersion = remember {
         UpdateChecker.installedVersion(context)
@@ -173,6 +309,74 @@ fun SettingsScreen(
                 )
                 CupertinoDivider()
                 CupertinoCell(
+                    title = AppStrings.get("settings_kill_switch", lang),
+                    subtitle = AppStrings.get("settings_kill_switch_desc", lang),
+                    icon = Icons.Default.Shield,
+                    iconBg = IosRed,
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = killSwitchEnabled,
+                            onCheckedChange = onKillSwitchChanged
+                        )
+                    },
+                    onClick = { onKillSwitchChanged(!killSwitchEnabled) }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_allow_bypass", lang),
+                    subtitle = AppStrings.get("settings_allow_bypass_desc", lang),
+                    icon = Icons.Default.CallSplit,
+                    iconBg = IosTeal,
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = allowBypassEnabled,
+                            onCheckedChange = onAllowBypassChanged
+                        )
+                    },
+                    onClick = { onAllowBypassChanged(!allowBypassEnabled) }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_mixed_port", lang),
+                    value = mixedPort.toString(),
+                    icon = Icons.Default.SettingsEthernet,
+                    iconBg = IosBlue,
+                    showChevron = true,
+                    onClick = { showMixedPortDialog = true }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_tun_mtu", lang),
+                    value = tunMtu.toString(),
+                    icon = Icons.Default.NetworkCheck,
+                    iconBg = IosIndigo,
+                    showChevron = true,
+                    onClick = { showTunMtuDialog = true }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_allow_private_subs", lang),
+                    subtitle = AppStrings.get("settings_allow_private_subs_desc", lang),
+                    icon = Icons.Default.Lan,
+                    iconBg = IosMint,
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = allowPrivateSubs,
+                            onCheckedChange = onAllowPrivateSubsChanged
+                        )
+                    },
+                    onClick = { onAllowPrivateSubsChanged(!allowPrivateSubs) }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_core_providers", lang),
+                    icon = Icons.Default.Dns,
+                    iconBg = IosGray,
+                    showChevron = true,
+                    onClick = onNavigateToCore
+                )
+                CupertinoDivider()
+                CupertinoCell(
                     title = AppStrings.get("settings_system_vpn", lang),
                     value = AppStrings.get("always_on", lang),
                     icon = Icons.Default.Security,
@@ -269,6 +473,40 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
+            // Section 3.5: 隐私与安全 (Privacy & Security)
+            CupertinoGroupedSection(
+                header = AppStrings.get("settings_security_section", lang)
+            ) {
+                CupertinoCell(
+                    title = AppStrings.get("settings_app_lock", lang),
+                    subtitle = AppStrings.get("settings_app_lock_desc", lang),
+                    icon = Icons.Default.Lock,
+                    iconBg = IosBlue,
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = appLockEnabled,
+                            onCheckedChange = onAppLockChanged
+                        )
+                    },
+                    onClick = { onAppLockChanged(!appLockEnabled) }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_prevent_screenshots", lang),
+                    icon = Icons.Default.VisibilityOff,
+                    iconBg = IosPurple,
+                    trailing = {
+                        CupertinoSwitch(
+                            checked = preventScreenshots,
+                            onCheckedChange = onPreventScreenshotsChanged
+                        )
+                    },
+                    onClick = { onPreventScreenshotsChanged(!preventScreenshots) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
             // Section 4: 关于与维护 (About & Maintenance)
             CupertinoGroupedSection(
                 header = AppStrings.get("settings_section_maintenance_about", lang)
@@ -321,6 +559,22 @@ fun SettingsScreen(
                     iconBg = IosRed,
                     showChevron = true,
                     onClick = { showResetDialog = true }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_backup_export", lang),
+                    icon = Icons.Default.FileUpload,
+                    iconBg = IosGreen,
+                    showChevron = true,
+                    onClick = { exportBackupLauncher.launch("nexus-backup.json") }
+                )
+                CupertinoDivider()
+                CupertinoCell(
+                    title = AppStrings.get("settings_backup_import", lang),
+                    icon = Icons.Default.FileDownload,
+                    iconBg = IosOrange,
+                    showChevron = true,
+                    onClick = { importBackupLauncher.launch(arrayOf("application/json")) }
                 )
             }
         }
@@ -542,6 +796,32 @@ fun SettingsScreen(
                                         )
                                     }
                                 }
+                                // In-app download path: fetch the release apk straight into
+                                // the cache and hand it to the package installer.
+                                info.apkAsset?.let { asset ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CupertinoButton(
+                                            text = AppStrings.get("settings_update_download", lang),
+                                            onClick = {
+                                                if (!isDownloadingUpdate) {
+                                                    isDownloadingUpdate = true
+                                                    beginUpdateDownload(context, asset, lang, scope) {
+                                                        isDownloadingUpdate = it
+                                                    }
+                                                }
+                                            }
+                                        )
+                                        if (isDownloadingUpdate) {
+                                            CupertinoActivityIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                color = IosBlue
+                                            )
+                                        }
+                                    }
+                                }
                             } else {
                                 Text(
                                     text = AppStrings.get("update_up_to_date", lang).replace("{v}", installedVersion),
@@ -560,6 +840,83 @@ fun SettingsScreen(
                     }
                 }
             }
+        )
+    }
+
+    // Mixed Port Input Dialog (1024..65535, validated locally before persisting)
+    if (showMixedPortDialog) {
+        var portInput by remember { mutableStateOf(mixedPort.toString()) }
+        CupertinoAlertDialog(
+            title = AppStrings.get("settings_mixed_port", lang),
+            confirmText = AppStrings.get("action_save", lang),
+            onConfirm = {
+                val parsed = portInput.trim().toIntOrNull()
+                if (parsed != null && parsed in 1024..65535) {
+                    onMixedPortChanged(parsed)
+                    showMixedPortDialog = false
+                } else {
+                    CupertinoToast.show(
+                        localeText(lang, "端口需在 1024 - 65535 之间", "Port must be between 1024 and 65535"),
+                        isDestructive = true
+                    )
+                }
+            },
+            onDismissRequest = { showMixedPortDialog = false },
+            content = {
+                CupertinoTextField(
+                    value = portInput,
+                    onValueChange = { newValue -> portInput = newValue.filter { ch -> ch.isDigit() } },
+                    placeholder = "1024 - 65535"
+                )
+            }
+        )
+    }
+
+    // TUN MTU Input Dialog (1280..65535)
+    if (showTunMtuDialog) {
+        var mtuInput by remember { mutableStateOf(tunMtu.toString()) }
+        CupertinoAlertDialog(
+            title = AppStrings.get("settings_tun_mtu", lang),
+            confirmText = AppStrings.get("action_save", lang),
+            onConfirm = {
+                val parsed = mtuInput.trim().toIntOrNull()
+                if (parsed != null && parsed in 1280..65535) {
+                    onTunMtuChanged(parsed)
+                    showTunMtuDialog = false
+                } else {
+                    CupertinoToast.show(
+                        localeText(lang, "MTU 需在 1280 - 65535 之间", "MTU must be between 1280 and 65535"),
+                        isDestructive = true
+                    )
+                }
+            },
+            onDismissRequest = { showTunMtuDialog = false },
+            content = {
+                CupertinoTextField(
+                    value = mtuInput,
+                    onValueChange = { newValue -> mtuInput = newValue.filter { ch -> ch.isDigit() } },
+                    placeholder = "1280 - 65535"
+                )
+            }
+        )
+    }
+
+    // Backup Import Confirmation (restore overwrites all local data)
+    pendingImportUri?.let { importUri ->
+        CupertinoAlertDialog(
+            title = AppStrings.get("settings_backup_import", lang),
+            message = localeText(
+                lang,
+                "导入将覆盖当前全部配置、脚本与设置，确定继续吗？",
+                "Importing will overwrite all profiles, scripts and settings. Continue?"
+            ),
+            confirmText = AppStrings.get("confirm", lang),
+            isDestructive = true,
+            onConfirm = {
+                pendingImportUri = null
+                onImportBackup(importUri)
+            },
+            onDismissRequest = { pendingImportUri = null }
         )
     }
 }

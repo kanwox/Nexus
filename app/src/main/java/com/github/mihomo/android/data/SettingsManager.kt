@@ -90,6 +90,60 @@ class SettingsManager(context: Context) {
         get() = prefs.getString("dns_fallback_servers", DEFAULT_FALLBACK_SERVERS) ?: DEFAULT_FALLBACK_SERVERS
         set(value) = prefs.edit { putString("dns_fallback_servers", value) }
 
+    /** Local mixed HTTP/SOCKS listen port injected into the core (also the LAN share port). */
+    var mixedPort: Int
+        get() = prefs.getInt("mixed_port", 7890)
+        set(value) = prefs.edit { putInt("mixed_port", value.coerceIn(1024, 65535)) }
+
+    /** TUN interface MTU handed to VpnService.Builder.setMtu. */
+    var tunMtu: Int
+        get() = prefs.getInt("tun_mtu", 9000)
+        set(value) = prefs.edit { putInt("tun_mtu", value.coerceIn(1280, 65535)) }
+
+    /**
+     * Kill switch: blocks app traffic whenever the VPN interface is up but the tunnel is not
+     * connected (setBlocking), so a stalled reconnect can never leak real IPs.
+     */
+    var killSwitchEnabled: Boolean
+        get() = prefs.getBoolean("kill_switch_enabled", true)
+        set(value) = prefs.edit { putBoolean("kill_switch_enabled", value) }
+
+    /**
+     * Allows apps to bind to a non-VPN network (setAllowBypass) so LAN-only features
+     * (casting, printers, hotspots) keep working while the tunnel is up.
+     */
+    var allowBypassEnabled: Boolean
+        get() = prefs.getBoolean("allow_bypass_enabled", true)
+        set(value) = prefs.edit { putBoolean("allow_bypass_enabled", value) }
+
+    /**
+     * When false, subscription/script URLs pointing at private LAN ranges (192.168/10/172.16,
+     * loopback) are rejected — a defense against pasted links probing the local network.
+     * Self-hosted subscription converters need this left on.
+     */
+    var allowPrivateSubscriptionHosts: Boolean
+        get() = prefs.getBoolean("allow_private_subscription_hosts", true)
+        set(value) = prefs.edit { putBoolean("allow_private_subscription_hosts", value) }
+
+    /**
+     * Rejects plaintext third-party DNS (UDP port 53 to any address except the tunnel's own
+     * portal) via a top-level REJECT rule. Apps hardcoding 8.8.8.8 then fall back to the
+     * system resolver, which the tunnel controls — closing the DNS leak path.
+     */
+    var blockThirdPartyDns: Boolean
+        get() = prefs.getBoolean("block_third_party_dns", false)
+        set(value) = prefs.edit { putBoolean("block_third_party_dns", value) }
+
+    /** Requires biometric/device-credential unlock when returning to the foreground. */
+    var appLockEnabled: Boolean
+        get() = prefs.getBoolean("app_lock_enabled", false)
+        set(value) = prefs.edit { putBoolean("app_lock_enabled", value) }
+
+    /** Adds FLAG_SECURE so the app never appears in screenshots or the recents preview. */
+    var preventScreenshots: Boolean
+        get() = prefs.getBoolean("prevent_screenshots", false)
+        set(value) = prefs.edit { putBoolean("prevent_screenshots", value) }
+
     companion object {
         const val DEFAULT_NAMESERVERS = "https://223.5.5.5/dns-query, https://doh.pub/dns-query, 223.5.5.5, 119.29.29.29"
         const val DEFAULT_FALLBACK_SERVERS = "https://1.1.1.1/dns-query, https://8.8.8.8/dns-query, 1.1.1.1, 8.8.8.8"

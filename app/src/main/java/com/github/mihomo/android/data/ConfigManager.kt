@@ -3,6 +3,8 @@ package com.github.mihomo.android.data
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -26,6 +28,25 @@ data class ProfileItem(
     val downloadBytes: Long = 0L,
     val totalBytes: Long = 0L,
     val expireTimestamp: Long = 0L,
+    // Structured overrides applied after script rewriting (see [ConfigOverrides]).
+    val prependRules: List<String> = emptyList(),
+    val hostsEntries: List<String> = emptyList(),
+    val dnsServersOverride: List<String> = emptyList(),
+)
+
+/**
+ * Per-profile structured overrides layered on top of the (script-rewritten) subscription:
+ * - [prependRules] are inserted at the very top of the rule list (highest priority).
+ * - [hostsEntries] are "domain: target" lines merged into the hosts mapping (profile entries
+ *   win over subscription hosts on key conflicts).
+ * - dnsServersOverride lives on [ProfileItem] and replaces the injected header's nameservers.
+ * - [dnsServersOverride] replaces the upstream nameserver list when non-empty.
+ * Applying them inside the YAML sanitizer means one parse/dump pass covers stripping and
+ * overriding, and the overrides cannot be defeated by key quoting either.
+ */
+data class ConfigOverrides(
+    val prependRules: List<String> = emptyList(),
+    val hostsEntries: List<String> = emptyList(),
 )
 
 data class SubscriptionUserInfo(
@@ -202,7 +223,7 @@ object ConfigManager {
         name: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
         runCatching {
-            requireSecureRemoteUrl(url)
+            requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
@@ -247,7 +268,7 @@ object ConfigManager {
         url: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
         runCatching {
-            requireSecureRemoteUrl(url)
+            requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
@@ -283,7 +304,10 @@ object ConfigManager {
                     uploadBytes = userInfo?.upload ?: (existing?.uploadBytes ?: 0L),
                     downloadBytes = userInfo?.download ?: (existing?.downloadBytes ?: 0L),
                     totalBytes = userInfo?.total ?: (existing?.totalBytes ?: 0L),
-                    expireTimestamp = userInfo?.expire ?: (existing?.expireTimestamp ?: 0L)
+                    expireTimestamp = userInfo?.expire ?: (existing?.expireTimestamp ?: 0L),
+                    prependRules = existing?.prependRules ?: emptyList(),
+                    hostsEntries = existing?.hostsEntries ?: emptyList(),
+                    dnsServersOverride = existing?.dnsServersOverride ?: emptyList()
                 )
                 saveProfileMetadata(context, item)
                 Log.i(TAG, "Successfully overwritten existing profile id=$id ($name)")
@@ -340,7 +364,10 @@ object ConfigManager {
         val uploadBytes: Long = 0L,
         val downloadBytes: Long = 0L,
         val totalBytes: Long = 0L,
-        val expireTimestamp: Long = 0L
+        val expireTimestamp: Long = 0L,
+        val prependRules: List<String> = emptyList(),
+        val hostsEntries: List<String> = emptyList(),
+        val dnsServersOverride: List<String> = emptyList()
     )
 
     /** Single durable store for all profile metadata plus the manual ordering. */
@@ -468,7 +495,10 @@ object ConfigManager {
                     uploadBytes = meta.uploadBytes,
                     downloadBytes = meta.downloadBytes,
                     totalBytes = meta.totalBytes,
-                    expireTimestamp = meta.expireTimestamp
+                    expireTimestamp = meta.expireTimestamp,
+                    prependRules = meta.prependRules,
+                    hostsEntries = meta.hostsEntries,
+                    dnsServersOverride = meta.dnsServersOverride
                 )
             }
 
@@ -527,7 +557,10 @@ object ConfigManager {
                 uploadBytes = item.uploadBytes,
                 downloadBytes = item.downloadBytes,
                 totalBytes = item.totalBytes,
-                expireTimestamp = item.expireTimestamp
+                expireTimestamp = item.expireTimestamp,
+                prependRules = item.prependRules,
+                hostsEntries = item.hostsEntries,
+                dnsServersOverride = item.dnsServersOverride
             )
             persistStore(context, store.copy(profiles = store.profiles + (item.id to meta)))
         }
@@ -549,8 +582,16 @@ object ConfigManager {
      * Runtime-critical top-level keys belong to the injected header. A subscription must not be
      * able to reintroduce or override them, so they are removed structurally after parsing: text
      * matching is trivially defeated by quoting a key (`"external-controller": 0.0.0.0:9090`).
+     *
+     * The same single parse/dump pass also applies the structured [overrides] (rule prepending
+     * and hosts merging) and the optional plaintext-DNS reject rule, so profile overrides get
+     * the same "cannot be defeated by quoting" guarantee as the key stripping.
      */
-    internal fun sanitizeUserConfig(raw: String): String {
+    internal fun sanitizeUserConfig(
+        raw: String,
+        overrides: ConfigOverrides = ConfigOverrides(),
+        blockThirdPartyDns: Boolean = false
+    ): String {
         return try {
             val yaml = org.yaml.snakeyaml.Yaml(org.yaml.snakeyaml.DumperOptions().apply {
                 defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
@@ -566,6 +607,39 @@ object ConfigManager {
                 if (keyStr.lowercase() in PROTECTED_TOP_LEVEL_KEYS) continue
                 sanitized[keyStr] = value
             }
+
+            if (blockThirdPartyDns) {
+                val existingRules = (sanitized["rules"] as? List<*>) ?: emptyList<Any>()
+                val dnsRejectRule =
+                    "- AND,((NETWORK,UDP),(DST-PORT,53),(NOT,((DST-IP,172.19.0.2))),(NOT,((DST-IP,fdfe:dcba:9876::2)))),REJECT"
+                sanitized["rules"] = listOf(dnsRejectRule) + existingRules
+            }
+
+            if (overrides.prependRules.isNotEmpty()) {
+                val existingRules = (sanitized["rules"] as? List<*>) ?: emptyList<Any>()
+                sanitized["rules"] = overrides.prependRules + existingRules
+            }
+
+            if (overrides.hostsEntries.isNotEmpty()) {
+                val hosts = LinkedHashMap<String, Any?>()
+                for (entry in overrides.hostsEntries) {
+                    val domain = entry.substringBefore(':').trim()
+                    val target = entry.substringAfter(':', "").trim()
+                    if (domain.isNotBlank() && target.isNotBlank()) {
+                        hosts[domain] = target
+                    }
+                }
+                if (hosts.isNotEmpty()) {
+                    val existingHosts = sanitized["hosts"] as? Map<*, *>
+                    if (existingHosts != null) {
+                        for ((key, value) in existingHosts) {
+                            hosts.putIfAbsent(key?.toString() ?: continue, value)
+                        }
+                    }
+                    sanitized["hosts"] = hosts
+                }
+            }
+
             yaml.dump(sanitized)
         } catch (e: Throwable) {
             Log.w(TAG, "Structural config sanitization failed, falling back to text filter", e)
@@ -599,7 +673,10 @@ object ConfigManager {
         val allowLan: Boolean,
         val lanPassword: String,
         val dnsIpv6Enabled: Boolean,
-        val fakeIpEnabled: Boolean
+        val fakeIpEnabled: Boolean,
+        val mixedPort: Int = 7890,
+        val externalController: String? = null,
+        val apiSecret: String? = null
     )
 
     /**
@@ -628,14 +705,15 @@ object ConfigManager {
         fallbackYaml: String
     ): String {
         val lanAuthYaml = buildLanAuthBlock(options.allowLan, options.lanPassword)
+        val controllerYaml = buildControllerBlock(options.externalController, options.apiSecret)
         return """
             # Mihomo Android Injected Runtime Config
             mode: ${options.tunnelMode}
             log-level: ${options.logLevel}
             ipv6: ${options.ipv6Enabled}
-            mixed-port: 7890
+            mixed-port: ${options.mixedPort}
             allow-lan: ${options.allowLan}
-$lanAuthYaml
+$lanAuthYaml$controllerYaml
             geodata-mode: false
             geo-auto-update: false
             geox-url:
@@ -664,7 +742,6 @@ $fallbackYaml
                 - "connectivitycheck.gstatic.com"
                 - "connectivitycheck.android.com"
                 - "clients3.google.com"
-                - "www.google.com/generate_204"
                 - "+.msftconnecttest.com"
                 - "+.msftncsi.com"
                 - "+.qualcomm.com"
@@ -674,7 +751,32 @@ $fallbackYaml
         """.trimIndent()
     }
 
-    fun prepareConfig(context: Context, sourceFile: File?): File {
+    /**
+     * The external-controller block gives the app a structured view of the core (connections,
+     * providers, memory) and must never be reachable from outside the device. Keys are in
+     * PROTECTED_TOP_LEVEL_KEYS, so subscriptions cannot rebind the controller or replace the
+     * random per-process secret. Lines are pre-indented to survive trimIndent().
+     */
+    internal fun buildControllerBlock(listenAt: String?, secret: String?): String {
+        if (listenAt.isNullOrBlank() || secret.isNullOrBlank()) return ""
+        return listOf(
+            "external-controller: $listenAt",
+            "secret: \"$secret\""
+        ).joinToString("\n") { "            $it" } + "\n"
+    }
+
+    private val prepareLock = Mutex()
+
+    suspend fun prepareConfig(context: Context, sourceFile: File?): File {
+        // Serializes whole-file synthesis: a UI-triggered reload and a VPN start running
+        // concurrently would otherwise interleave and one write could clobber the other's
+        // header/body combination in config.yaml.
+        return prepareLock.withLock {
+            prepareConfigLocked(context, sourceFile)
+        }
+    }
+
+    private suspend fun prepareConfigLocked(context: Context, sourceFile: File?): File {
         val settings = SettingsManager(context)
         val finalContent: String
 
@@ -688,14 +790,28 @@ $fallbackYaml
             effective.joinToString("\n") { "                - $it" }
         }
 
-        val nameserversYaml = formatDnsList(
-            settings.dnsNameservers,
-            listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
-        )
+        val activeProfile = if (sourceFile != null) {
+            getProfiles(context).find {
+                it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
+            }
+        } else null
+
+        // Per-profile DNS override: when set it replaces the global upstream list entirely.
+        val nameserversYaml = if (activeProfile?.dnsServersOverride.isNullOrEmpty()) {
+            formatDnsList(
+                settings.dnsNameservers,
+                listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
+            )
+        } else {
+            activeProfile.dnsServersOverride.joinToString("\n") { "                - $it" }
+        }
         val fallbackYaml = formatDnsList(
             settings.dnsFallbackServers,
             listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "1.1.1.1", "8.8.8.8")
         )
+
+        // Bring the REST controller up with the same credentials on every config load.
+        ApiController.acquire()
 
         val header = buildRuntimeHeader(
             RuntimeHeaderOptions(
@@ -705,7 +821,10 @@ $fallbackYaml
                 allowLan = settings.allowLan,
                 lanPassword = settings.allowLanPassword,
                 dnsIpv6Enabled = settings.dnsIpv6Enabled,
-                fakeIpEnabled = settings.fakeIpEnabled
+                fakeIpEnabled = settings.fakeIpEnabled,
+                mixedPort = settings.mixedPort,
+                externalController = if (ApiController.isReady) "127.0.0.1:${ApiController.port}" else null,
+                apiSecret = ApiController.secret.ifBlank { null }
             ),
             nameserversYaml,
             fallbackYaml
@@ -713,13 +832,10 @@ $fallbackYaml
 
         if ((sourceFile != null) && sourceFile.exists()) {
             var rawContent = sourceFile.readText()
-            val activeProfile = getProfiles(context).find {
-                it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
-            }
+            // Empty scriptIds means "no scripts bound" (explicit binding wins); legacy
+            // profiles that predate bindings are migrated in MihomoApplication.
             val targetIds = if (activeProfile != null && activeProfile.scriptEnabled) {
-                activeProfile.scriptIds.ifEmpty {
-                    ScriptManager.getScripts(context).asSequence().filter { it.enabled }.map { it.id }.toList()
-                }
+                activeProfile.scriptIds
             } else emptyList()
             if (targetIds.isNotEmpty()) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name} (${targetIds.size} scripts)...")
@@ -729,7 +845,14 @@ $fallbackYaml
                     targetScriptIds = targetIds
                 )
             }
-            val userContent = sanitizeUserConfig(rawContent)
+            val userContent = sanitizeUserConfig(
+                rawContent,
+                overrides = ConfigOverrides(
+                    prependRules = activeProfile?.prependRules ?: emptyList(),
+                    hostsEntries = activeProfile?.hostsEntries ?: emptyList()
+                ),
+                blockThirdPartyDns = settings.blockThirdPartyDns
+            )
             // Cleanly prepend runtime settings without mangling proxies, rules or formatting
             finalContent = "$header\n$userContent"
             Log.i(TAG, "Prepared synthesized config with user profile: ${sourceFile.name}")

@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Log
 import com.github.kr328.clash.common.Global
 import com.github.mihomo.android.core.ClashCore
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,6 +25,11 @@ class MihomoApplication : Application() {
         Global.init(this)
         Log.i("MihomoApp", "Application initialized with Global context")
 
+        // Background subscription auto-update checks (WorkManager persists across reboots).
+        runCatching { com.github.mihomo.android.data.SubscriptionUpdateWorker.schedule(this) }
+            .onFailure { Log.w("MihomoApp", "Failed to schedule subscription auto-update", it) }
+        migrateLegacyScriptScopes()
+
         // Native init (loadLibrary + nativeInit) must stay on the main thread: moving it to a
         // background dispatcher is not safe for the JNI bridge and caused a launch crash.
         // Debuggable builds on an emulator skip it entirely: the Go core cannot run under
@@ -39,6 +45,30 @@ class MihomoApplication : Application() {
             } catch (e: Throwable) {
                 Log.e("MihomoApp", "ClashCore initial setup deferred: ${e.message}", e)
             }
+        }
+    }
+
+    /**
+     * Profiles created before explicit script bindings existed silently applied every enabled
+     * script. The scope semantics changed to "empty = none", so such profiles are backfilled
+     * with the currently enabled script ids exactly once, preserving their old behavior.
+     */
+    private fun migrateLegacyScriptScopes() {
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching {
+                val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(this@MihomoApplication)
+                val enabledIds = com.github.mihomo.android.data.ScriptManager.getScripts(this@MihomoApplication)
+                    .filter { it.enabled }.map { it.id }
+                if (enabledIds.isEmpty()) return@launch
+                for (profile in profiles) {
+                    if (profile.scriptEnabled && profile.scriptIds.isEmpty()) {
+                        com.github.mihomo.android.data.ConfigManager.updateProfile(
+                            this@MihomoApplication,
+                            profile.copy(scriptIds = enabledIds)
+                        )
+                    }
+                }
+            }.onFailure { Log.w("MihomoApp", "Script scope migration failed: ${it.message}") }
         }
     }
 

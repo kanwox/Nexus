@@ -67,10 +67,10 @@ object ProfileParser {
                 (it.file.name == file.name) || (it.file.absolutePath == file.absolutePath) || (it.id == file.nameWithoutExtension)
             }
         } else null
+        // Explicit bindings win; an empty list means no scripts apply (legacy profiles are
+        // backfilled once in MihomoApplication so old "run everything enabled" setups survive).
         val resolvedScriptIds = if (context != null && activeProfile != null && activeProfile.scriptEnabled) {
-            activeProfile.scriptIds.ifEmpty {
-                ScriptManager.getScripts(context).asSequence().filter { it.enabled }.map { it.id }.toList()
-            }
+            activeProfile.scriptIds
         } else emptyList()
         val scriptKey = resolvedScriptIds.sorted().joinToString(",")
 

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.github.mihomo.android.ui.screens
 
 import android.content.ClipboardManager
@@ -78,7 +80,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private data class ScriptEditorTarget(
-    val existingScript: ScriptItem? = null
+    val existingScript: ScriptItem? = null,
+    val templateNameKey: String? = null,
+    val templateCode: String? = null
 )
 
 private val DEFAULT_NEW_SCRIPT_CODE = """
@@ -86,6 +90,77 @@ function main(config) {
   return config;
 }
 """.trimIndent()
+
+private data class ScriptTemplate(
+    val nameKey: String,
+    val descKey: String,
+    val code: String
+)
+
+private val SCRIPT_TEMPLATES = listOf(
+    ScriptTemplate(
+        nameKey = "script_template_basic",
+        descKey = "script_template_basic_desc",
+        code = """
+            // main(config) receives the raw config object and must return the modified config
+            function main(config) {
+                return config;
+            }
+        """.trimIndent()
+    ),
+    ScriptTemplate(
+        nameKey = "script_template_block_ads",
+        descKey = "script_template_block_ads_desc",
+        code = """
+            // Prepend REJECT rules for common ad domains
+            const AD_RULES = [
+                "DOMAIN-SUFFIX,ad.doubleclick.net,REJECT",
+                "DOMAIN-SUFFIX,googlesyndication.com,REJECT",
+                "DOMAIN-SUFFIX,googleadservices.com,REJECT",
+                "DOMAIN-KEYWORD,adservice,REJECT",
+                "DOMAIN-SUFFIX,umeng.com,REJECT",
+                "DOMAIN-SUFFIX,umeng.co,REJECT"
+            ];
+
+            function main(config) {
+                const rules = Array.isArray(config.rules) ? config.rules : [];
+                config.rules = AD_RULES.concat(rules);
+                return config;
+            }
+        """.trimIndent()
+    ),
+    ScriptTemplate(
+        nameKey = "script_template_force_dns",
+        descKey = "script_template_force_dns_desc",
+        code = """
+            // Replace upstream nameservers with custom DoH endpoints
+            function main(config) {
+                config.dns = Object.assign({}, config.dns, {
+                    enable: true,
+                    "default-nameserver": ["223.5.5.5", "119.29.29.29"],
+                    nameserver: ["https://223.5.5.5/dns-query", "https://doh.pub/dns-query"]
+                });
+                return config;
+            }
+        """.trimIndent()
+    ),
+    ScriptTemplate(
+        nameKey = "script_template_rename_nodes",
+        descKey = "script_template_rename_nodes_desc",
+        code = """
+            // Example: strip regional markers like "🇭🇰 " from every proxy name
+            function main(config) {
+                const proxies = Array.isArray(config.proxies) ? config.proxies : [];
+                for (const proxy of proxies) {
+                    if (typeof proxy.name === "string") {
+                        proxy.name = proxy.name.replace(/^\S+\s+/, "");
+                    }
+                }
+                return config;
+            }
+        """.trimIndent()
+    )
+)
 
 private fun formatRelativeTime(timestamp: Long, lang: String): String {
     val diff = System.currentTimeMillis() - timestamp
@@ -133,8 +208,9 @@ fun ScriptsScreen(
 
     var editorTarget by remember { mutableStateOf<ScriptEditorTarget?>(null) }
 
-    // Top-right "+" Action Sheet (3 options: 新建脚本, URL 导入, 本地导入)
+    // Top-right "+" Action Sheet (4 options: 新建脚本, 从模板新建, URL 导入, 本地导入)
     var showAddSheet by remember { mutableStateOf(false) }
+    var showTemplateSheet by remember { mutableStateOf(false) }
 
     // URL Import Alert Dialog state
     var showUrlImportDialog by remember { mutableStateOf(false) }
@@ -278,6 +354,8 @@ fun ScriptsScreen(
         if (activeEditor != null) {
             ScriptEditorScreen(
                 existingScript = activeEditor.existingScript,
+                templateNameKey = activeEditor.templateNameKey,
+                templateCode = activeEditor.templateCode,
                 onBack = { editorTarget = null },
                 onSaved = {
                     refresh()
@@ -463,7 +541,7 @@ fun ScriptsScreen(
         }
     }
 
-    // 1. Popup with the 3 options: 新建脚本, URL 导入, 本地导入
+    // 1. Popup with the 4 options: 新建脚本, 从模板新建, URL 导入, 本地导入
     if (showAddSheet) {
         CupertinoActionSheet(
             onDismissRequest = { showAddSheet = false },
@@ -474,6 +552,14 @@ fun ScriptsScreen(
                         haptic.selection()
                         showAddSheet = false
                         editorTarget = ScriptEditorTarget(existingScript = null)
+                    }
+                ),
+                CupertinoActionSheetItem(
+                    text = AppStrings.get("scripts_add_from_template", lang),
+                    onClick = {
+                        haptic.selection()
+                        showAddSheet = false
+                        showTemplateSheet = true
                     }
                 ),
                 CupertinoActionSheetItem(
@@ -501,7 +587,41 @@ fun ScriptsScreen(
         )
     }
 
-    // 2. URL Import Dialog
+    // 2. Template Picker Sheet (opens the new-script editor pre-filled with the template)
+    if (showTemplateSheet) {
+        CupertinoModalBottomSheet(
+            onDismissRequest = { showTemplateSheet = false },
+            title = AppStrings.get("scripts_add_from_template", lang),
+            doneText = null
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 8.dp)
+            ) {
+                CupertinoGroupedSection {
+                    SCRIPT_TEMPLATES.forEachIndexed { index, template ->
+                        if (index > 0) CupertinoIndentedDivider(startIndent = 16.dp)
+                        CupertinoCell(
+                            title = AppStrings.get(template.nameKey, lang),
+                            subtitle = AppStrings.get(template.descKey, lang),
+                            showChevron = true,
+                            onClick = {
+                                haptic.selection()
+                                showTemplateSheet = false
+                                editorTarget = ScriptEditorTarget(
+                                    templateNameKey = template.nameKey,
+                                    templateCode = template.code
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. URL Import Dialog
     if (showUrlImportDialog) {
         CupertinoAlertDialog(
             title = AppStrings.get("scripts_url_import", lang),
@@ -564,7 +684,7 @@ fun ScriptsScreen(
         }
     }
 
-    // 3. Long-Press Popup Action Sheet for Script Item
+    // 4. Long-Press Popup Action Sheet for Script Item
     if (actionSheetScript != null) {
         val target = actionSheetScript!!
         val isRemote = target.url.isNotBlank()
@@ -625,7 +745,7 @@ fun ScriptsScreen(
         )
     }
 
-    // 4. Edit Script Name / URL Dialog
+    // 5. Edit Script Name / URL Dialog
     if (editingInfoScript != null) {
         val target = editingInfoScript!!
         val isRemote = target.url.isNotBlank()
@@ -678,7 +798,7 @@ fun ScriptsScreen(
         }
     }
 
-    // 5. Delete Confirmation Dialog
+    // 6. Delete Confirmation Dialog
     if (deleteConfirmScript != null) {
         val target = deleteConfirmScript!!
         CupertinoAlertDialog(
@@ -705,6 +825,8 @@ fun ScriptsScreen(
 @Composable
 private fun ScriptEditorScreen(
     existingScript: ScriptItem?,
+    templateNameKey: String?,
+    templateCode: String?,
     onBack: () -> Unit,
     onSaved: () -> Unit
 ) {
@@ -716,30 +838,34 @@ private fun ScriptEditorScreen(
 
     val isEditingExisting = existingScript != null
 
-    var scriptName by remember(existingScript) {
-        mutableStateOf(existingScript?.name ?: "")
+    var scriptName by remember(existingScript, templateNameKey) {
+        mutableStateOf(
+            existingScript?.name
+                ?: templateNameKey?.let { AppStrings.get(it, lang) }
+                ?: ""
+        )
     }
     var showNameDialog by remember { mutableStateOf(false) }
     var tempNameInput by remember { mutableStateOf("") }
 
-    val initialCode = remember(existingScript) {
+    val initialCode = remember(existingScript, templateCode) {
         if (existingScript != null) {
             ScriptManager.readScriptCode(context, existingScript)
         } else {
-            DEFAULT_NEW_SCRIPT_CODE
+            templateCode ?: DEFAULT_NEW_SCRIPT_CODE
         }
     }
 
-    val initialValue = remember(existingScript) {
+    val initialValue = remember(existingScript, templateCode) {
         TextFieldValue(text = initialCode, selection = TextRange.Zero)
     }
 
-    var textFieldValue by remember(existingScript) {
+    var textFieldValue by remember(existingScript, templateCode) {
         mutableStateOf(initialValue)
     }
 
-    val undoStack = remember(existingScript) { mutableStateListOf(initialValue) }
-    var undoIndex by remember(existingScript) { mutableIntStateOf(0) }
+    val undoStack = remember(existingScript, templateCode) { mutableStateListOf(initialValue) }
+    var undoIndex by remember(existingScript, templateCode) { mutableIntStateOf(0) }
 
     fun updateCode(newValue: TextFieldValue) {
         val oldText = textFieldValue.text

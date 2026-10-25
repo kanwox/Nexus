@@ -60,6 +60,10 @@ fun RulesScreen(
     var showFilterActionSheet by remember { mutableStateOf(false) }
     var activeDetailRule by remember { mutableStateOf<IndexedRule?>(null) }
 
+    // Rule tester: pure local matching, no core round-trip
+    var showRuleTester by remember { mutableStateOf(false) }
+    var testerInput by remember { mutableStateOf("") }
+
     // Index original rules so rule priority order is accurately maintained
     val indexedRules = remember(rules) {
         rules.mapIndexed { idx, rule -> IndexedRule(idx, rule) }
@@ -130,6 +134,26 @@ fun RulesScreen(
                             )
                         }
                     }
+                }
+
+                // Rule Tester text action
+                Box(
+                    modifier = Modifier
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .iosPressable {
+                            haptic.selection()
+                            showRuleTester = true
+                        }
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = AppStrings.get("rules_test", lang),
+                        color = IosBlue,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         )
@@ -398,6 +422,82 @@ fun RulesScreen(
             cancelText = AppStrings.get("cancel", lang)
         )
     }
+
+    // Rule Tester: live local matching against the parsed rule list
+    if (showRuleTester) {
+        val testerQuery = testerInput.trim()
+        val testerMatch = remember(testerQuery, rules) {
+            if (testerQuery.isEmpty()) null else matchRule(testerQuery, rules)
+        }
+
+        CupertinoModalBottomSheet(
+            onDismissRequest = { showRuleTester = false },
+            title = AppStrings.get("rules_test", lang),
+            doneText = null
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(top = 6.dp, bottom = 12.dp)
+            ) {
+                CupertinoTextField(
+                    value = testerInput,
+                    onValueChange = { testerInput = it },
+                    placeholder = AppStrings.get("rules_test_hint", lang),
+                    singleLine = true
+                )
+
+                if (testerQuery.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    if (testerMatch == null) {
+                        Text(
+                            text = AppStrings.get("rules_test_no_match", lang),
+                            color = LoonTextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                    } else {
+                        val matched = testerMatch
+                        Text(
+                            text = AppStrings.get("rules_test_match", lang),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LoonTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(LoonBg)
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                        ) {
+                            DetailRow(
+                                label = AppStrings.get("rules_field_type", lang),
+                                value = "${matched.type} (${getRuleTypeDescription(matched.type, lang)})"
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            DetailRow(
+                                label = AppStrings.get("rules_field_payload", lang),
+                                value = matched.payload.ifBlank { AppStrings.get("rules_match_all", lang) }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            DetailRow(
+                                label = AppStrings.get("rules_field_target", lang),
+                                value = matched.target,
+                                valueColor = when {
+                                    matched.target.equals("REJECT", ignoreCase = true) -> RedDanger
+                                    matched.target.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
+                                    else -> IosBlue
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -568,6 +668,133 @@ private fun getRuleTypeDescription(type: String, lang: String): String {
         "MATCH" -> AppStrings.get("rule_type_match", lang)
         else -> AppStrings.get("rule_type_custom", lang)
     }
+}
+
+/**
+ * Pure local rule matching for the tester (no core round-trip).
+ * DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD match domain input; IP-CIDR / IP-CIDR6 match
+ * literal IPv4 / IPv6 input. GEOIP, RULE-SET, PROCESS-NAME and logic rules cannot be
+ * evaluated locally and are skipped, so a final MATCH rule acts as the fallback.
+ */
+private fun matchRule(target: String, rules: List<ParsedRule>): ParsedRule? {
+    val input = target.trim()
+    if (input.isEmpty()) return null
+    val ipBytes = parseIpLiteral(input)
+    val lowerInput = input.lowercase()
+
+    for (rule in rules) {
+        when (rule.type.uppercase()) {
+            "DOMAIN" -> if (ipBytes == null && rule.payload.equals(input, ignoreCase = true)) return rule
+            "DOMAIN-SUFFIX" -> if (ipBytes == null && isDomainSuffixMatch(lowerInput, rule.payload.lowercase())) return rule
+            "DOMAIN-KEYWORD" -> if (ipBytes == null && lowerInput.contains(rule.payload.lowercase())) return rule
+            "IP-CIDR", "IP-CIDR6" -> if (ipBytes != null && isIpInCidr(ipBytes, rule.payload)) return rule
+            "MATCH" -> return rule
+            else -> Unit
+        }
+    }
+    return null
+}
+
+private fun isDomainSuffixMatch(input: String, suffix: String): Boolean {
+    if (suffix.isEmpty()) return false
+    return input == suffix || input.endsWith(".$suffix")
+}
+
+private fun isIpInCidr(ipBytes: ByteArray, cidr: String): Boolean {
+    val parts = cidr.split('/')
+    if (parts.size != 2) return false
+    val prefixLen = parts[1].trim().toIntOrNull() ?: return false
+    val networkBytes = parseIpLiteral(parts[0].trim()) ?: return false
+    if (networkBytes.size != ipBytes.size) return false
+    if (prefixLen < 0 || prefixLen > networkBytes.size * 8) return false
+
+    var remaining = prefixLen
+    for (i in ipBytes.indices) {
+        if (remaining <= 0) break
+        val address = ipBytes[i].toInt() and 0xFF
+        val network = networkBytes[i].toInt() and 0xFF
+        if (remaining >= 8) {
+            if (address != network) return false
+            remaining -= 8
+        } else {
+            val mask = (0xFF shl (8 - remaining)) and 0xFF
+            if ((address and mask) != (network and mask)) return false
+            remaining = 0
+        }
+    }
+    return true
+}
+
+/**
+ * Hand-written IP literal parsing instead of InetAddress.getByName: the latter performs
+ * DNS resolution for hostnames, which throws NetworkOnMainThreadException on the UI thread.
+ */
+private fun parseIpLiteral(value: String): ByteArray? {
+    if (value.contains(':')) return parseIpv6Bytes(value)
+    return parseIpv4Bytes(value)
+}
+
+private fun parseIpv4Bytes(raw: String): ByteArray? {
+    val parts = raw.split('.')
+    if (parts.size != 4) return null
+    val bytes = ByteArray(4)
+    parts.forEachIndexed { index, part ->
+        val octet = part.toIntOrNull() ?: return null
+        if (octet < 0 || octet > 255) return null
+        bytes[index] = octet.toByte()
+    }
+    return bytes
+}
+
+private fun parseIpv6Bytes(raw: String): ByteArray? {
+    var address = raw.trim()
+    val zoneIndex = address.indexOf('%')
+    if (zoneIndex >= 0) address = address.substring(0, zoneIndex)
+    if (address.isEmpty()) return null
+
+    val halves = address.split("::")
+    if (halves.size > 2) return null
+    val isShorthand = halves.size == 2
+
+    val headGroups = expandIpv6Groups(halves[0]) ?: return null
+    val tailGroups = if (isShorthand) (expandIpv6Groups(halves[1]) ?: return null) else emptyList()
+
+    val groupCount = headGroups.size + tailGroups.size
+    if (groupCount > 8) return null
+    if (!isShorthand && groupCount != 8) return null
+
+    val bytes = ByteArray(16)
+    headGroups.forEachIndexed { index, group -> writeIpv6Group(bytes, index, group) }
+    val zeroPadding = 8 - groupCount
+    tailGroups.forEachIndexed { index, group -> writeIpv6Group(bytes, zeroPadding + headGroups.size + index, group) }
+    return bytes
+}
+
+private fun expandIpv6Groups(text: String): List<Int>? {
+    if (text.isEmpty()) return emptyList()
+    val groups = mutableListOf<Int>()
+    val tokens = text.split(':')
+    tokens.forEachIndexed { index, token ->
+        if (token.isEmpty()) return null
+        if (token.contains('.')) {
+            // Embedded IPv4 tail (e.g. ::ffff:1.2.3.4) must be the final token
+            if (index != tokens.lastIndex) return null
+            val v4 = parseIpv4Bytes(token) ?: return null
+            groups.add(((v4[0].toInt() and 0xFF) shl 8) or (v4[1].toInt() and 0xFF))
+            groups.add(((v4[2].toInt() and 0xFF) shl 8) or (v4[3].toInt() and 0xFF))
+        } else {
+            if (token.length > 4) return null
+            val value = token.toIntOrNull(16) ?: return null
+            if (value < 0 || value > 0xFFFF) return null
+            groups.add(value)
+        }
+    }
+    return groups
+}
+
+private fun writeIpv6Group(bytes: ByteArray, groupIndex: Int, value: Int) {
+    bytes[groupIndex * 2] = ((value shr 8) and 0xFF).toByte()
+    bytes[groupIndex * 2 + 1] = (value and 0xFF).toByte()
 }
 
 @Preview(showBackground = true)

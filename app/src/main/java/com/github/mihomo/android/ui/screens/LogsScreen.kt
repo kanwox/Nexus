@@ -53,7 +53,6 @@ private fun formatLogLine(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
 fun LogsScreen(
     onBack: () -> Unit
@@ -61,12 +60,19 @@ fun LogsScreen(
     val lang = LocalAppLanguage.current
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
-    val logs by LogRepository.logsFlow.collectAsStateWithLifecycle()
+    val liveLogs by LogRepository.logsFlow.collectAsStateWithLifecycle()
+
+    // Paused stream: while paused the UI keeps showing the frozen snapshot; resuming simply
+    // releases the snapshot so the already-collected current list is picked up in one shot.
+    var paused by remember { mutableStateOf(false) }
+    var frozenLogs by remember { mutableStateOf<List<LogEntry>?>(null) }
+    val logs = frozenLogs ?: liveLogs
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(LogFilter.ALL) }
     var showFilterSheet by remember { mutableStateOf(false) }
     var showActionSheet by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
     var activeDetailLog by remember { mutableStateOf<LogEntry?>(null) }
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
@@ -128,6 +134,32 @@ fun LogsScreen(
             onBack = onBack,
             actions = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Pause / Resume streaming button
+                    Box(
+                        modifier = Modifier
+                            .height(44.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .iosPressable {
+                                haptic.selection()
+                                if (paused) {
+                                    paused = false
+                                    frozenLogs = null
+                                } else {
+                                    frozenLogs = liveLogs
+                                    paused = true
+                                }
+                            }
+                            .padding(horizontal = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = AppStrings.get(if (paused) "logs_resume" else "logs_pause", lang),
+                            color = IosBlue,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
                     // Level Filter Button
                     Box(
                         modifier = Modifier
@@ -416,8 +448,7 @@ fun LogsScreen(
                     onClick = {
                         haptic.impact()
                         showActionSheet = false
-                        LogRepository.clear()
-                        CupertinoToast.show(AppStrings.get("logs_cleared_toast", lang), isDestructive = true)
+                        showClearConfirm = true
                     }
                 )
             ),
@@ -442,6 +473,23 @@ fun LogsScreen(
                 )
             },
             cancelText = AppStrings.get("cancel", lang)
+        )
+    }
+
+    // Clear confirmation before wiping the log stream
+    if (showClearConfirm) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("logs_clear_confirm_title", lang),
+            message = AppStrings.get("logs_clear_confirm_message", lang),
+            confirmText = AppStrings.get("confirm", lang),
+            dismissText = AppStrings.get("cancel", lang),
+            isDestructive = true,
+            onConfirm = {
+                showClearConfirm = false
+                LogRepository.clear()
+                CupertinoToast.show(AppStrings.get("logs_cleared_toast", lang), isDestructive = true)
+            },
+            onDismissRequest = { showClearConfirm = false }
         )
     }
 }

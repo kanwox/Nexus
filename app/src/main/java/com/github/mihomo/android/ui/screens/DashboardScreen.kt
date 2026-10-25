@@ -3,6 +3,8 @@ package com.github.mihomo.android.ui.screens
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,10 +26,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,7 +46,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.zIndex
 import com.github.kr328.clash.core.model.Proxy
+import com.github.kr328.clash.core.util.trafficString
 import com.github.mihomo.android.core.model.TunnelMode
+import com.github.mihomo.android.service.TrafficHistory
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
@@ -69,6 +80,10 @@ fun DashboardScreen(
     activeNodeName: String,
     totalNodes: Int,
     totalRules: Int,
+    // Live per-second throughput samples for the dashboard chart (owned by the traffic monitor).
+    trafficHistory: List<TrafficHistory.Sample> = emptyList(),
+    connectionsCount: Int = 0,
+    memoryBytes: Long = 0L,
     visibleShortcuts: Set<String>,
     shortcutOrder: List<String>,
     onToggleVpn: () -> Unit,
@@ -81,6 +96,8 @@ fun DashboardScreen(
     onNavigateToDns: () -> Unit = {},
     onNavigateToRequests: () -> Unit = {},
     onNavigateToNetworkShare: () -> Unit = {},
+    onNavigateToCore: () -> Unit = {},
+    mixedPort: Int = 7890,
     onUpdateVisibleShortcuts: (Set<String>) -> Unit,
     onUpdateShortcutOrder: (List<String>) -> Unit
 ) {
@@ -134,18 +151,16 @@ fun DashboardScreen(
             "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) AppStrings.get("subtitle_live_resolving", lang) else AppStrings.get("subtitle_tap_to_view", lang), { DnsIllustration() }) {
                 onNavigateToDns()
             },
-            "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "1", { RulesIllustration() }) {
+            "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "0", { RulesIllustration() }) {
                 onNavigateToRules()
             },
             "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), AppStrings.get("subtitle_rules_blacklist", lang), { AppRoutingIllustration() }) {
                 onNavigateToAppRouting()
             },
             "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (coreVersion.isNotBlank()) "v${coreVersion.take(8)}" else "Nexus Core", { PluginsIllustration() }) {
-                activeDialogTitle = AppStrings.get("shortcut_plugins", lang)
-                activeDialogContent = AppStrings.get("core_info_version", lang).replace("{v}", coreVersion.ifBlank { "v1.18.x" }) + "\n" +
-                        AppStrings.get("core_info_arch", lang).replace("{v}", android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a")
+                onNavigateToCore()
             },
-            "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:7890", { NetworkShareIllustration() }) {
+            "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:$mixedPort", { NetworkShareIllustration() }) {
                 onNavigateToNetworkShare()
             }
         )
@@ -252,6 +267,20 @@ fun DashboardScreen(
                 DashboardTrafficRow(
                     isRunning = isRunning,
                     traffic = vpnTraffic,
+                    lang = lang
+                )
+
+                // Compact status stats: connections / memory / session totals (pure typography)
+                DashboardStatsRow(
+                    connectionsCount = connectionsCount,
+                    memoryBytes = memoryBytes,
+                    traffic = vpnTraffic,
+                    lang = lang
+                )
+
+                // Live throughput chart (last 120 per-second samples)
+                DashboardTrafficChartCard(
+                    trafficHistory = trafficHistory,
                     lang = lang
                 )
 
@@ -880,6 +909,225 @@ private fun DashboardTrafficRow(
     }
 }
 
+/**
+ * Compact status stats row: connections / memory / accumulated session traffic.
+ * Pure typography (no colored chips); the once-per-second traffic state read stays scoped here.
+ */
+@Composable
+private fun DashboardStatsRow(
+    connectionsCount: Int,
+    memoryBytes: Long,
+    traffic: State<VpnState>,
+    lang: String
+) {
+    // Scoped read: only this row recomposes on the once-per-second totals update.
+    val totalUp = traffic.value.totalUp
+    val totalDown = traffic.value.totalDown
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = connectionsCount.toString(),
+                color = LoonTextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = AppStrings.get("dashboard_connections_count", lang),
+                color = LoonTextSecondary,
+                fontSize = 11.sp
+            )
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (memoryBytes > 0L) trafficString(memoryBytes) else "—",
+                color = LoonTextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            Text(
+                text = AppStrings.get("dashboard_memory", lang),
+                color = LoonTextSecondary,
+                fontSize = 11.sp
+            )
+        }
+
+        // Merged accumulated up/down: the colored arrows carry the up/down semantics.
+        Row(
+            modifier = Modifier.weight(1.7f),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = IosGreen)) { append("↑ ") }
+                    append(totalUp)
+                    withStyle(SpanStyle(color = IosBlue)) { append("  ↓ ") }
+                    append(totalDown)
+                },
+                color = LoonTextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * Live throughput chart card: dual-series curves (upload = blue, download = green) over the
+ * last 120 per-second samples. Static Canvas redraw driven purely by the [trafficHistory]
+ * parameter — no animation loops. Paths and gradient brushes are pre-allocated and rewound
+ * on every draw, so redraws allocate nothing.
+ */
+@Composable
+private fun DashboardTrafficChartCard(
+    trafficHistory: List<TrafficHistory.Sample>,
+    lang: String
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = LoonCard,
+        border = BorderStroke(0.5.dp, LoonCardBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Text(
+                text = AppStrings.get("dashboard_traffic_chart", lang),
+                color = LoonTextSecondary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            if (trafficHistory.size < 2) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = AppStrings.get("core_not_running", lang),
+                        color = LoonTextMuted,
+                        fontSize = 12.5.sp
+                    )
+                }
+            } else {
+                val upLine = remember { Path() }
+                val downLine = remember { Path() }
+                val upFill = remember { Path() }
+                val downFill = remember { Path() }
+                val upFillBrush = remember {
+                    Brush.verticalGradient(
+                        listOf(IosBlue.copy(alpha = 0.26f), IosBlue.copy(alpha = 0.02f))
+                    )
+                }
+                val downFillBrush = remember {
+                    Brush.verticalGradient(
+                        listOf(IosGreen.copy(alpha = 0.26f), IosGreen.copy(alpha = 0.02f))
+                    )
+                }
+                // Theme colors are @Composable getters: capture them outside the DrawScope.
+                val separatorColor = LoonSeparator
+
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .height(96.dp)
+                ) {
+                    val left = 2.dp.toPx()
+                    val right = size.width - 2.dp.toPx()
+                    val top = 2.dp.toPx()
+                    val bottom = size.height
+                    val chartHeight = bottom - top
+
+                    var peak = 1L
+                    for (sample in trafficHistory) {
+                        if (sample.upBps > peak) peak = sample.upBps
+                        if (sample.downBps > peak) peak = sample.downBps
+                    }
+                    val peakF = peak.toFloat()
+
+                    // Newest sample pinned to the right edge; fewer than 120 samples leaves
+                    // whitespace on the left.
+                    val count = trafficHistory.size
+                    val slot = (right - left) / 119f
+
+                    // Single pass feeds the stroke paths and their fill counterparts.
+                    upLine.reset()
+                    downLine.reset()
+                    upFill.reset()
+                    downFill.reset()
+                    for ((index, sample) in trafficHistory.withIndex()) {
+                        val x = right - (count - 1 - index) * slot
+                        val upY = bottom - (sample.upBps.coerceAtLeast(0L) / peakF) * chartHeight
+                        val downY = bottom - (sample.downBps.coerceAtLeast(0L) / peakF) * chartHeight
+                        if (index == 0) {
+                            upLine.moveTo(x, upY)
+                            upFill.moveTo(x, upY)
+                            downLine.moveTo(x, downY)
+                            downFill.moveTo(x, downY)
+                        } else {
+                            upLine.lineTo(x, upY)
+                            upFill.lineTo(x, upY)
+                            downLine.lineTo(x, downY)
+                            downFill.lineTo(x, downY)
+                        }
+                    }
+
+                    val firstX = right - (count - 1) * slot
+                    upFill.lineTo(right, bottom)
+                    upFill.lineTo(firstX, bottom)
+                    upFill.close()
+                    downFill.lineTo(right, bottom)
+                    downFill.lineTo(firstX, bottom)
+                    downFill.close()
+
+                    drawPath(path = downFill, brush = downFillBrush)
+                    drawPath(path = upFill, brush = upFillBrush)
+                    drawPath(
+                        path = downLine,
+                        color = IosGreen,
+                        style = Stroke(
+                            width = 1.5.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                    )
+                    drawPath(
+                        path = upLine,
+                        color = IosBlue,
+                        style = Stroke(
+                            width = 1.5.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                    )
+                    drawLine(
+                        color = separatorColor,
+                        start = Offset(left, bottom),
+                        end = Offset(right, bottom),
+                        strokeWidth = 0.5.dp.toPx()
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Preview(name = "Light Mode", showBackground = true, showSystemUi = true)
 @Composable
 fun DashboardScreenPreview() {
@@ -888,6 +1136,13 @@ fun DashboardScreenPreview() {
         Proxy(name = "Tokyo 02", type = "VMess", delay = 112),
         Proxy(name = "Singapore 03", type = "Trojan", delay = 85)
     )
+    val sampleHistory = List(120) { index ->
+        TrafficHistory.Sample(
+            timeMs = System.currentTimeMillis() - (119 - index) * 1000L,
+            upBps = ((index * 37L) % 100L) * 8_500L,
+            downBps = ((index * 61L) % 140L) * 21_000L
+        )
+    }
     MihomoTheme {
         DashboardScreen(
             vpnStatus = VpnState.Status.RUNNING,
@@ -909,6 +1164,9 @@ fun DashboardScreenPreview() {
             activeNodeName = "Hong Kong 01",
             totalNodes = 48,
             totalRules = 3520,
+            trafficHistory = sampleHistory,
+            connectionsCount = 12,
+            memoryBytes = 132_500_000L,
             visibleShortcuts = setOf("nodes", "profiles", "request_logs", "dns", "rules", "routing", "network_share"),
             shortcutOrder = listOf("nodes", "profiles", "request_logs", "dns", "rules", "routing", "network_share"),
             onToggleVpn = {},

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.SwapVert
@@ -24,11 +25,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.github.kr328.clash.core.util.trafficString
 import com.github.mihomo.android.data.RequestRecord
 import com.github.mihomo.android.data.RequestRepository
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -37,6 +40,32 @@ private enum class RequestFilter(val labelKey: String) {
     ACTIVE("filter_active"),
     PROXY("filter_proxy"),
     DIRECT("filter_direct")
+}
+
+private enum class RequestProtocolFilter {
+    ALL, TCP, UDP
+}
+
+/** One deduped (packageName, sourceApp) entry for the app filter sheet; null package = system. */
+private data class RequestAppOption(val packageName: String?, val label: String)
+
+private fun buildRequestAppOptions(records: List<RequestRecord>): List<RequestAppOption> {
+    val options = ArrayList<RequestAppOption>()
+    val seen = HashSet<Pair<String, String>>()
+    var systemAdded = false
+    for (record in records) {
+        val pkg = record.packageName
+        if (pkg == null) {
+            // All records without a package name collapse into a single "system" entry.
+            if (!systemAdded) {
+                systemAdded = true
+                options.add(RequestAppOption(null, record.sourceApp))
+            }
+        } else if (seen.add(pkg to record.sourceApp)) {
+            options.add(RequestAppOption(pkg, record.sourceApp))
+        }
+    }
+    return options
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,18 +82,23 @@ fun RequestLogsScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(RequestFilter.ALL) }
+    var selectedProtocol by remember { mutableStateOf(RequestProtocolFilter.ALL) }
+    var selectedApp by remember { mutableStateOf<RequestAppOption?>(null) }
     var showFilterActionSheet by remember { mutableStateOf(false) }
+    var showAppFilterSheet by remember { mutableStateOf(false) }
     var showClearActionSheet by remember { mutableStateOf(false) }
     var activeDetailRecord by remember { mutableStateOf<RequestRecord?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val detailTimeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
 
-    // Filter records based on filter and fluid search
-    val filteredRecords = remember(records, searchQuery, selectedFilter) {
+    // Filter records based on status, protocol, source app and fluid search
+    val filteredRecords = remember(records, searchQuery, selectedFilter, selectedProtocol, selectedApp) {
         val query = searchQuery.trim().lowercase()
+        val appFilter = selectedApp
         records.filter { record ->
-            // Filter match
+            // Status filter
             val filterMatch = when (selectedFilter) {
                 RequestFilter.ALL -> true
                 RequestFilter.ACTIVE -> record.isActive
@@ -72,6 +106,19 @@ fun RequestLogsScreen(
                 RequestFilter.DIRECT -> record.outbound.equals("DIRECT", ignoreCase = true)
             }
             if (!filterMatch) return@filter false
+
+            // Protocol filter
+            val protocolMatch = selectedProtocol == RequestProtocolFilter.ALL ||
+                record.network.equals(selectedProtocol.name, ignoreCase = true)
+            if (!protocolMatch) return@filter false
+
+            // Source app filter
+            val appMatch = when {
+                appFilter == null -> true
+                appFilter.packageName == null -> record.packageName == null
+                else -> record.packageName == appFilter.packageName && record.sourceApp == appFilter.label
+            }
+            if (!appMatch) return@filter false
 
             // Search query match
             if (query.isEmpty()) return@filter true
@@ -99,6 +146,10 @@ fun RequestLogsScreen(
             onBack = onBack,
             actions = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    val filterActive = selectedFilter != RequestFilter.ALL ||
+                        selectedProtocol != RequestProtocolFilter.ALL ||
+                        selectedApp != null
+
                     // Filter Action Button
                     Box(
                         modifier = Modifier
@@ -118,7 +169,7 @@ fun RequestLogsScreen(
                             Icon(
                                 imageVector = Icons.Default.FilterList,
                                 contentDescription = AppStrings.get("requests_filter_desc", lang),
-                                tint = if (selectedFilter != RequestFilter.ALL) IosBlue else LoonTextSecondary,
+                                tint = if (filterActive) IosBlue else LoonTextSecondary,
                                 modifier = Modifier.size(20.dp)
                             )
                             if (selectedFilter != RequestFilter.ALL) {
@@ -178,6 +229,28 @@ fun RequestLogsScreen(
                 }
             }
 
+            // Protocol filter row (All / TCP / UDP), coexists with search and status filters
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp)
+                ) {
+                    CupertinoSegmentedControl(
+                        items = RequestProtocolFilter.entries.toList(),
+                        selectedItem = selectedProtocol,
+                        onItemSelected = { protocol -> selectedProtocol = protocol },
+                        labelProvider = { protocol ->
+                            if (protocol == RequestProtocolFilter.ALL) {
+                                AppStrings.get("requests_protocol_all", lang)
+                            } else {
+                                protocol.name
+                            }
+                        }
+                    )
+                }
+            }
+
             // List Content or Empty State
             if (filteredRecords.isEmpty()) {
                 item {
@@ -204,8 +277,10 @@ fun RequestLogsScreen(
                     }
                 }
             } else {
+                val appFilter = selectedApp
                 val sectionHeader = when {
                     searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredRecords.size.toString())
+                    appFilter != null -> "${appFilter.label} (${filteredRecords.size})"
                     selectedFilter == RequestFilter.ACTIVE -> AppStrings.get("requests_section_active", lang).replace("{n}", filteredRecords.size.toString())
                     selectedFilter == RequestFilter.PROXY -> AppStrings.get("requests_section_proxy", lang).replace("{n}", filteredRecords.size.toString())
                     selectedFilter == RequestFilter.DIRECT -> AppStrings.get("requests_section_direct", lang).replace("{n}", filteredRecords.size.toString())
@@ -395,7 +470,7 @@ fun RequestLogsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
                         label = AppStrings.get("requests_field_traffic", lang),
-                        value = "↑ ${formatTraffic(rec.uploadBytes)}   ↓ ${formatTraffic(rec.downloadBytes)}"
+                        value = "↑ ${trafficString(rec.uploadBytes)}   ↓ ${trafficString(rec.downloadBytes)}"
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     DetailRow(
@@ -420,9 +495,19 @@ fun RequestLogsScreen(
                             .background(RedDanger.copy(alpha = 0.12f))
                             .iosPressable {
                                 haptic.impact()
-                                RequestRepository.closeConnection(rec.id)
+                                val recordId = rec.id
                                 activeDetailRecord = null
-                                CupertinoToast.show(AppStrings.get("requests_closed_toast", lang), isDestructive = true)
+                                coroutineScope.launch {
+                                    val closed = RequestRepository.closeConnection(recordId)
+                                    if (closed) {
+                                        CupertinoToast.show(AppStrings.get("requests_close_success", lang))
+                                    } else {
+                                        CupertinoToast.show(
+                                            AppStrings.get("requests_close_failed", lang),
+                                            isDestructive = true
+                                        )
+                                    }
+                                }
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -490,9 +575,69 @@ fun RequestLogsScreen(
                         showFilterActionSheet = false
                     }
                 )
-            },
+            } + listOf(
+                CupertinoActionSheetItem(
+                    text = AppStrings.get("requests_filter_app", lang) + (selectedApp?.let { " · ${it.label}" } ?: ""),
+                    onClick = {
+                        haptic.selection()
+                        showFilterActionSheet = false
+                        showAppFilterSheet = true
+                    }
+                )
+            ),
             cancelText = AppStrings.get("cancel", lang)
         )
+    }
+
+    // App filter sheet: deduped (packageName, sourceApp) entries seen in the current records
+    if (showAppFilterSheet) {
+        val appOptions = remember(records) { buildRequestAppOptions(records) }
+        CupertinoModalBottomSheet(
+            onDismissRequest = { showAppFilterSheet = false },
+            title = AppStrings.get("requests_filter_app", lang),
+            doneText = null
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .bounceOverscroll(),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
+            ) {
+                item {
+                    AppFilterOptionRow(
+                        label = AppStrings.get("requests_filter_all_apps", lang),
+                        subtitle = null,
+                        isSelected = selectedApp == null,
+                        onClick = {
+                            haptic.selection()
+                            selectedApp = null
+                            showAppFilterSheet = false
+                        }
+                    )
+                    CupertinoIndentedDivider(startIndent = 16.dp)
+                }
+                items(
+                    count = appOptions.size,
+                    key = { index -> "${appOptions[index].packageName}|${appOptions[index].label}" }
+                ) { index ->
+                    val option = appOptions[index]
+                    AppFilterOptionRow(
+                        label = option.label,
+                        subtitle = option.packageName,
+                        isSelected = option == selectedApp,
+                        onClick = {
+                            haptic.selection()
+                            selectedApp = option
+                            showAppFilterSheet = false
+                        }
+                    )
+                    if (index < appOptions.lastIndex) {
+                        CupertinoIndentedDivider(startIndent = 16.dp)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -580,7 +725,7 @@ private fun RequestRecordCell(
                 )
 
                 val midText = if (record.uploadBytes > 0L || record.downloadBytes > 0L) {
-                    "↑ ${formatTraffic(record.uploadBytes)}  ↓ ${formatTraffic(record.downloadBytes)}"
+                    "↑ ${trafficString(record.uploadBytes)}  ↓ ${trafficString(record.downloadBytes)}"
                 } else if (record.rulePayload.isNotBlank()) {
                     "${record.rule}(${record.rulePayload})"
                 } else {
@@ -691,15 +836,50 @@ private fun DetailRow(
 }
 
 /**
- * Format raw byte count into human-readable compact string.
+ * One selectable row inside the app filter sheet (iOS grouped-list row with check mark).
  */
-private fun formatTraffic(bytes: Long): String {
-    val b = if (bytes < 0) 0L else bytes
-    return when {
-        b >= 1024L * 1024 * 1024 -> String.format(Locale.US, "%.2f GB", b.toDouble() / (1024.0 * 1024.0 * 1024.0))
-        b >= 1024L * 1024 -> String.format(Locale.US, "%.1f MB", b.toDouble() / (1024.0 * 1024.0))
-        b >= 1024L -> String.format(Locale.US, "%.1f KB", b.toDouble() / 1024.0)
-        else -> "$b B"
+@Composable
+private fun AppFilterOptionRow(
+    label: String,
+    subtitle: String?,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .iosPressable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = if (isSelected) IosBlue else LoonTextPrimary,
+                fontSize = 15.sp,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    color = LoonTextMuted,
+                    fontSize = 11.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (isSelected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = IosBlue,
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
 }
 
