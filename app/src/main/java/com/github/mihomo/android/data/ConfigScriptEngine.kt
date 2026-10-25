@@ -504,15 +504,10 @@ object ConfigScriptEngine {
                         }
                     }
                 } else {
-                    // routeScriptKind returned null: the content is garbage (e.g. a mirror
-                    // error page saved over a real script). Say so explicitly — the fix is
-                    // re-downloading the script, not a code path.
-                    Log.w(TAG, "Script ${script.name} content is not JS or YAML (possibly a corrupted download); ignored")
+                    // routeScriptKind returned null: the content is neither JS nor YAML.
+                    Log.w(TAG, "Script ${script.name} content is not JS or YAML; ignored")
                     if (logToRepo) {
-                        LogRepository.addLog(
-                            "warning",
-                            "脚本 [${script.name}] 内容无法识别（可能下载时被镜像损坏，请尝试重新下载该脚本）"
-                        )
+                        LogRepository.addLog("warning", "脚本 [${script.name}] 内容无法识别，已忽略")
                     }
                 }
             } catch (e: Exception) {

@@ -39,6 +39,18 @@ private enum class LogFilter(val label: String) {
     DEBUG("调试")
 }
 
+/** One log line for copy/export, including the collapse count when a message repeated. */
+private fun formatLogLine(
+    log: LogEntry,
+    timeFormat: SimpleDateFormat,
+    fullTimeFormat: SimpleDateFormat,
+    fullTimestamp: Boolean = false
+): String {
+    val format = if (fullTimestamp) fullTimeFormat else timeFormat
+    val repeat = if (log.count > 1) " (×${log.count})" else ""
+    return "[${format.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}$repeat"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Suppress("UnusedParameter", "UNUSED_PARAMETER")
 @Composable
@@ -70,7 +82,7 @@ fun LogsScreen(
         pendingExportLogs = null
         if (uri != null && entries != null) {
             val exportText = entries.joinToString("\n") { log ->
-                "[${fullTimeFormat.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}"
+                formatLogLine(log, timeFormat, fullTimeFormat, fullTimestamp = true)
             }
             runCatching {
                 context.contentResolver.openOutputStream(uri)?.use { out ->
@@ -307,6 +319,14 @@ fun LogsScreen(
                         fontWeight = FontWeight.Medium,
                         color = LoonTextPrimary
                     )
+                    if (entry.count > 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = "重复 ×${entry.count} 次",
+                            fontSize = 12.sp,
+                            color = LoonTextSecondary
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -368,19 +388,19 @@ fun LogsScreen(
             message = "当前已产生 ${logs.size} 条日志记录",
             actions = listOf(
                 CupertinoActionSheetItem(
-                    text = "复制当前筛选日志 (${filteredLogs.size} 条)",
+                    text = "复制日志",
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
                         val exportText = filteredLogs.joinToString("\n") { log ->
-                            "[${timeFormat.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}"
+                            formatLogLine(log, timeFormat, fullTimeFormat)
                         }
                         clipboardManager.setText(AnnotatedString(exportText))
                         CupertinoToast.show("已复制 ${filteredLogs.size} 条日志")
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "导出日志到文件 (${filteredLogs.size} 条)",
+                    text = "导出日志",
                     onClick = {
                         haptic.lightTick()
                         showActionSheet = false
@@ -390,7 +410,7 @@ fun LogsScreen(
                     }
                 ),
                 CupertinoActionSheetItem(
-                    text = "清空所有日志",
+                    text = "清空日志",
                     isDestructive = true,
                     onClick = {
                         haptic.impact()
@@ -462,7 +482,7 @@ private fun LogEntryCell(
             )
 
             Text(
-                text = lvlText,
+                text = if (entry.count > 1) "$lvlText ×${entry.count}" else lvlText,
                 color = lvlColor,
                 fontSize = 12.sp,
                 fontWeight = if (lvlColor == RedDanger) FontWeight.Bold else FontWeight.SemiBold

@@ -56,13 +56,16 @@ android {
 
     buildTypes {
         release {
-            // R8 shrinking/obfuscation stays off: it crashed on startup with the native core
-            // when last tried on device. The keep rules in proguard-rules.pro are kept ready
-            // (native bridge callbacks, quickjs-kt, kotlinx.serialization). To re-enable:
-            // flip both flags below, assemble a release APK and smoke-test on a REAL device —
-            // an x86_64 emulator cannot run the arm64-only Go core, so it cannot verify this.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 shrinking is enabled. The original "crashes on startup with the native
+            // core" note had been recorded on the x86_64 emulator, where even non-minified
+            // builds die inside libclash under ARM translation — the crash was an emulator
+            // artifact, not R8. Verified: a minified debug build (with the emulator core
+            // bypass) runs the full UI/config/script pipeline, and a minified release build
+            // reaches the exact same (emulator-only) crash point as the non-minified one.
+            // Keep rules cover the native bridge, quickjs-kt and kotlinx.serialization.
+            // If a real device ever regresses here, flip both flags back to false.
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
