@@ -64,3 +64,15 @@
 -dontwarn okio.**
 -dontwarn org.slf4j.**
 -dontwarn kotlinx.coroutines.**
+
+# WorkManager pulls in Room (WorkDatabase). Room's consumer rule only keeps the
+# database classes; in R8 full mode the no-arg constructor of the generated
+# *_Impl class is still stripped because it is reachable only via reflection
+# (Class.forName + newInstance in Room's builder). At startup the
+# InitializationProvider then crashed with
+# "Failed to create an instance of class androidx.work.impl.WorkDatabase"
+# (InstantiationException) and the app could not open at all. Keep the
+# constructors explicitly.
+-keep class * extends androidx.room.RoomDatabase {
+    <init>();
+}
