@@ -33,8 +33,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.0.4-Alpha.3"
+        versionCode = 14
+        versionName = "1.0.4-Alpha.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

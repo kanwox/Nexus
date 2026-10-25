@@ -16,12 +16,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.github.mihomo.android.data.LogEntry
 import com.github.mihomo.android.data.LogRepository
 import com.github.mihomo.android.ui.components.*
@@ -55,6 +58,30 @@ fun LogsScreen(
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
     val fullTimeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()) }
+
+    // Export to file via SAF: the user picks the destination, so no storage permission
+    // or FileProvider is needed.
+    val context = LocalContext.current
+    var pendingExportLogs by remember { mutableStateOf<List<LogEntry>?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val entries = pendingExportLogs
+        pendingExportLogs = null
+        if (uri != null && entries != null) {
+            val exportText = entries.joinToString("\n") { log ->
+                "[${fullTimeFormat.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}"
+            }
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(exportText.toByteArray(Charsets.UTF_8))
+                }
+                CupertinoToast.show("已导出 ${entries.size} 条日志")
+            }.onFailure {
+                CupertinoToast.show("导出失败: ${it.message}", isDestructive = true)
+            }
+        }
+    }
 
     // Filter logs based on filter and search query
     val filteredLogs = remember(logs, searchQuery, selectedFilter) {
@@ -350,6 +377,16 @@ fun LogsScreen(
                         }
                         clipboardManager.setText(AnnotatedString(exportText))
                         CupertinoToast.show("已复制 ${filteredLogs.size} 条日志")
+                    }
+                ),
+                CupertinoActionSheetItem(
+                    text = "导出日志到文件 (${filteredLogs.size} 条)",
+                    onClick = {
+                        haptic.lightTick()
+                        showActionSheet = false
+                        pendingExportLogs = filteredLogs
+                        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                        exportLauncher.launch("nexus-logs-$stamp.txt")
                     }
                 ),
                 CupertinoActionSheetItem(

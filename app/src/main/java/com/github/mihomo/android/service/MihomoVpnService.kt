@@ -307,6 +307,10 @@ class MihomoVpnService : VpnService() {
                 ClashCore.notifyNetworkChanged(this@MihomoVpnService)
 
                 // 4. Establish Android VpnService TUN
+                // Some devices reject the IPv6 ULA assignment: when that happens we fall
+                // back to an IPv4-only TUN instead of letting the core try to listen on an
+                // address that was never assigned ("bind: cannot assign requested address").
+                var ipv6TunActive = false
                 val builder = Builder().apply {
                     setSession("Nexus")
                     setMtu(9000)
@@ -323,6 +327,9 @@ class MihomoVpnService : VpnService() {
                             addAddress("fdfe:dcba:9876::1", 126)
                             addRoute("::", 0)
                             addDnsServer("fdfe:dcba:9876::2")
+                            ipv6TunActive = true
+                        }.onFailure {
+                            Log.w(TAG, "IPv6 TUN setup failed; running the tunnel IPv4-only", it)
                         }
                     }
 
@@ -362,13 +369,18 @@ class MihomoVpnService : VpnService() {
 
                 // 5. Hand over fd to Mihomo core
                 val fd = pfd.detachFd()
+                // The IPv6 gateway/portal/DNS entries are only handed to the core when the
+                // corresponding address was actually assigned to the TUN above.
+                val gatewayStr = if (ipv6TunActive) "172.19.0.1/30,fdfe:dcba:9876::1/126" else "172.19.0.1/30"
+                val portalStr = if (ipv6TunActive) "172.19.0.2,fdfe:dcba:9876::2" else "172.19.0.2"
+                val dnsStr = if (ipv6TunActive) "172.19.0.2,fdfe:dcba:9876::2" else "172.19.0.2"
                 try {
                     ClashCore.startTun(
                         fd = fd,
                         stack = settings.tunStack,
-                        gateway = "172.19.0.1/30,fdfe:dcba:9876::1/126",
-                        portal = "172.19.0.2,fdfe:dcba:9876::2",
-                        dns = "172.19.0.2,fdfe:dcba:9876::2",
+                        gateway = gatewayStr,
+                        portal = portalStr,
+                        dns = dnsStr,
                         vpnService = this@MihomoVpnService
                     )
                 } catch (t: Throwable) {

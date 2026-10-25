@@ -36,6 +36,26 @@ object ConfigScriptEngine {
     internal fun looksLikeJavaScript(code: String): Boolean =
         JS_ENTRY_REGEX.containsMatchIn(code) || code.contains("=>")
 
+    internal enum class ScriptKind { JS, YAML }
+
+    /**
+     * Decides how a script is executed. The last-resort JS branch matters: a real script
+     * whose entry style the regex misses (or whose file starts with uncommon prelude code)
+     * must still reach the engine — a syntax error there surfaces as a proper "script
+     * failed" message, instead of the script being silently dropped as "neither JS nor
+     * YAML" (which is what happened to real-world scripts routed through broken mirrors).
+     */
+    internal fun routeScriptKind(code: String, yamlParser: Yaml): ScriptKind? {
+        if (looksLikeJavaScript(code)) return ScriptKind.JS
+        if (code.isNotBlank() && runCatching { yamlParser.load<Any>(code) is Map<*, *> }.getOrDefault(false)) {
+            return ScriptKind.YAML
+        }
+        if (code.contains("function") || code.contains("=>") || code.contains("module")) {
+            return ScriptKind.JS
+        }
+        return null
+    }
+
     data class ScriptPreviewResult(
         val success: Boolean,
         val engineName: String,
@@ -400,7 +420,8 @@ object ConfigScriptEngine {
             if (code.isBlank()) continue
 
             try {
-                if (looksLikeJavaScript(code)) {
+                val scriptKind = routeScriptKind(code, yamlParser)
+                if (scriptKind == ScriptKind.JS) {
                     val configMap: Any? = runCatching { yamlParser.load<Any>(currentYaml) }.getOrNull()
                     if (configMap != null) {
                         val jsonStr = scriptJson.encodeToString(anyToJsonElement(configMap))
@@ -450,7 +471,7 @@ object ConfigScriptEngine {
                             Log.i(TAG, "Successfully applied script: ${script.name}")
                         }
                     }
-                } else {
+                } else if (scriptKind == ScriptKind.YAML) {
                     val snippetMap: Any? = runCatching { yamlParser.load<Any>(code) }.getOrNull()
                     if (snippetMap is Map<*, *>) {
                         val baseMap = runCatching { yamlParser.load<Any>(currentYaml) as? Map<*, *> }.getOrNull()
@@ -481,6 +502,17 @@ object ConfigScriptEngine {
                         if (logToRepo) {
                             LogRepository.addLog("warning", "脚本 [${script.name}] 既不是 JS 也不是有效的 YAML 片段，已忽略")
                         }
+                    }
+                } else {
+                    // routeScriptKind returned null: the content is garbage (e.g. a mirror
+                    // error page saved over a real script). Say so explicitly — the fix is
+                    // re-downloading the script, not a code path.
+                    Log.w(TAG, "Script ${script.name} content is not JS or YAML (possibly a corrupted download); ignored")
+                    if (logToRepo) {
+                        LogRepository.addLog(
+                            "warning",
+                            "脚本 [${script.name}] 内容无法识别（可能下载时被镜像损坏，请尝试重新下载该脚本）"
+                        )
                     }
                 }
             } catch (e: Exception) {

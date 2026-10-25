@@ -543,12 +543,7 @@ fun ProxiesScreen(
                         val iconUrl = groupIcons[groupName]
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
-                            // Sorting happens inside the item content so that collapsed groups
-                            // (and groups outside the viewport) never pay for it, and it is
-                            // remembered against the raw list + sort mode.
-                            val proxies = remember(rawProxies, nodeSortMode) {
-                                sortProxies(rawProxies, nodeSortMode)
-                            }
+                            val proxies = sortProxies(rawProxies, nodeSortMode)
                             val isGroupTesting = testingNodes.contains("group:$groupName")
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 LoonGroupHeaderCard(

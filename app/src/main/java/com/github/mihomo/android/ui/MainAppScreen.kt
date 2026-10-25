@@ -321,13 +321,18 @@ fun MainAppScreen(
         ) { page ->
             when (page) {
                 0 -> {
+                    // The derived blocks below MUST read vm.* state properties directly:
+                    // capturing the dereferenced local vals (val parsedProfile = vm.parsedProfile)
+                    // freezes the first-composition values, and derivedStateOf never sees a
+                    // state dependency to invalidate on — the quick node list stayed empty
+                    // forever on a cold start with existing data.
                     val mainGroupProxies by remember(mainProxyGroupName) {
                         derivedStateOf {
-                            val rawProxies = liveGroupMap[mainProxyGroupName]?.proxies
-                                ?: (parsedProfile.groups[mainProxyGroupName]?.proxies ?: emptyList())
+                            val rawProxies = vm.liveGroupMap[mainProxyGroupName]?.proxies
+                                ?: (vm.parsedProfile.groups[mainProxyGroupName]?.proxies ?: emptyList())
                             rawProxies.map { p ->
                                 val scopedKey = "$mainProxyGroupName:${p.name}"
-                                val d = delayCache[p.name] ?: delayCache[scopedKey]
+                                val d = vm.delayCache[p.name] ?: vm.delayCache[scopedKey]
                                 if (d != null) p.copy(delay = d) else p
                             }
                         }
@@ -381,12 +386,18 @@ fun MainAppScreen(
                     )
                 }
                 1 -> {
+                    // Reads vm.* properties inside the calculation so the derived state has
+                    // real dependencies (see the note on page 0): with captured local vals
+                    // this map froze empty at first composition and every LIST-mode group
+                    // rendered blank after a cold start.
                     val computedGroupMap by remember {
                         derivedStateOf {
-                            val allGroupKeys = (parsedProfile.groups.keys + liveGroupMap.keys).distinct()
+                            val parsed = vm.parsedProfile
+                            val liveMap = vm.liveGroupMap
+                            val allGroupKeys = (parsed.groups.keys + liveMap.keys).distinct()
                             allGroupKeys.associateWith { gName ->
-                                val baseGroup = parsedProfile.groups[gName] ?: liveGroupMap[gName]!!
-                                val live = liveGroupMap[gName]
+                                val baseGroup = parsed.groups[gName] ?: liveMap[gName]!!
+                                val live = liveMap[gName]
                                 val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live!!.proxies else baseGroup.proxies
                                 val liveProxyMap = live?.proxies?.associateBy { it.name } ?: emptyMap()
                                 val savedNode = settingsManager.getSelectedNode(gName)
@@ -400,7 +411,7 @@ fun MainAppScreen(
                                     proxies = sourceProxies.map { bp ->
                                         val p = liveProxyMap[bp.name] ?: bp
                                         val scopedKey = "$gName:${bp.name}"
-                                        val cached = delayCache[scopedKey] ?: delayCache[bp.name]
+                                        val cached = vm.delayCache[scopedKey] ?: vm.delayCache[bp.name]
                                         if (cached != null) p.copy(delay = cached) else p
                                     }
                                 )

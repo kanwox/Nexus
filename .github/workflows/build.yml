@@ -94,6 +94,16 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
+            ### Changes in v1.0.4-Alpha.5
+
+            #### Fixed
+            - **The Proxies screen froze on data loaded at app start.** Derived-state blocks captured the first-composition (empty) values of the profile/group state, so after a cold start with existing data: LIST mode rendered expanded groups blank, non-selected groups in Tabs mode were empty, and the dashboard quick-node panel listed nothing. Data arriving later (e.g. an import) masked the bug — which is why the screen worked right after importing but broke after a restart.
+            - Script routing gained a last-resort JS branch: a real script whose style the entry-point regex misses still reaches the engine (surfacing a clear syntax error) instead of being silently dropped as "neither JS nor YAML". Unrecognized content (e.g. a mirror error page saved over a real script) now logs an explicit "possibly corrupted download, re-download the script" warning.
+            - The tunnel no longer hands its IPv6 gateway/portal/DNS to the core when the TUN's IPv6 address assignment failed on the device — this caused "listen tcp6 … bind: cannot assign requested address" and dead tunnels on affected devices. The tunnel now runs IPv4-only in that case.
+
+            #### Added
+            - Export logs to a file from the log screen (操作 → 导出日志到文件), via the system file picker.
+
             ### Changes in v1.0.4-Alpha.3
 
             #### Fixed
