@@ -92,7 +92,7 @@ fun AppRoutingScreen(
                             imageVector = Icons.Default.MoreHoriz,
                             contentDescription = "更多操作",
                             tint = IosBlue,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -195,7 +195,7 @@ fun AppRoutingScreen(
                                     imageVector = Icons.Default.Apps,
                                     contentDescription = null,
                                     tint = LoonTextMuted.copy(alpha = 0.5f),
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(44.dp)
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
@@ -217,7 +217,7 @@ fun AppRoutingScreen(
                         items = displayApps,
                         header = headerText,
                         key = { _, app -> app.packageName },
-                        dividerStartIndent = 64.dp
+                        dividerStartIndent = 16.dp
                     ) { _, app ->
                         val isSelected = selectedPackages.contains(app.packageName)
 
@@ -346,7 +346,7 @@ private fun AppItemCell(
         modifier = Modifier
             .fillMaxWidth()
             .iosPressable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // App Icon (34dp standard iOS squircle)
@@ -385,7 +385,7 @@ private fun AppItemCell(
         // iOS Checkbox Circle (22dp circle)
         Box(
             modifier = Modifier
-                .size(22.dp)
+                .size(20.dp)
                 .clip(CircleShape)
                 .then(
                     if (isSelected) {

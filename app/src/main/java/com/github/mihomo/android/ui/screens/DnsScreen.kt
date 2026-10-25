@@ -73,7 +73,7 @@ fun DnsScreen(
                     if (onNavigateToSettings != null) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .iosPressable {
                                     haptic.lightTick()
@@ -106,7 +106,7 @@ fun DnsScreen(
                                 text = "清空",
                                 color = RedDanger,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Normal
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
@@ -221,7 +221,7 @@ fun DnsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
@@ -260,7 +260,7 @@ fun DnsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
@@ -298,7 +298,7 @@ fun DnsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(LoonBg)
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -370,7 +370,7 @@ fun DnsScreen(
                     text = "清空所有记录",
                     isDestructive = true,
                     onClick = {
-                        haptic.mediumImpact()
+                        haptic.impact()
                         DnsRepository.clear()
                         CupertinoToast.show("已清空 DNS 记录", isDestructive = true)
                     }

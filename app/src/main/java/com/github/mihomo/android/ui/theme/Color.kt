@@ -55,6 +55,8 @@ val LoonTextMuted: Color
 val IosBlue = Color(0xFF007AFF)
 val IosGreen = Color(0xFF34C759)
 val IosIndigo = Color(0xFF5856D6)
+val IosMint = Color(0xFF00C7BE)
+val IosCyan = Color(0xFF32ADE6)
 val IosOrange = Color(0xFFFF9500)
 val IosPink = Color(0xFFFF2D55)
 val IosPurple = Color(0xFFAF52DE)
@@ -67,6 +69,12 @@ val IosGray3 = Color(0xFFC7C7CC)
 val IosGray4 = Color(0xFFD1D1D6)
 val IosGray5 = Color(0xFFE5E5EA)
 val IosGray6 = Color(0xFFF2F2F7)
+
+// Loon-style selected node card background (theme-aware)
+val IosSelectedCardBg: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = if (LocalLoonColors.current.isDark) Color(0xFF12233A) else Color(0xFFEFF6FF)
 
 val LoonSeparator: Color
     @Composable

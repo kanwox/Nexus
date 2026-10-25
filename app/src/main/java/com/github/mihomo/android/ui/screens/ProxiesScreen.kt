@@ -164,7 +164,7 @@ fun ProxiesScreen(
                 color = LoonTextPrimary,
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.6).sp else 0.sp
+                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
             )
 
             Box(
@@ -180,7 +180,7 @@ fun ProxiesScreen(
                     imageVector = Icons.Default.MoreHoriz,
                     contentDescription = "策略设置",
                     tint = if (nodeSortMode != "DEFAULT") IosBlue else LoonTextPrimary,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -821,7 +821,7 @@ private fun LoonProxyItemCard(
 ) {
     val isDark = LocalLoonColors.current.isDark
     val cardBg = if (isSelected) {
-        if (isDark) Color(0xFF12233A) else Color(0xFFEFF6FF)
+        IosSelectedCardBg
     } else {
         LoonCard
     }

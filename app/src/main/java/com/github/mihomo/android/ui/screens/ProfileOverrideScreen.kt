@@ -87,8 +87,8 @@ fun ProfileOverrideScreen(
                     Text(
                         text = "保存",
                         color = IosBlue,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.5.sp
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp
                     )
                 }
             }
@@ -110,7 +110,7 @@ fun ProfileOverrideScreen(
                         title = profile.name,
                         value = if (profile.url != null) AppStrings.get("override_remote", lang) else AppStrings.get("override_local", lang),
                         icon = Icons.Default.FolderZip,
-                        iconBg = Color(0xFFAF52DE),
+                        iconBg = IosPurple,
                         showChevron = false
                     )
                     CupertinoDivider()
@@ -118,7 +118,7 @@ fun ProfileOverrideScreen(
                         title = AppStrings.get("override_go_scripts", lang),
                         subtitle = AppStrings.get("override_scripts_hint", lang),
                         icon = Icons.Default.Code,
-                        iconBg = Color(0xFF5856D6),
+                        iconBg = IosIndigo,
                         showChevron = true,
                         onClick = onNavigateToScripts
                     )
@@ -158,7 +158,7 @@ fun ProfileOverrideScreen(
                                 title = script.name,
                                 subtitle = if (script.url.isNotBlank()) "远程脚本" else "本地脚本",
                                 icon = Icons.Default.Javascript,
-                                iconBg = if (isChecked) IosBlue else Color(0xFF8E8E93),
+                                iconBg = if (isChecked) IosBlue else IosGray,
                                 trailing = {
                                     CupertinoSwitch(
                                         checked = isChecked,

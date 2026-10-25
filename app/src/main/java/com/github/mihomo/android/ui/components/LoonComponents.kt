@@ -52,9 +52,9 @@ fun LoonTrafficCard(
     isUpload: Boolean
 ) {
     val gradient = if (isUpload) {
-        Brush.horizontalGradient(listOf(Color(0xFF00C853), Color(0xFF00E676)))
+        Brush.horizontalGradient(listOf(LoonGreen, Color(0xFF00E676)))
     } else {
-        Brush.horizontalGradient(listOf(Color(0xFF4A69FF), Color(0xFF6C5CE7)))
+        Brush.horizontalGradient(listOf(LoonBlue, Color(0xFF6C5CE7)))
     }
 
     Surface(
@@ -353,11 +353,12 @@ fun LoonShortcutCard(
                 contentAlignment = Alignment.Center
             ) {
                 if (isEditing) {
+                    val handleColor = LoonTextSecondary
                     Canvas(modifier = Modifier.size(18.dp)) {
                         val stroke = 2.dp.toPx()
                         val w = size.width
                         val h = size.height
-                        val color = Color(0xFF9AA0AE)
+                        val color = handleColor
                         drawLine(color, Offset(0f, h * 0.35f), Offset(w, h * 0.35f), stroke, StrokeCap.Round)
                         drawLine(color, Offset(0f, h * 0.65f), Offset(w, h * 0.65f), stroke, StrokeCap.Round)
                     }
@@ -365,7 +366,7 @@ fun LoonShortcutCard(
                     Icon(
                         imageVector = Icons.Default.ChevronRight,
                         contentDescription = null,
-                        tint = Color(0xFF9AA0AE),
+                        tint = LoonTextSecondary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -390,7 +391,7 @@ fun LoonShortcutCard(
                         .padding(8.dp)
                         .size(22.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFFFF3B30))
+                        .background(IosRed)
                         .clickable { onDelete() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -874,7 +875,7 @@ private fun BottomNavItem(
 ) {
     val haptic = rememberIosHaptic()
     val tint by animateColorAsState(
-        targetValue = if (isSelected) IosBlue else Color(0xFF8E8E93),
+        targetValue = if (isSelected) IosBlue else IosGray,
         animationSpec = tween(durationMillis = 200),
         label = "nav_tint"
     )

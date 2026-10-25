@@ -216,8 +216,8 @@ fun ProfilesScreen(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .size(30.dp)
+                                    .clip(RoundedCornerShape(7.dp))
                                     .background(if (isSub) IosBlue.copy(alpha = 0.12f) else IosOrange.copy(alpha = 0.12f)),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -225,7 +225,7 @@ fun ProfilesScreen(
                                     imageVector = if (isSub) Icons.Default.CloudQueue else Icons.Default.Description,
                                     contentDescription = null,
                                     tint = if (isSub) IosBlue else IosOrange,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
 

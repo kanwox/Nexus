@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -316,7 +317,7 @@ fun ScriptsScreen(
                                         imageVector = Icons.Default.Refresh,
                                         contentDescription = "更新脚本",
                                         tint = IosBlue,
-                                        modifier = Modifier.size(21.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
@@ -336,7 +337,7 @@ fun ScriptsScreen(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = "添加脚本",
                                     tint = IosBlue,
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
@@ -900,7 +901,7 @@ private fun ScriptEditorScreen(
                     onTextLayout = { codeTextLayoutResult = it },
                     visualTransformation = syntaxVisualTransformation,
                     cursorBrush = SolidColor(IosBlue),
-                    textStyle = TextStyle(
+                    textStyle = LocalTextStyle.current.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         lineHeight = 20.sp,

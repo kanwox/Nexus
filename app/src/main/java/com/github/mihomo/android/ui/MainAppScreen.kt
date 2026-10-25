@@ -372,7 +372,6 @@ fun MainAppScreen(
                         onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },
                         onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
                         onNavigateToRules = { currentSubScreen = SubScreen.RULES },
-                        onNavigateToDns = { currentSubScreen = SubScreen.DNS },
                         onNavigateToRequests = { currentSubScreen = SubScreen.REQUESTS },
                         onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
                         onUpdateVisibleShortcuts = { updated ->
@@ -507,7 +506,6 @@ fun MainAppScreen(
                     onNavigateToLogs = { currentSubScreen = SubScreen.LOGS },
                     onNavigateToAppearance = { currentSubScreen = SubScreen.APPEARANCE },
                     onNavigateToDnsSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
-                    onNavigateToDns = { currentSubScreen = SubScreen.DNS }
                 )
             }
         }

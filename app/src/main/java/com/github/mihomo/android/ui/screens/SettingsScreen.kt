@@ -53,8 +53,7 @@ fun SettingsScreen(
     onNavigateToAppRouting: () -> Unit,
     onNavigateToLogs: () -> Unit,
     onNavigateToAppearance: () -> Unit = {},
-    onNavigateToDnsSettings: () -> Unit = {},
-    onNavigateToDns: () -> Unit = {}
+    onNavigateToDnsSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val settingsManager = remember { SettingsManager(context) }
@@ -104,7 +103,7 @@ fun SettingsScreen(
                 color = LoonTextPrimary,
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.6).sp else 0.sp
+                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
             )
         }
 
@@ -137,7 +136,7 @@ fun SettingsScreen(
                 CupertinoCell(
                     title = "开机自启动",
                     icon = Icons.Default.PowerSettingsNew,
-                    iconBg = Color(0xFF34C759),
+                    iconBg = IosGreen,
                     trailing = {
                         CupertinoSwitch(
                             checked = bootOnStartup,
@@ -150,7 +149,7 @@ fun SettingsScreen(
                 CupertinoCell(
                     title = "局域网共享",
                     icon = Icons.Default.WifiTethering,
-                    iconBg = Color(0xFF32ADE6),
+                    iconBg = IosCyan,
                     trailing = {
                         CupertinoSwitch(
                             checked = allowLan,
@@ -163,7 +162,7 @@ fun SettingsScreen(
                 CupertinoCell(
                     title = "IPv6",
                     icon = Icons.Default.Router,
-                    iconBg = Color(0xFF00C7BE),
+                    iconBg = IosMint,
                     trailing = {
                         CupertinoSwitch(
                             checked = ipv6Enabled,
@@ -177,7 +176,7 @@ fun SettingsScreen(
                     title = "系统 VPN",
                     value = "始终开启",
                     icon = Icons.Default.Security,
-                    iconBg = Color(0xFFFF9500),
+                    iconBg = IosOrange,
                     showChevron = true,
                     onClick = {
                         runCatching {
@@ -195,9 +194,9 @@ fun SettingsScreen(
                 header = "分流与服务"
             ) {
                 CupertinoCell(
-                    title = "应用分流",
+                    title = "分应用代理",
                     icon = Icons.Default.Apps,
-                    iconBg = Color(0xFFFF9500),
+                    iconBg = IosOrange,
                     showChevron = true,
                     onClick = onNavigateToAppRouting
                 )
@@ -206,10 +205,10 @@ fun SettingsScreen(
                     title = "DNS 设置",
                     value = if (fakeIpEnabled) "Fake-IP" else "Redir-Host",
                     icon = Icons.Default.Public,
-                    iconBg = Color(0xFF30B0C7),
+                    iconBg = IosTeal,
                     showChevron = true,
                     onClick = {
-                        if (onNavigateToDnsSettings != {}) onNavigateToDnsSettings() else onNavigateToDns()
+                        onNavigateToDnsSettings()
                     }
                 )
                 CupertinoDivider()
@@ -217,7 +216,7 @@ fun SettingsScreen(
                     title = "脚本中心",
                     value = "${scripts.size} 个脚本",
                     icon = Icons.Default.Code,
-                    iconBg = Color(0xFF5856D6),
+                    iconBg = IosIndigo,
                     showChevron = true,
                     onClick = onNavigateToScripts
                 )
@@ -225,7 +224,7 @@ fun SettingsScreen(
                 CupertinoCell(
                     title = "配置与订阅",
                     icon = Icons.Default.FolderZip,
-                    iconBg = Color(0xFFAF52DE),
+                    iconBg = IosPurple,
                     showChevron = true,
                     onClick = onNavigateToProfiles
                 )
@@ -245,7 +244,7 @@ fun SettingsScreen(
                         ThemeMode.DARK -> "深色"
                     },
                     icon = Icons.Default.Palette,
-                    iconBg = Color(0xFFFF2D55),
+                    iconBg = IosPink,
                     showChevron = true,
                     onClick = onNavigateToAppearance
                 )
@@ -253,7 +252,7 @@ fun SettingsScreen(
                 CupertinoCell(
                     title = "核心日志",
                     icon = Icons.Default.Terminal,
-                    iconBg = Color(0xFF8E8E93),
+                    iconBg = IosGray,
                     showChevron = true,
                     onClick = onNavigateToLogs
                 )
@@ -262,7 +261,7 @@ fun SettingsScreen(
                     title = "日志级别",
                     value = currentLogLevel.uppercase(),
                     icon = Icons.Default.Tune,
-                    iconBg = Color(0xFF5856D6),
+                    iconBg = IosIndigo,
                     showChevron = true,
                     onClick = { showLogLevelDialog = true }
                 )
@@ -278,7 +277,7 @@ fun SettingsScreen(
                     title = "检查更新",
                     value = "v$installedVersion",
                     icon = Icons.Default.SystemUpdate,
-                    iconBg = Color(0xFF34C759),
+                    iconBg = IosGreen,
                     trailing = {
                         if (isCheckingUpdate) {
                             CupertinoActivityIndicator(
@@ -289,8 +288,8 @@ fun SettingsScreen(
                             Icon(
                                 imageVector = Icons.Default.ChevronRight,
                                 contentDescription = null,
-                                tint = LoonTextSecondary,
-                                modifier = Modifier.size(17.dp)
+                                tint = LoonChevronTint,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     },
@@ -312,14 +311,14 @@ fun SettingsScreen(
                     title = "核心版本",
                     value = coreVersion.ifBlank { "v1.18.x" },
                     icon = Icons.Default.Memory,
-                    iconBg = Color(0xFF8E8E93),
+                    iconBg = IosGray,
                     showChevron = false
                 )
                 CupertinoDivider()
                 CupertinoCell(
                     title = "重置核心状态",
                     icon = Icons.Default.RestartAlt,
-                    iconBg = Color(0xFFFF3B30),
+                    iconBg = IosRed,
                     showChevron = true,
                     onClick = { showResetDialog = true }
                 )
@@ -584,8 +583,7 @@ fun SettingsScreenPreview() {
             onNavigateToProfiles = {},
             onNavigateToAppRouting = {},
             onNavigateToLogs = {},
-            onNavigateToAppearance = {},
-            onNavigateToDns = {}
+            onNavigateToAppearance = {}
         )
     }
 }

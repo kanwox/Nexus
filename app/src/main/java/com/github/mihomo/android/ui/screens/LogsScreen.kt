@@ -176,7 +176,7 @@ fun LogsScreen(
                                 text = "操作",
                                 color = IosBlue,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Normal
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }

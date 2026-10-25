@@ -147,7 +147,7 @@ fun RequestLogsScreen(
                                 text = "清空",
                                 color = RedDanger,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Normal
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }

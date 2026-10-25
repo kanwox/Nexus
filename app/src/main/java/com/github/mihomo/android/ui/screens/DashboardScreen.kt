@@ -4,7 +4,6 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -176,10 +175,7 @@ fun DashboardScreen(
         }
     }
 
-    // Stretch overscroll disabled specifically on DashboardScreen as requested
-    CompositionLocalProvider(
-        LocalOverscrollConfiguration provides null
-    ) {
+    CompositionLocalProvider {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -211,7 +207,7 @@ fun DashboardScreen(
                             color = LoonOrange,
                             fontSize = 32.sp,
                             fontWeight = FontWeight.Black,
-                            letterSpacing = 0.5.sp
+                            letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
                         )
 
                         // Top Right iOS Cupertino Switch (aligned directly with NEXUS title)
@@ -280,7 +276,7 @@ fun DashboardScreen(
                     Text(
                         text = if (isEditingShortcuts) AppStrings.get("shortcuts_done", lang) else AppStrings.get("shortcuts_edit", lang),
                         color = IosBlue,
-                        fontSize = 15.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -596,7 +592,7 @@ fun DashboardScreen(
                             Text(
                                 text = if (mainGroupProxies.isEmpty()) "暂无可用节点" else "未找到匹配节点",
                                 color = LoonTextSecondary,
-                                fontSize = 13.5.sp
+                                fontSize = 14.sp
                             )
                         }
                     } else {
