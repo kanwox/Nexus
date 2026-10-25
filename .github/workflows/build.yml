@@ -94,6 +94,12 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
           body: |
+            ### Changes in v1.0.4-Alpha.3
+
+            #### Fixed
+            - **Imported/downloaded profiles did not appear in the profile list until the app was restarted.** The in-memory profile listing was never dropped after a metadata save, so every import (file or subscription) stayed invisible for the whole process lifetime. The cache is now invalidated on every store write.
+            - Debug builds on an emulator skip native core initialization (the Go core cannot run under ARM translation), which makes the whole UI/config/script pipeline testable on emulators. Release builds and real devices are unaffected.
+
             ### Changes in v1.0.4-Alpha.2
 
             #### Fixed (regressions in v1.0.4-Alpha.1)

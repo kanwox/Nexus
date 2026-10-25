@@ -423,6 +423,10 @@ object ConfigManager {
     private fun persistStore(context: Context, store: ProfilesStore) {
         synchronized(storeLock) {
             storeCache = store
+            // The cached profile listing is derived from this store (plus the directory
+            // scan): every store mutation must drop it, otherwise a freshly imported or
+            // downloaded profile stays invisible until the process restarts.
+            cachedProfiles = null
             runCatching {
                 val json = storeJson.encodeToString(store)
                 writeTextAtomic(storeFile(context), json)
