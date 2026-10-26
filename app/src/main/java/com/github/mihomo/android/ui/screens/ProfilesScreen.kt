@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
+import com.github.mihomo.android.data.SubscriptionUpdateWorker
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
