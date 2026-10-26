@@ -70,9 +70,20 @@ private suspend fun downloadUpdateApk(context: Context, asset: UpdateChecker.Rel
             // contain path separators. The file is always cache/updates/nexus-update.apk.
             val target = File(dir, "nexus-update.apk")
             val request = Request.Builder().url(asset.browserDownloadUrl).build()
-            updateHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) error("HTTP ${response.code}")
-                val body = response.body ?: error("Empty response body")
+            val mixedPort = SettingsManager(context).mixedPort
+
+            // Try direct first, then fall back to local mixed proxy if direct connection fails
+            val call = runCatching { updateHttpClient.newCall(request).execute() }.getOrNull()
+            val response = if (call != null && call.isSuccessful) {
+                call
+            } else {
+                call?.close()
+                UpdateChecker.localProxyClient(mixedPort).newCall(request).execute()
+            }
+
+            response.use { resp ->
+                if (!resp.isSuccessful) error("HTTP ${resp.code}")
+                val body = resp.body ?: error("Empty response body")
                 if (body.contentLength() > MAX_UPDATE_APK_BYTES) {
                     error(AppStrings.get("update_apk_too_large", SettingsManager(context).appLanguage))
                 }

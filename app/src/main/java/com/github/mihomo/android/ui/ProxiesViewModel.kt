@@ -65,6 +65,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     var selectedGroupName by mutableStateOf("")
 
     val delayCache = mutableStateMapOf<String, Int>()
+    private val delayCacheLock = Any()
+
+    private fun recordDelay(key: String, delay: Int) {
+        synchronized(delayCacheLock) {
+            delayCache[key] = delay
+        }
+    }
 
     // Whole-set replacement behind a lock: concurrent speed-test workers mutate it, and
     // Compose still coalesces the writes into one invalidation pass per frame.
@@ -318,8 +325,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                             val subDelays: Map<String, Int> = if (leafMembers.isNotEmpty()) {
                                 ClashCore.healthCheckGroupNative(subG) { subNodeName, subNodeDelay ->
                                     if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                        delayCache[subNodeName] = subNodeDelay
-                                        delayCache["$subG:$subNodeName"] = subNodeDelay
+                                        recordDelay(subNodeName, subNodeDelay)
+                                        recordDelay("$subG:$subNodeName", subNodeDelay)
                                     }
                                 }
                             } else {
@@ -356,12 +363,12 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
                             subDelays.forEach { (subNodeName, subNodeDelay) ->
                                 if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                    delayCache[subNodeName] = subNodeDelay
-                                    delayCache["$subG:$subNodeName"] = subNodeDelay
+                                    recordDelay(subNodeName, subNodeDelay)
+                                    recordDelay("$subG:$subNodeName", subNodeDelay)
                                 }
                             }
                             if (finalSubDelay in 1..65534) {
-                                delayCache[subG] = finalSubDelay
+                                recordDelay(subG, finalSubDelay)
                             }
                             if (subGroupData != null && subGroupData.now.isNotBlank()) {
                                 updateLiveGroupNow(subG, subGroupData.now)
@@ -417,8 +424,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                             ClashCore.healthCheckGroupNative(g) { pName, delay ->
                                                 val isSubGroup = memberSubGroups.contains(pName)
                                                 if (delay in 1..65534) {
-                                                    delayCache[pName] = delay
-                                                    delayCache["$g:$pName"] = delay
+                                                    recordDelay(pName, delay)
+                                                    recordDelay("$g:$pName", delay)
                                                 }
                                                 if (!isSubGroup) {
                                                     removeTesting("$g:$pName")
@@ -433,8 +440,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                         async(Dispatchers.IO) {
                                             val finalSubDelay = resolveSubGroupDelay(subG, setOf(g))
                                             if (finalSubDelay in 1..65534) {
-                                                delayCache[subG] = finalSubDelay
-                                                delayCache["$g:$subG"] = finalSubDelay
+                                                recordDelay(subG, finalSubDelay)
+                                                recordDelay("$g:$subG", finalSubDelay)
                                             }
                                             removeTesting("$g:$subG")
                                         }
@@ -446,11 +453,11 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                     groupDelays.forEach { (name, delay) ->
                                         val isSubGroup = memberSubGroups.contains(name)
                                         if (!isSubGroup && delay in 1..65534) {
-                                            delayCache[name] = delay
-                                            delayCache["$g:$name"] = delay
+                                            recordDelay(name, delay)
+                                            recordDelay("$g:$name", delay)
                                         } else if (isSubGroup && delay in 1..65534 && (delayCache[name] ?: -1) !in 1..65534) {
-                                            delayCache[name] = delay
-                                            delayCache["$g:$name"] = delay
+                                            recordDelay(name, delay)
+                                            recordDelay("$g:$name", delay)
                                         }
                                     }
 
@@ -469,7 +476,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                         else -> -1
                                     }
                                     if (finalGroupDelay in 1..65534) {
-                                        delayCache[g] = finalGroupDelay
+                                        recordDelay(g, finalGroupDelay)
                                     }
 
                                     if (finalGroup != null && finalGroup.now.isNotBlank()) {
@@ -509,7 +516,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     runSpeedTestForGroup(nodeName, isAutoTest = false).join()
                     val resolved = delayCache[nodeName]
                     if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
-                        delayCache["$groupName:$nodeName"] = resolved
+                        recordDelay("$groupName:$nodeName", resolved)
                     }
                 } finally {
                     removeTesting(scopedKey)
@@ -538,8 +545,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                 ClashCore.ensureCoreLoaded(app())
                 val singleDelay = ClashCore.testProxyDelayNative(nodeName, targetGroup)
                 if (singleDelay in 1..65534) {
-                    delayCache[nodeName] = singleDelay
-                    delayCache[targetScopedKey] = singleDelay
+                    recordDelay(nodeName, singleDelay)
+                    recordDelay(targetScopedKey, singleDelay)
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "Speed test failed for node $nodeName: ${e.message}", e)

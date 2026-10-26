@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,6 +31,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
+import com.github.mihomo.android.data.AppInfoManager
 import com.github.mihomo.android.data.InstalledApp
 import com.github.mihomo.android.data.PerAppProxyMode
 import com.github.mihomo.android.ui.components.*
@@ -362,7 +364,8 @@ private fun AppItemCell(
     ) {
         // App Icon (34dp standard iOS squircle)
         AppIcon(
-            icon = app.icon,
+            packageName = app.packageName,
+            fallbackIcon = app.icon,
             label = app.label,
             modifier = Modifier.size(34.dp)
         )
@@ -420,23 +423,35 @@ private fun AppItemCell(
 }
 
 /**
- * Efficient and safe App Icon renderer.
+ * Efficient and safe App Icon renderer with asynchronous on-demand loading and LRU caching.
  */
 @Composable
 private fun AppIcon(
-    icon: Drawable?,
+    packageName: String,
     label: String,
+    fallbackIcon: Drawable? = null,
     modifier: Modifier = Modifier
 ) {
-    val imageBitmap = remember(icon) {
-        runCatching {
-            icon?.toBitmap(width = 80, height = 80, config = Bitmap.Config.ARGB_8888)?.asImageBitmap()
-        }.getOrNull()
+    val context = LocalContext.current
+    var loadedBitmap by remember(packageName) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+
+    LaunchedEffect(packageName) {
+        if (fallbackIcon != null) {
+            val bmp = runCatching {
+                fallbackIcon.toBitmap(width = 72, height = 72, config = Bitmap.Config.ARGB_8888).asImageBitmap()
+            }.getOrNull()
+            if (bmp != null) {
+                loadedBitmap = bmp
+                return@LaunchedEffect
+            }
+        }
+        loadedBitmap = AppInfoManager.loadAppIcon(context, packageName)
     }
 
-    if (imageBitmap != null) {
+    val currentBitmap = loadedBitmap
+    if (currentBitmap != null) {
         Image(
-            bitmap = imageBitmap,
+            bitmap = currentBitmap,
             contentDescription = null,
             modifier = modifier
                 .clip(RoundedCornerShape(8.dp))

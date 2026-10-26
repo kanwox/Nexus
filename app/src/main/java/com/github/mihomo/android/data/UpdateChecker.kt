@@ -29,6 +29,22 @@ object UpdateChecker {
             .build()
     }
 
+    private val proxyClients = java.util.concurrent.ConcurrentHashMap<Int, OkHttpClient>()
+
+    /** Client that routes through the local mixed port when direct physical connections to GitHub fail. */
+    fun localProxyClient(port: Int): OkHttpClient = proxyClients.getOrPut(port) {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .proxy(
+                java.net.Proxy(
+                    java.net.Proxy.Type.HTTP,
+                    java.net.InetSocketAddress("127.0.0.1", port)
+                )
+            )
+            .build()
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /** One downloadable release artifact (GitHub release asset). */
@@ -73,50 +89,64 @@ object UpdateChecker {
 
     /**
      * Fetches the latest release from GitHub and compares against the installed version.
+     * Tries direct connection first; falls back to the local mixed proxy if direct connection fails.
      * Must be called from a coroutine (runs on [Dispatchers.IO] internally).
      */
     suspend fun checkForUpdate(context: Context): CheckResult = withContext(Dispatchers.IO) {
         val currentVersion = installedVersion(context)
-        try {
+        val mixedPort = SettingsManager(context).mixedPort
+
+        fun tryFetch(client: OkHttpClient): String? {
             val request = Request.Builder()
                 .url(RELEASES_API)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "Nexus-Android/$currentVersion")
                 .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext CheckResult.Error("HTTP ${response.code}")
+            return runCatching {
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) response.body?.string() else null
                 }
+            }.getOrNull()
+        }
 
-                val body = response.body?.string()
-                    ?: return@withContext CheckResult.Error("Empty response")
+        try {
+            // 1. Try direct connection first
+            var body = tryFetch(httpClient)
 
-                val obj = json.parseToJsonElement(body).jsonObject
-                val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
-                val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
-                val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(1000)
-                val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
-                val apkAsset = obj["assets"]?.let { assetsElement ->
-                    runCatching {
-                        json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
-                    }.getOrDefault(emptyList())
-                }?.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-
-                val latestVersion = tagName.trimStart('v', 'V')
-                val isNewer = isVersionNewer(latestVersion, currentVersion)
-
-                CheckResult.Success(
-                    UpdateInfo(
-                        tagName = tagName,
-                        releaseName = releaseName,
-                        releaseNotes = releaseNotes,
-                        htmlUrl = htmlUrl,
-                        apkAsset = apkAsset,
-                        isNewer = isNewer
-                    )
-                )
+            // 2. If direct fails (e.g. GitHub blocked/polluted while app traffic bypasses VPN),
+            // retry via local mixed port proxy if available
+            if (body == null) {
+                body = tryFetch(localProxyClient(mixedPort))
             }
+
+            if (body == null) {
+                return@withContext CheckResult.Error("Network error: failed to connect to GitHub")
+            }
+
+            val obj = json.parseToJsonElement(body).jsonObject
+            val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
+            val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
+            val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(1000)
+            val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
+            val apkAsset = obj["assets"]?.let { assetsElement ->
+                runCatching {
+                    json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
+                }.getOrDefault(emptyList())
+            }?.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+
+            val latestVersion = tagName.trimStart('v', 'V')
+            val isNewer = isVersionNewer(latestVersion, currentVersion)
+
+            CheckResult.Success(
+                UpdateInfo(
+                    tagName = tagName,
+                    releaseName = releaseName,
+                    releaseNotes = releaseNotes,
+                    htmlUrl = htmlUrl,
+                    apkAsset = apkAsset,
+                    isNewer = isNewer
+                )
+            )
         } catch (e: Exception) {
             CheckResult.Error(e.message ?: "Unknown error")
         }

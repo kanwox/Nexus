@@ -7,6 +7,9 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.github.mihomo.android.core.ClashCore
+import com.github.mihomo.android.service.MihomoVpnService
+import com.github.mihomo.android.service.VpnState
 import java.util.concurrent.TimeUnit
 
 /**
@@ -21,6 +24,7 @@ class SubscriptionUpdateWorker(
 
     override suspend fun doWork(): Result {
         val context = applicationContext
+        val settings = SettingsManager(context)
         val now = System.currentTimeMillis()
         val due = ConfigManager.getProfiles(context).filter { profile ->
             profile.autoUpdate && !profile.url.isNullOrBlank() &&
@@ -31,6 +35,16 @@ class SubscriptionUpdateWorker(
             result.fold(
                 onSuccess = {
                     LogRepository.addLog("info", "自动更新订阅成功: ${profile.name}")
+                    if (profile.id == settings.selectedProfileId &&
+                        MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
+                    ) {
+                        val reloaded = ClashCore.reloadActiveConfig(context)
+                        if (reloaded) {
+                            LogRepository.addLog("info", "已热重载运行中配置: ${profile.name}")
+                        } else {
+                            LogRepository.addLog("warning", "热重载运行中配置失败: ${profile.name}")
+                        }
+                    }
                 },
                 onFailure = {
                     LogRepository.addLog(

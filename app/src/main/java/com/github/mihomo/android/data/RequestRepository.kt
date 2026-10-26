@@ -26,7 +26,8 @@ object RequestRepository {
     private const val POLL_INTERVAL_MS = 1000L
 
     private val nextId = AtomicLong(1)
-    private val recordList = ArrayDeque<RequestRecord>(MAX_RECORDS)
+    // O(1) lookup map preserving insertion order. Eldest entries are at the beginning.
+    private val recordMap = LinkedHashMap<String, RequestRecord>(MAX_RECORDS)
 
     private val _recordsFlow = MutableStateFlow<List<RequestRecord>>(emptyList())
     val recordsFlow: StateFlow<List<RequestRecord>> = _recordsFlow.asStateFlow()
@@ -36,7 +37,7 @@ object RequestRepository {
     val activeCountFlow: StateFlow<Int> = _activeCountFlow.asStateFlow()
 
     private val publisher = ThrottledPublisher(PUBLISH_INTERVAL_MS, _recordsFlow.subscriptionCount) {
-        val snapshot = synchronized(this) { recordList.toList() }
+        val snapshot = synchronized(this) { recordMap.values.reversed() }
         _recordsFlow.value = snapshot
     }
 
@@ -80,58 +81,55 @@ object RequestRepository {
 
         for (conn in snapshot.connections) {
             liveIds.add(conn.id)
-            val index = recordList.indexOfFirst { it.connectionId == conn.id }
-            if (index == -1) {
-                if (recordList.size >= MAX_RECORDS) {
-                    recordList.removeLast()
+            val existing = recordMap[conn.id]
+            if (existing == null) {
+                if (recordMap.size >= MAX_RECORDS) {
+                    val eldestKey = recordMap.keys.first()
+                    recordMap.remove(eldestKey)
                 }
                 val (label, pkg) = resolveAppLabel(conn)
-                recordList.addFirst(
-                    RequestRecord(
-                        id = nextId.getAndIncrement(),
-                        connectionId = conn.id,
-                        host = conn.host,
-                        destinationIp = conn.destinationIp.ifBlank { conn.host },
-                        destinationPort = conn.destinationPort,
-                        network = conn.network,
-                        sourceApp = label,
-                        packageName = pkg,
-                        rule = conn.rule.ifBlank { "Match" },
-                        rulePayload = conn.rulePayload,
-                        outbound = conn.chains.firstOrNull()?.uppercase().orEmpty().ifBlank { "DIRECT" },
-                        chain = conn.chains.asReversed(),
-                        uploadBytes = conn.uploadBytes,
-                        downloadBytes = conn.downloadBytes,
-                        isActive = !conn.rule.equals("Reject", ignoreCase = true) &&
-                            !conn.outboundEqualsReject(),
-                        timestamp = if (conn.startMs > 0) conn.startMs else now,
-                        lastSeenMs = now
-                    )
+                recordMap[conn.id] = RequestRecord(
+                    id = nextId.getAndIncrement(),
+                    connectionId = conn.id,
+                    host = conn.host,
+                    destinationIp = conn.destinationIp.ifBlank { conn.host },
+                    destinationPort = conn.destinationPort,
+                    network = conn.network,
+                    sourceApp = label,
+                    packageName = pkg,
+                    rule = conn.rule.ifBlank { "Match" },
+                    rulePayload = conn.rulePayload,
+                    outbound = conn.chains.firstOrNull()?.uppercase().orEmpty().ifBlank { "DIRECT" },
+                    chain = conn.chains.asReversed(),
+                    uploadBytes = conn.uploadBytes,
+                    downloadBytes = conn.downloadBytes,
+                    isActive = !conn.rule.equals("Reject", ignoreCase = true) &&
+                        !conn.outboundEqualsReject(),
+                    timestamp = if (conn.startMs > 0) conn.startMs else now,
+                    lastSeenMs = now
                 )
                 changed = true
             } else {
-                val old = recordList[index]
-                if (old.uploadBytes != conn.uploadBytes || old.downloadBytes != conn.downloadBytes || !old.isActive) {
-                    recordList[index] = old.copy(
+                if (existing.uploadBytes != conn.uploadBytes || existing.downloadBytes != conn.downloadBytes || !existing.isActive) {
+                    recordMap[conn.id] = existing.copy(
                         uploadBytes = conn.uploadBytes,
                         downloadBytes = conn.downloadBytes,
                         isActive = true,
                         lastSeenMs = now
                     )
                     changed = true
-                } else if (now - old.lastSeenMs > 5000L) {
+                } else if (now - existing.lastSeenMs > 5000L) {
                     // Keep lastSeen fresh without triggering a publish; a stale lastSeen would
                     // inflate durations when the poll loop resumes after a long pause.
-                    recordList[index] = old.copy(lastSeenMs = now)
+                    recordMap[conn.id] = existing.copy(lastSeenMs = now)
                 }
             }
         }
 
-        for (index in recordList.indices) {
-            val record = recordList[index]
-            if (record.isActive && record.connectionId != null && record.connectionId !in liveIds) {
+        for ((connId, record) in recordMap) {
+            if (record.isActive && connId !in liveIds) {
                 val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: now
-                recordList[index] = record.copy(
+                recordMap[connId] = record.copy(
                     isActive = false,
                     durationMs = (closedAt - record.timestamp).coerceAtLeast(0L),
                     lastSeenMs = now
@@ -185,7 +183,7 @@ object RequestRepository {
     /** Asks the core to drop the connection behind [id]; the record is closed either way. */
     suspend fun closeConnection(id: Long): Boolean = withContext(Dispatchers.IO) {
         val connectionId = synchronized(this@RequestRepository) {
-            recordList.firstOrNull { it.id == id }?.connectionId
+            recordMap.values.firstOrNull { it.id == id }?.connectionId
         }
         val requested = if (connectionId != null) MihomoApi.closeConnection(connectionId) else false
         markClosed(id)
@@ -194,29 +192,26 @@ object RequestRepository {
 
     @Synchronized
     private fun markClosed(id: Long) {
-        val index = recordList.indexOfFirst { it.id == id }
-        if (index != -1) {
-            val old = recordList[index]
-            if (old.isActive) {
-                val closedAt = old.lastSeenMs.takeIf { it > 0 } ?: System.currentTimeMillis()
-                recordList[index] = old.copy(
-                    isActive = false,
-                    durationMs = (closedAt - old.timestamp).coerceAtLeast(0L)
-                )
-                publisher.request()
-            }
+        val record = recordMap.values.firstOrNull { it.id == id }
+        if (record != null && record.connectionId != null && record.isActive) {
+            val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+            recordMap[record.connectionId] = record.copy(
+                isActive = false,
+                durationMs = (closedAt - record.timestamp).coerceAtLeast(0L)
+            )
+            publisher.request()
         }
     }
 
     @Synchronized
     fun clearClosed() {
-        recordList.removeAll { !it.isActive }
+        recordMap.entries.removeAll { !it.value.isActive }
         publisher.publishNow()
     }
 
     @Synchronized
     fun clearAll() {
-        recordList.clear()
+        recordMap.clear()
         _activeCountFlow.value = 0
         publisher.publishNow()
     }
@@ -224,7 +219,7 @@ object RequestRepository {
     /** Aggregated per-host totals over the currently tracked records (for the ranking card). */
     @Synchronized
     fun topHostsByTraffic(limit: Int = 5): List<Triple<String, Long, Long>> {
-        return recordList.asSequence()
+        return recordMap.values.asSequence()
             .filter { it.host.isNotBlank() }
             .groupBy { it.host.lowercase() }
             .map { (host, records) ->

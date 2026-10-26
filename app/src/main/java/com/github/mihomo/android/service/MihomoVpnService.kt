@@ -267,6 +267,10 @@ class MihomoVpnService : VpnService() {
     private fun startVpn() {
         val status = _vpnState.value.status
         if (startJob?.isActive == true || status == VpnState.Status.STARTING || status == VpnState.Status.RUNNING) {
+            // Even if already running or starting, satisfying a startForegroundService() contract
+            // requires calling startForeground() promptly to avoid ForegroundServiceDidNotStartInTimeException.
+            val currentContent = lastNotificationContent ?: getString(R.string.notification_restoring)
+            startForegroundServiceNotification(currentContent)
             return
         }
         if (status == VpnState.Status.STOPPING) {

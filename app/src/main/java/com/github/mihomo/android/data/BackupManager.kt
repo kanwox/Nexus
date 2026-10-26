@@ -8,6 +8,12 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * One exported profile: the YAML payload plus every piece of metadata the app layered on
@@ -65,13 +71,77 @@ object BackupManager {
     private const val TAG = "BackupManager"
     private const val MAX_BACKUP_BYTES = 50L * 1024 * 1024
 
+    private val MAGIC_HEADER = "NEXUS_ENC_V1\n".toByteArray(Charsets.UTF_8)
+    private const val SALT_SIZE = 16
+    private const val IV_SIZE = 12
+    private const val PBKDF2_ITERATIONS = 65_536
+    private const val KEY_LENGTH_BITS = 256
+    private const val GCM_TAG_LENGTH_BITS = 128
+
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
     }
 
+    private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        val keyBytes = factory.generateSecret(spec).encoded
+        return SecretKeySpec(keyBytes, "AES")
+    }
+
+    internal fun encrypt(plainBytes: ByteArray, password: String): ByteArray {
+        val random = SecureRandom()
+        val salt = ByteArray(SALT_SIZE).also { random.nextBytes(it) }
+        val iv = ByteArray(IV_SIZE).also { random.nextBytes(it) }
+        val key = deriveKey(password, salt)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+        val cipherText = cipher.doFinal(plainBytes)
+
+        val out = java.io.ByteArrayOutputStream()
+        out.write(MAGIC_HEADER)
+        out.write(salt)
+        out.write(iv)
+        out.write(cipherText)
+        return out.toByteArray()
+    }
+
+    internal fun decrypt(rawBytes: ByteArray, password: String?): String {
+        if (isEncrypted(rawBytes)) {
+            if (password.isNullOrBlank()) {
+                error("Backup is encrypted; password is required")
+            }
+            val headerLen = MAGIC_HEADER.size
+            if (rawBytes.size < headerLen + SALT_SIZE + IV_SIZE + 16) {
+                error("Corrupted encrypted backup file")
+            }
+            val salt = rawBytes.copyOfRange(headerLen, headerLen + SALT_SIZE)
+            val ivOffset = headerLen + SALT_SIZE
+            val iv = rawBytes.copyOfRange(ivOffset, ivOffset + IV_SIZE)
+            val cipherOffset = ivOffset + IV_SIZE
+            val cipherText = rawBytes.copyOfRange(cipherOffset, rawBytes.size)
+
+            val key = deriveKey(password, salt)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+            val plainBytes = runCatching { cipher.doFinal(cipherText) }
+                .getOrElse { error("Incorrect backup password or corrupted file") }
+            return plainBytes.toString(Charsets.UTF_8)
+        }
+        return rawBytes.toString(Charsets.UTF_8)
+    }
+
+    fun isEncrypted(bytes: ByteArray): Boolean {
+        if (bytes.size < MAGIC_HEADER.size) return false
+        for (i in MAGIC_HEADER.indices) {
+            if (bytes[i] != MAGIC_HEADER[i]) return false
+        }
+        return true
+    }
+
     /** Bounded read: a malformed/huge backup must fail cleanly instead of OOMing the process. */
-    private fun readBounded(input: InputStream, tooLargeMessage: String): String {
+    private fun readBounded(input: InputStream, tooLargeMessage: String): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
         var total = 0L
@@ -82,15 +152,20 @@ object BackupManager {
             if (total > MAX_BACKUP_BYTES) error(tooLargeMessage)
             out.write(buffer, 0, read)
         }
-        return out.toString("UTF-8")
+        return out.toByteArray()
     }
 
     /**
      * Writes a full backup to [output] (the stream is closed here).
+     * If [password] is provided, the payload is encrypted with AES-256-GCM.
      * Profiles keep [ConfigManager.getProfiles] order; scripts carry their full code so the
      * restore does not need the network.
      */
-    fun exportBackup(context: Context, output: OutputStream): Result<Unit> = runCatching {
+    fun exportBackup(
+        context: Context,
+        output: OutputStream,
+        password: String? = null
+    ): Result<Unit> = runCatching {
         val settings = SettingsManager(context)
 
         val profiles = ConfigManager.getProfiles(context).map { profile ->
@@ -132,8 +207,15 @@ object BackupManager {
             settings = settingsMap
         )
 
+        val plainBytes = json.encodeToString(document).toByteArray(Charsets.UTF_8)
+        val finalBytes = if (!password.isNullOrBlank()) {
+            encrypt(plainBytes, password)
+        } else {
+            plainBytes
+        }
+
         output.use { stream ->
-            stream.write(json.encodeToString(document).toByteArray(Charsets.UTF_8))
+            stream.write(finalBytes)
             stream.flush()
         }
     }
@@ -149,9 +231,11 @@ object BackupManager {
     fun importBackup(
         context: Context,
         input: InputStream,
-        tooLargeMessage: String = "Backup file is too large"
+        tooLargeMessage: String = "Backup file is too large",
+        password: String? = null
     ): Result<Int> = runCatching {
-        val text = input.use { stream -> readBounded(stream, tooLargeMessage) }
+        val rawBytes = input.use { stream -> readBounded(stream, tooLargeMessage) }
+        val text = decrypt(rawBytes, password)
         val data = json.decodeFromString<BackupData>(text)
         var imported = 0
 

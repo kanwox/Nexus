@@ -9,6 +9,43 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.5-Alpha.4] - 2026-10-26
+
+### Stability & performance
+
+- **FGS notification contract hardening**: `MihomoVpnService` now promptly reinforces
+  the foreground notification on any incoming start command (including re-entrant
+  starts while `STARTING` or `RUNNING`), eliminating potential Android 14+
+  `ForegroundServiceDidNotStartInTimeException` risks.
+- **Background subscription auto-update hot reload**: When `SubscriptionUpdateWorker`
+  refreshes the currently active profile while the VPN is connected, it now triggers
+  `ClashCore.reloadActiveConfig` to smoothly hot-reload the running core without
+  requiring a manual restart.
+- **Request repository O(1) indexed lookup**: Replaced the linear `indexOfFirst` search
+  over active connection records with an insertion-ordered `LinkedHashMap`, reducing
+  poll lookup complexity from O(N) to O(1) and lowering background CPU overhead.
+- **App routing icon lazy loading & memory optimization**: `AppInfoManager` now decouples
+  package listing from bitmap decoding; `AppRoutingScreen` loads icons asynchronously
+  on-demand with a bounded LRU bitmap cache, eliminating peak memory spikes on devices
+  with hundreds of installed applications.
+- **Thread-safe speed test delay recording**: `ProxiesViewModel` now serializes all
+  concurrent worker writes to `delayCache` behind a dedicated lock, protecting Compose
+  snapshot state maps from race conditions during parallel group health checks.
+
+### Security & networking
+
+- **AES-256-GCM encrypted backup support**: `BackupManager` now supports optional password-based
+  AES-256-GCM encryption with PBKDF2 key derivation for exported configuration backups,
+  protecting subscription tokens and LAN passwords while maintaining full backward
+  compatibility for plain JSON restores.
+- **Update check proxy fallback**: `UpdateChecker` and the in-app APK downloader now
+  automatically fall back to the local mixed-port proxy when direct physical network
+  requests to GitHub are blocked or restricted while the app traffic bypasses the VPN.
+
+### Changed
+
+- `versionName` 1.0.5-Alpha.4 / `versionCode` 20.
+
 ## [1.0.5-Alpha.3] - 2026-10-26
 
 ### Design system & accessibility
