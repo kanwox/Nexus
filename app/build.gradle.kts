@@ -137,11 +137,6 @@ dependencies {
     // Background subscription auto-update scheduling
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
-    // App lock (biometric / device credential)
-    implementation("androidx.biometric:biometric:1.1.0")
-    // biometric 1.1.0 pulls fragment 1.0.0; activity's ActivityResult APIs require >= 1.3.0.
-    implementation("androidx.fragment:fragment-ktx:1.8.5")
-
     // QR subscription import: zxing decodes, CameraX feeds the analyzer
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.camera:camera-camera2:1.3.4")

@@ -57,17 +57,6 @@ private const val LIST_ITEM_SPACING_DP = 10
 
 private val expireDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
-/** Auto-update cadence options: interval in minutes -> localized label key. */
-private val autoUpdateIntervals = listOf(
-    30 to "profile_interval_30m",
-    60 to "profile_interval_1h",
-    180 to "profile_interval_3h",
-    360 to "profile_interval_6h",
-    720 to "profile_interval_12h",
-    1440 to "profile_interval_24h",
-    4320 to "profile_interval_72h"
-)
-
 private fun formatRelativeTime(timestamp: Long, lang: String): String {
     if (timestamp <= 0L) return AppStrings.get("time_never_updated", lang)
     val diff = System.currentTimeMillis() - timestamp
@@ -142,7 +131,7 @@ fun ProfilesScreen(
     // Auto-update editor sheet draft state.
     var autoUpdateProfile by remember { mutableStateOf<ProfileItem?>(null) }
     var draftAutoUpdate by remember { mutableStateOf(false) }
-    var draftInterval by remember { mutableStateOf(1440) }
+    var draftIntervalText by remember { mutableStateOf("1440") }
 
     // Long-press drag reorder state. Data swaps happen live while dragging; the dragged
     // card keeps following the finger through dragOffsetY, re-based after every swap.
@@ -275,30 +264,16 @@ fun ProfilesScreen(
                         }
                     }
 
-                    val metadataStr = remember(profile, lang) {
-                        val timePart = formatRelativeTime(profile.lastUpdated, lang)
-                        val sizePart = formatFileSize(profile.file.length())
+                    val infoText = remember(profile, lang) {
                         if (profile.totalBytes > 0L) {
                             val used = formatTraffic(profile.uploadBytes + profile.downloadBytes)
                             val total = formatTraffic(profile.totalBytes)
-                            "$timePart · $used / $total"
+                            "$used / $total"
                         } else {
-                            "$timePart · $sizePart"
+                            formatFileSize(profile.file.length())
                         }
                     }
-
-                    val usageFraction: Float? = if (profile.totalBytes > 0L) {
-                        ((profile.uploadBytes + profile.downloadBytes).toFloat() / profile.totalBytes.toFloat())
-                            .coerceIn(0f, 1f)
-                    } else {
-                        null
-                    }
-                    val usageColor = when {
-                        usageFraction != null && usageFraction >= 0.95f -> RedDanger
-                        usageFraction != null && usageFraction >= 0.8f -> IosOrange
-                        else -> IosBlue
-                    }
-                    val usagePercent = usageFraction?.let { String.format(Locale.US, "%.0f%%", it * 100) } ?: ""
+                    val timeText = remember(profile, lang) { formatRelativeTime(profile.lastUpdated, lang) }
 
                     val expireText: String?
                     val expireColor: Color
@@ -435,50 +410,36 @@ fun ProfilesScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = metadataStr,
-                                    color = LoonTextSecondary,
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                if (usageFraction != null) {
-                                    Spacer(modifier = Modifier.height(7.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .height(3.dp)
-                                                .clip(RoundedCornerShape(1.5.dp))
-                                                .background(LoonTertiaryBg)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxHeight()
-                                                    .fillMaxWidth(usageFraction)
-                                                    .clip(RoundedCornerShape(1.5.dp))
-                                                    .background(usageColor)
-                                            )
-                                        }
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = infoText,
+                                        color = LoonTextSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (expireText != null) {
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = usagePercent,
-                                            color = usageColor,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Medium
+                                            text = expireText,
+                                            color = expireColor,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                }
-                                if (expireText != null) {
-                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = expireText,
-                                        color = expireColor,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        text = timeText,
+                                        color = LoonTextSecondary,
+                                        fontSize = 12.sp,
+                                        maxLines = 1
                                     )
                                 }
                             }
@@ -619,7 +580,7 @@ fun ProfilesScreen(
                             haptic.selection()
                             actionSheetProfile = null
                             draftAutoUpdate = target.autoUpdate
-                            draftInterval = target.autoUpdateInterval
+                            draftIntervalText = target.autoUpdateInterval.toString()
                             autoUpdateProfile = target
                         }
                     )
@@ -682,9 +643,12 @@ fun ProfilesScreen(
                         .height(36.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .iosPressable {
+                            val interval = draftIntervalText.trim().toIntOrNull()
+                                ?.coerceIn(SubscriptionUpdateWorker.MIN_INTERVAL_MINUTES, 60 * 24 * 30)
+                                ?: 1440
                             val updated = target.copy(
                                 autoUpdate = draftAutoUpdate,
-                                autoUpdateInterval = draftInterval
+                                autoUpdateInterval = interval
                             )
                             ConfigManager.updateProfile(context, updated)
                             autoUpdateProfile = null
@@ -716,26 +680,23 @@ fun ProfilesScreen(
             }
             Spacer(modifier = Modifier.height(16.dp))
             CupertinoGroupedSection(header = AppStrings.current("profile_auto_update_interval")) {
-                autoUpdateIntervals.forEachIndexed { index, option ->
-                    val selected = draftInterval == option.first
-                    CupertinoCell(
-                        title = AppStrings.current(option.second),
-                        showChevron = false,
-                        trailing = {
-                            if (selected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = IosBlue,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        },
-                        onClick = { draftInterval = option.first }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    CupertinoTextField(
+                        value = draftIntervalText,
+                        onValueChange = { newValue -> draftIntervalText = newValue.filter { ch -> ch.isDigit() } },
+                        placeholder = "1440",
+                        singleLine = true
                     )
-                    if (index < autoUpdateIntervals.lastIndex) {
-                        CupertinoIndentedDivider()
-                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = AppStrings.current("profile_interval_unit"),
+                        color = LoonTextSecondary,
+                        fontSize = 12.sp
+                    )
                 }
             }
             Text(

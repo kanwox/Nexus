@@ -478,8 +478,6 @@ class MihomoVpnService : VpnService() {
                 delay(pollIntervalMs)
                 if (!isScreenInteractive || _vpnState.value.status != VpnState.Status.RUNNING) break
                 val now = ClashCore.queryTrafficNow()
-                // Chart history samples raw bytes/sec; cheap and only while the screen is on.
-                TrafficHistory.append(now.rawUpload(), now.rawDownload())
 
                 val upStr = now.trafficSpeedUpload()
                 val downStr = now.trafficSpeedDownload()

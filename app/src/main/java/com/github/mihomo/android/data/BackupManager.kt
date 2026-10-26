@@ -207,8 +207,6 @@ object BackupManager {
         map["allowBypassEnabled"] = settings.allowBypassEnabled.toString()
         map["allowPrivateSubscriptionHosts"] = settings.allowPrivateSubscriptionHosts.toString()
         map["blockThirdPartyDns"] = settings.blockThirdPartyDns.toString()
-        map["appLockEnabled"] = settings.appLockEnabled.toString()
-        map["preventScreenshots"] = settings.preventScreenshots.toString()
         map["proxiesViewMode"] = settings.proxiesViewMode
         map["visibleShortcuts"] = settings.visibleShortcuts.joinToString(",")
         map["shortcutOrder"] = settings.shortcutOrder.joinToString(",")
@@ -252,8 +250,6 @@ object BackupManager {
             settings.allowPrivateSubscriptionHosts = it == "true"
         }
         map["blockThirdPartyDns"]?.let { settings.blockThirdPartyDns = it == "true" }
-        map["appLockEnabled"]?.let { settings.appLockEnabled = it == "true" }
-        map["preventScreenshots"]?.let { settings.preventScreenshots = it == "true" }
         map["proxiesViewMode"]?.let { settings.proxiesViewMode = it }
         map["visibleShortcuts"]?.let {
             settings.visibleShortcuts = it.split(',').filter { id -> id.isNotBlank() }.toSet()

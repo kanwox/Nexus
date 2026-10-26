@@ -46,7 +46,9 @@ class SubscriptionUpdateWorker(
     companion object {
         private const val WORK_NAME = "subscription_auto_update"
         private const val CHECK_INTERVAL_MINUTES = 30L
-        private const val MIN_INTERVAL_MINUTES = 15
+
+        /** Floor for user-entered auto-update intervals; shared with the profile editor UI. */
+        const val MIN_INTERVAL_MINUTES = 15
 
         /** Idempotent; called from Application.onCreate so scheduling survives reboots. */
         fun schedule(context: Context) {

@@ -134,16 +134,6 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("block_third_party_dns", false)
         set(value) = prefs.edit { putBoolean("block_third_party_dns", value) }
 
-    /** Requires biometric/device-credential unlock when returning to the foreground. */
-    var appLockEnabled: Boolean
-        get() = prefs.getBoolean("app_lock_enabled", false)
-        set(value) = prefs.edit { putBoolean("app_lock_enabled", value) }
-
-    /** Adds FLAG_SECURE so the app never appears in screenshots or the recents preview. */
-    var preventScreenshots: Boolean
-        get() = prefs.getBoolean("prevent_screenshots", false)
-        set(value) = prefs.edit { putBoolean("prevent_screenshots", value) }
-
     companion object {
         const val DEFAULT_NAMESERVERS = "https://223.5.5.5/dns-query, https://doh.pub/dns-query, 223.5.5.5, 119.29.29.29"
         const val DEFAULT_FALLBACK_SERVERS = "https://1.1.1.1/dns-query, https://8.8.8.8/dns-query, 1.1.1.1, 8.8.8.8"

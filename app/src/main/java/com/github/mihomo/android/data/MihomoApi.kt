@@ -72,9 +72,16 @@ object MihomoApi {
             .header("Authorization", "Bearer ${ApiController.secret}")
     }
 
-    private fun executeJson(request: Request): JsonObject? {
+    /**
+     * Safe GET: returns null whenever the controller is not configured (VPN never started)
+     * or the call fails for any reason. Callers run inside coroutines with no exception
+     * handler, so an endpoint must never throw — an unguarded error() here crashed the app
+     * when the core status screen was opened before the first VPN start.
+     */
+    private fun getJson(path: String): JsonObject? {
+        if (!ApiController.isReady) return null
         return runCatching {
-            client.newCall(request).execute().use { response ->
+            client.newCall(requestBuilder(path).build()).execute().use { response ->
                 if (!response.isSuccessful) return@use null
                 val text = response.body?.string() ?: return@use null
                 json.parseToJsonElement(text) as? JsonObject
@@ -126,16 +133,16 @@ object MihomoApi {
     // ---- Endpoints -------------------------------------------------------------------
 
     fun version(): String? {
-        val obj = executeJson(requestBuilder("/version").build()) ?: return null
+        val obj = getJson("/version") ?: return null
         return runCatching { obj["version"]?.jsonPrimitive?.content }.getOrNull()
     }
 
     /** Full proxy snapshot: groups and proxies keyed by name. */
-    fun proxies(): JsonObject? = executeJson(requestBuilder("/proxies").build())
+    fun proxies(): JsonObject? = getJson("/proxies")
 
     fun proxyDetail(name: String): ApiProxy? {
         val encoded = java.net.URLEncoder.encode(name, "UTF-8")
-        val obj = executeJson(requestBuilder("/proxies/$encoded").build()) ?: return null
+        val obj = getJson("/proxies/$encoded") ?: return null
         return parseProxy(obj)
     }
 
@@ -148,7 +155,7 @@ object MihomoApi {
     }
 
     fun connections(): ConnectionsSnapshot? {
-        val obj = executeJson(requestBuilder("/connections").build()) ?: return null
+        val obj = getJson("/connections") ?: return null
         return parseConnections(obj)
     }
 
@@ -176,19 +183,19 @@ object MihomoApi {
     fun patchMode(mode: String): Boolean = patchConfigs(buildJsonObject { put("mode", mode) })
 
     fun memoryInuse(): Long? {
-        val obj = executeJson(requestBuilder("/memory").build()) ?: return null
+        val obj = getJson("/memory") ?: return null
         return runCatching { obj["inuse"]?.jsonPrimitive?.longOrNull }.getOrNull()
     }
 
     fun proxyProviders(): List<ApiProvider> {
-        val obj = executeJson(requestBuilder("/providers/proxies").build()) ?: return emptyList()
+        val obj = getJson("/providers/proxies") ?: return emptyList()
         return parseProviders(obj) { provider -> provider["proxies"]?.jsonArray?.size ?: 0 }
     }
 
     fun updateProxyProvider(name: String): Boolean = updateProvider("proxies", name)
 
     fun ruleProviders(): List<ApiProvider> {
-        val obj = executeJson(requestBuilder("/providers/rules").build()) ?: return emptyList()
+        val obj = getJson("/providers/rules") ?: return emptyList()
         return parseProviders(obj) { provider -> provider["ruleCount"]?.jsonPrimitive?.longOrNull?.toInt() ?: 0 }
     }
 

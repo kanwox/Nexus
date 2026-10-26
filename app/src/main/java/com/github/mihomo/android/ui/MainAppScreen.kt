@@ -33,7 +33,6 @@ import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.core.model.TunnelMode
 import com.github.mihomo.android.data.*
 import com.github.mihomo.android.service.MihomoVpnService
-import com.github.mihomo.android.service.TrafficHistory
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -69,7 +68,9 @@ enum class SubScreen {
     NETWORK_SHARE,
     APPEARANCE,
     CORE,
-    QR_SCAN
+    QR_SCAN,
+    VPN_TUNNEL,
+    ABOUT
 }
 
 /** Persists the current sub-screen across configuration changes. */
@@ -162,25 +163,16 @@ fun MainAppScreen(
     var allowLanPassword by remember { mutableStateOf(settingsManager.allowLanPassword) }
     var fakeIpEnabled by remember { mutableStateOf(settingsManager.fakeIpEnabled) }
 
-    // --- v1.1: dashboard stats / QR prefill / backup wiring state ---
-    val connectionsCount by RequestRepository.activeCountFlow.collectAsStateWithLifecycle()
-    var memoryBytes by remember { mutableLongStateOf(0L) }
-    var trafficHistory by remember { mutableStateOf(emptyList<TrafficHistory.Sample>()) }
-    var qrPrefillUrl by remember { mutableStateOf<String?>(null) }
+    // Tunnel-page settings lifted as observable state: reading the settings store directly
+    // inside composition is not reactive, so a flipped switch would instantly snap back.
+    var killSwitchEnabled by remember { mutableStateOf(settingsManager.killSwitchEnabled) }
+    var allowBypassEnabled by remember { mutableStateOf(settingsManager.allowBypassEnabled) }
+    var allowPrivateSubs by remember { mutableStateOf(settingsManager.allowPrivateSubscriptionHosts) }
+    var mixedPort by remember { mutableIntStateOf(settingsManager.mixedPort) }
+    var tunMtu by remember { mutableIntStateOf(settingsManager.tunMtu) }
 
-    // Memory readout + rolling chart samples only while the dashboard is visible.
-    val dashboardVisible = currentSubScreen == null && currentTab == 0
-    LaunchedEffect(dashboardVisible, vpnStatus) {
-        if (dashboardVisible && vpnStatus == VpnState.Status.RUNNING) {
-            while (isActive) {
-                delay(1000L)
-                trafficHistory = TrafficHistory.snapshot()
-                withContext(Dispatchers.IO) {
-                    MihomoApi.memoryInuse()?.let { memoryBytes = it }
-                }
-            }
-        }
-    }
+    // QR subscription import: a scanned URL pre-fills the add dialog on the profiles screen.
+    var qrPrefillUrl by remember { mutableStateOf<String?>(null) }
 
     val settingsScrollState = rememberScrollState()
     val dashboardScrollState = rememberScrollState()
@@ -379,9 +371,6 @@ fun MainAppScreen(
                         activeNodeName = currentMainActiveNode,
                         totalNodes = parsedProfile.totalNodes,
                         totalRules = parsedProfile.totalRules,
-                        trafficHistory = trafficHistory,
-                        connectionsCount = connectionsCount,
-                        memoryBytes = memoryBytes,
                         visibleShortcuts = visibleShortcuts,
                         shortcutOrder = shortcutOrder,
                         onToggleVpn = { onToggleVpn() },
@@ -414,7 +403,7 @@ fun MainAppScreen(
                         onNavigateToDns = { currentSubScreen = SubScreen.DNS },
                         onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
                         onNavigateToCore = { currentSubScreen = SubScreen.CORE },
-                        mixedPort = settingsManager.mixedPort,
+                        mixedPort = mixedPort,
                         onUpdateVisibleShortcuts = { updated ->
                             visibleShortcuts = updated
                             settingsManager.visibleShortcuts = updated
@@ -503,132 +492,8 @@ fun MainAppScreen(
                 2 -> SettingsScreen(
                     scrollState = settingsScrollState,
                     tunStack = tunStack,
-                    bootOnStartup = bootOnStartup,
-                    allowLan = allowLan,
                     fakeIpEnabled = fakeIpEnabled,
-                    ipv6Enabled = ipv6Enabled,
                     themeMode = currentThemeMode,
-                    killSwitchEnabled = settingsManager.killSwitchEnabled,
-                    onKillSwitchChanged = { enabled ->
-                        settingsManager.killSwitchEnabled = enabled
-                        // Applied at tunnel establishment; a running tunnel must rebuild.
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            MihomoVpnService.restart(activity)
-                        }
-                    },
-                    allowBypassEnabled = settingsManager.allowBypassEnabled,
-                    onAllowBypassChanged = { enabled ->
-                        settingsManager.allowBypassEnabled = enabled
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            MihomoVpnService.restart(activity)
-                        }
-                    },
-                    mixedPort = settingsManager.mixedPort,
-                    onMixedPortChanged = { port ->
-                        settingsManager.mixedPort = port
-                        if (coreActive) {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                ClashCore.reloadActiveConfig(activity)
-                            }
-                        }
-                    },
-                    tunMtu = settingsManager.tunMtu,
-                    onTunMtuChanged = { mtu ->
-                        settingsManager.tunMtu = mtu
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            MihomoVpnService.restart(activity)
-                        }
-                    },
-                    allowPrivateSubs = settingsManager.allowPrivateSubscriptionHosts,
-                    onAllowPrivateSubsChanged = { enabled ->
-                        settingsManager.allowPrivateSubscriptionHosts = enabled
-                    },
-                    appLockEnabled = settingsManager.appLockEnabled,
-                    onAppLockChanged = { enabled ->
-                        settingsManager.appLockEnabled = enabled
-                    },
-                    preventScreenshots = settingsManager.preventScreenshots,
-                    onPreventScreenshotsChanged = { enabled ->
-                        settingsManager.preventScreenshots = enabled
-                    },
-                    onNavigateToCore = { currentSubScreen = SubScreen.CORE },
-                    onExportBackup = { uri ->
-                        coroutineScope.launch(Dispatchers.IO) {
-                            val result = runCatching {
-                                activity.contentResolver.openOutputStream(uri)?.use { output ->
-                                    BackupManager.exportBackup(activity, output)
-                                } ?: error("无法写入所选位置")
-                            }
-                            kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                result.fold(
-                                    onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
-                                    onFailure = {
-                                        CupertinoToast.show(
-                                            AppStrings.get("settings_backup_failed", appLanguage)
-                                                .replace("{reason}", it.message ?: "未知错误"),
-                                            isDestructive = true
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    },
-                    onImportBackup = { uri ->
-                        coroutineScope.launch(Dispatchers.IO) {
-                            val result = runCatching {
-                                val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
-                                    BackupManager.importBackup(activity, input)
-                                } ?: error("无法读取所选文件")
-                                inner.getOrThrow()
-                            }
-                            kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                result.fold(
-                                    onSuccess = { count ->
-                                        vm.reloadProfiles()
-                                        CupertinoToast.show(
-                                            AppStrings.get("settings_backup_restored", appLanguage) + " ($count)"
-                                        )
-                                    },
-                                    onFailure = {
-                                        CupertinoToast.show(
-                                            AppStrings.get("settings_backup_failed", appLanguage)
-                                                .replace("{reason}", it.message ?: "未知错误"),
-                                            isDestructive = true
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    },
-                    onTunStackChanged = { stack ->
-                        tunStack = stack
-                        settingsManager.tunStack = stack
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            MihomoVpnService.restart(activity)
-                        }
-                    },
-                    onBootOnStartupChanged = { enabled ->
-                        bootOnStartup = enabled
-                        settingsManager.bootOnStartup = enabled
-                    },
-                    onAllowLanChanged = { enabled ->
-                        allowLan = enabled
-                        settingsManager.allowLan = enabled
-                        if (coreActive) {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                ClashCore.reloadActiveConfig(activity)
-                            }
-                        }
-                    },
-                    onIpv6EnabledChanged = { enabled ->
-                        ipv6Enabled = enabled
-                        settingsManager.ipv6Enabled = enabled
-                        // Both the injected header and the TUN routes change, so a full
-                        // tunnel restart is required for the switch to take effect.
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            MihomoVpnService.restart(activity)
-                        }
-                    },
                     onNavigateToScripts = {
                         overrideTargetProfile = null
                         overrideTargetProfileId = null
@@ -639,6 +504,10 @@ fun MainAppScreen(
                     onNavigateToLogs = { currentSubScreen = SubScreen.LOGS },
                     onNavigateToAppearance = { currentSubScreen = SubScreen.APPEARANCE },
                     onNavigateToDnsSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
+                    onNavigateToCore = { currentSubScreen = SubScreen.CORE },
+                    onNavigateToVpnTunnel = { currentSubScreen = SubScreen.VPN_TUNNEL },
+                    onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
+                    onNavigateToAbout = { currentSubScreen = SubScreen.ABOUT }
                 )
             }
         }
@@ -733,7 +602,8 @@ fun MainAppScreen(
                         null -> 0
                         SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
                         SubScreen.RULES, SubScreen.DNS, SubScreen.DNS_SETTINGS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
-                        SubScreen.APPEARANCE, SubScreen.CORE, SubScreen.QR_SCAN -> 1
+                        SubScreen.APPEARANCE, SubScreen.CORE, SubScreen.QR_SCAN,
+                        SubScreen.VPN_TUNNEL, SubScreen.ABOUT -> 1
                         SubScreen.PROFILE_OVERRIDE -> 2
                         SubScreen.SCRIPTS -> 3
                     }
@@ -948,7 +818,7 @@ fun MainAppScreen(
                                     allowLanPassword = pwd
                                     settingsManager.allowLanPassword = pwd
                                 },
-                                mixedPort = settingsManager.mixedPort,
+                                mixedPort = mixedPort,
                                 vpnStatus = vpnStatus,
                                 onBack = { currentSubScreen = null }
                             )
@@ -980,6 +850,124 @@ fun MainAppScreen(
                                     CupertinoToast.show(AppStrings.get("qr_scan_result", appLanguage))
                                     currentSubScreen = SubScreen.PROFILES
                                 }
+                            )
+                        }
+                        SubScreen.VPN_TUNNEL -> {
+                            VpnTunnelScreen(
+                                tunStack = tunStack,
+                                onTunStackChanged = { stack ->
+                                    tunStack = stack
+                                    settingsManager.tunStack = stack
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoVpnService.restart(activity)
+                                    }
+                                },
+                                tunMtu = tunMtu,
+                                onTunMtuChanged = { mtu ->
+                                    tunMtu = mtu
+                                    settingsManager.tunMtu = mtu
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoVpnService.restart(activity)
+                                    }
+                                },
+                                mixedPort = mixedPort,
+                                onMixedPortChanged = { port ->
+                                    mixedPort = port
+                                    settingsManager.mixedPort = port
+                                    if (coreActive) {
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            ClashCore.reloadActiveConfig(activity)
+                                        }
+                                    }
+                                },
+                                ipv6Enabled = ipv6Enabled,
+                                onIpv6EnabledChanged = { enabled ->
+                                    ipv6Enabled = enabled
+                                    settingsManager.ipv6Enabled = enabled
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoVpnService.restart(activity)
+                                    }
+                                },
+                                killSwitchEnabled = killSwitchEnabled,
+                                onKillSwitchChanged = { enabled ->
+                                    killSwitchEnabled = enabled
+                                    settingsManager.killSwitchEnabled = enabled
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoVpnService.restart(activity)
+                                    }
+                                },
+                                allowBypassEnabled = allowBypassEnabled,
+                                onAllowBypassChanged = { enabled ->
+                                    allowBypassEnabled = enabled
+                                    settingsManager.allowBypassEnabled = enabled
+                                    if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoVpnService.restart(activity)
+                                    }
+                                },
+                                allowPrivateSubs = allowPrivateSubs,
+                                onAllowPrivateSubsChanged = { enabled ->
+                                    allowPrivateSubs = enabled
+                                    settingsManager.allowPrivateSubscriptionHosts = enabled
+                                },
+                                bootOnStartup = bootOnStartup,
+                                onBootOnStartupChanged = { enabled ->
+                                    bootOnStartup = enabled
+                                    settingsManager.bootOnStartup = enabled
+                                },
+                                onBack = { currentSubScreen = null }
+                            )
+                        }
+                        SubScreen.ABOUT -> {
+                            AboutScreen(
+                                onExportBackup = { uri ->
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        val result = runCatching {
+                                            activity.contentResolver.openOutputStream(uri)?.use { output ->
+                                                BackupManager.exportBackup(activity, output)
+                                            } ?: error("无法写入所选位置")
+                                        }
+                                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                            result.fold(
+                                                onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
+                                                onFailure = {
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("settings_backup_failed", appLanguage)
+                                                            .replace("{reason}", it.message ?: "未知错误"),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                },
+                                onImportBackup = { uri ->
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        val result = runCatching {
+                                            val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
+                                                BackupManager.importBackup(activity, input)
+                                            } ?: error("无法读取所选文件")
+                                            inner.getOrThrow()
+                                        }
+                                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                            result.fold(
+                                                onSuccess = { count ->
+                                                    vm.reloadProfiles()
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("settings_backup_restored", appLanguage) + " ($count)"
+                                                    )
+                                                },
+                                                onFailure = {
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("settings_backup_failed", appLanguage)
+                                                            .replace("{reason}", it.message ?: "未知错误"),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                },
+                                onBack = { currentSubScreen = null }
                             )
                         }
                     }
