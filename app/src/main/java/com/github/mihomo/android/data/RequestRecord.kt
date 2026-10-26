@@ -12,7 +12,8 @@ data class RequestRecord(
     val destinationIp: String,
     val destinationPort: Int = 443,
     val network: String = "TCP",
-    val sourceApp: String = "系统",
+    /** Resolved app label; blank means "system / unknown" and the UI localizes the fallback. */
+    val sourceApp: String = "",
     val packageName: String? = null,
     val rule: String = "Match",
     val rulePayload: String = "",

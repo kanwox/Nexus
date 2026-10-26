@@ -49,17 +49,20 @@ private enum class RequestProtocolFilter {
 /** One deduped (packageName, sourceApp) entry for the app filter sheet; null package = system. */
 private data class RequestAppOption(val packageName: String?, val label: String)
 
-private fun buildRequestAppOptions(records: List<RequestRecord>): List<RequestAppOption> {
+private fun buildRequestAppOptions(
+    records: List<RequestRecord>,
+    systemLabel: String
+): List<RequestAppOption> {
     val options = ArrayList<RequestAppOption>()
     val seen = HashSet<Pair<String, String>>()
     var systemAdded = false
     for (record in records) {
         val pkg = record.packageName
         if (pkg == null) {
-            // All records without a package name collapse into a single "system" entry.
+            // All records without a package name collapse into a single localized entry.
             if (!systemAdded) {
                 systemAdded = true
-                options.add(RequestAppOption(null, record.sourceApp))
+                options.add(RequestAppOption(null, systemLabel))
             }
         } else if (seen.add(pkg to record.sourceApp)) {
             options.add(RequestAppOption(pkg, record.sourceApp))
@@ -458,10 +461,11 @@ fun RequestLogsScreen(
                         .background(LoonBg)
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
+                    val systemLabel = AppStrings.get("system_app", lang)
                     val appDisplay = if (!rec.packageName.isNullOrBlank()) {
-                        "${rec.sourceApp} (${rec.packageName})"
+                        "${rec.sourceApp.ifBlank { rec.packageName }} (${rec.packageName})"
                     } else {
-                        rec.sourceApp
+                        rec.sourceApp.ifBlank { systemLabel }
                     }
                     DetailRow(
                         label = AppStrings.get("requests_field_app", lang),
@@ -591,7 +595,9 @@ fun RequestLogsScreen(
 
     // App filter sheet: deduped (packageName, sourceApp) entries seen in the current records
     if (showAppFilterSheet) {
-        val appOptions = remember(records) { buildRequestAppOptions(records) }
+        val appOptions = remember(records, lang) {
+            buildRequestAppOptions(records, AppStrings.get("system_app", lang))
+        }
         CupertinoModalBottomSheet(
             onDismissRequest = { showAppFilterSheet = false },
             title = AppStrings.get("requests_filter_app", lang),
@@ -711,7 +717,7 @@ private fun RequestRecordCell(
                 modifier = Modifier.weight(1f, fill = false)
             ) {
                 Text(
-                    text = record.sourceApp,
+                    text = record.sourceApp.ifBlank { AppStrings.get("system_app", lang) },
                     color = LoonTextSecondary,
                     fontSize = 12.5.sp,
                     maxLines = 1,

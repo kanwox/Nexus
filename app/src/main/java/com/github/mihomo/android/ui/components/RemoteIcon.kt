@@ -1,6 +1,7 @@
 package com.github.mihomo.android.ui.components
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.foundation.Image
@@ -15,15 +16,25 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.InputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
+/**
+ * Group icons come from subscription-controlled URLs, i.e. untrusted input. The loader caps
+ * the payload and downsamples before decoding so a hostile/huge image cannot OOM the process.
+ */
 object ImageCache {
+    private const val MAX_ICON_BYTES = 512 * 1024
+    private const val MAX_ICON_DIMEN_PX = 128
+    private const val MAX_DISK_ENTRIES = 200
+
     private val memoryCache = LruCache<String, ImageBitmap>(120)
     private var diskCacheDir: File? = null
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
     fun initDiskCache(cacheDir: File) {
@@ -46,9 +57,13 @@ object ImageCache {
         memoryCache.get(url)?.let { return it }
         val diskFile = getDiskFile(url)
         if (diskFile != null && diskFile.exists()) {
+            if (diskFile.length() > MAX_ICON_BYTES) {
+                diskFile.delete()
+                return null
+            }
             runCatching {
                 val bytes = diskFile.readBytes()
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                val bitmap = decodeIcon(bytes)
                 if (bitmap != null) {
                     val imageBitmap = bitmap.asImageBitmap()
                     memoryCache.put(url, imageBitmap)
@@ -73,18 +88,63 @@ object ImageCache {
                 .build()
             httpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val bytes = resp.body?.bytes() ?: return@withContext null
+                val body = resp.body ?: return@withContext null
+                if (body.contentLength() > MAX_ICON_BYTES) return@withContext null
+                val bytes = body.byteStream().use { readCapped(it) } ?: return@withContext null
 
-                // Write to disk cache
+                val bitmap = decodeIcon(bytes) ?: return@withContext null
                 val diskFile = getDiskFile(url)
-                diskFile?.writeBytes(bytes)
-
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@withContext null
+                runCatching {
+                    diskFile?.writeBytes(bytes)
+                    pruneDiskCache()
+                }
                 val imageBitmap = bitmap.asImageBitmap()
                 memoryCache.put(url, imageBitmap)
                 imageBitmap
             }
         }.getOrNull()
+    }
+
+    /** Reads at most [MAX_ICON_BYTES]; returns null for an oversized payload instead of OOMing. */
+    private fun readCapped(input: InputStream): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > MAX_ICON_BYTES) return null
+            out.write(buffer, 0, read)
+        }
+        return out.toByteArray()
+    }
+
+    private fun decodeIcon(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sampleSize = 1
+        while (bounds.outWidth / (sampleSize * 2) >= MAX_ICON_DIMEN_PX &&
+            bounds.outHeight / (sampleSize * 2) >= MAX_ICON_DIMEN_PX
+        ) {
+            sampleSize *= 2
+        }
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    }
+
+    /** Keeps the icon cache bounded; oldest files fall out once the entry count is exceeded. */
+    private fun pruneDiskCache() {
+        val dir = diskCacheDir ?: return
+        val files = dir.listFiles()?.filter { it.isFile } ?: return
+        if (files.size <= MAX_DISK_ENTRIES) return
+        files.sortedBy { it.lastModified() }
+            .take(files.size - MAX_DISK_ENTRIES)
+            .forEach { runCatching { it.delete() } }
     }
 }
 

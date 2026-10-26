@@ -212,12 +212,7 @@ object ConfigScriptEngine {
     ): ScriptPreviewResult {
         val startMs = System.currentTimeMillis()
         val effectiveInputYaml = rawYaml.takeIf { it.isNotBlank() } ?: SAMPLE_PREVIEW_YAML
-        val dumperOptions = org.yaml.snakeyaml.DumperOptions().apply {
-            defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
-            isPrettyFlow = true
-            indent = 2
-        }
-        val yamlParser = Yaml(dumperOptions)
+        val yamlParser = YamlSupport.create()
 
         val baseMap = runCatching { yamlParser.load<Any>(effectiveInputYaml) as? Map<*, *> }.getOrNull()
         val (beforeP, beforeG, beforeR) = countMapStats(baseMap)
@@ -401,12 +396,7 @@ object ConfigScriptEngine {
         if (scripts.isEmpty()) return rawYaml
 
         var currentYaml = rawYaml
-        val dumperOptions = org.yaml.snakeyaml.DumperOptions().apply {
-            defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
-            isPrettyFlow = true
-            indent = 2
-        }
-        val yamlParser = Yaml(dumperOptions)
+        val yamlParser = YamlSupport.create()
 
         for (script in scripts) {
             if (!ScriptManager.verifyScriptIntegrity(context, script)) {

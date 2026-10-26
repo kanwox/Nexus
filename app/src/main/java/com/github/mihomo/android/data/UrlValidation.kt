@@ -1,51 +1,56 @@
 package com.github.mihomo.android.data
 
+import java.net.Inet6Address
+import java.net.InetAddress
+
 /**
- * Remote subscription endpoints accept both https and http (cleartext HTTP is
- * deliberately allowed — the network security config permits it globally), so
- * this rejects everything else (ftp:, file:, data: …) up front instead of
- * surfacing OkHttp's opaque failures to the user.
+ * Remote subscription/script endpoints accept both https and http (cleartext is deliberately
+ * allowed by the network security config), so everything else (ftp:, file:, data: …) is
+ * rejected up front instead of surfacing OkHttp's opaque failures to the user.
  */
 internal fun requireSecureRemoteUrl(url: String, allowPrivateHosts: Boolean = true) {
     val scheme = url.substringBefore("://", "").lowercase()
     if (scheme != "https" && scheme != "http") {
         error("不支持的地址协议：${redactUrl(url)}")
     }
-    // SSRF guard: subscription/script links are often pasted from untrusted sources, so the
-    // app must never fetch from link-local addresses (e.g. the 169.254.169.254 cloud metadata
-    // endpoint) regardless of the private-hosts switch below. Loopback and LAN ranges stay
-    // allowed by default for self-hosted subscription converters; the settings switch narrows
-    // this down for users who only ever add public subscriptions.
+    // SSRF guard: links are often pasted from untrusted sources. Link-local targets (e.g. the
+    // 169.254.169.254 cloud metadata endpoint) are rejected regardless of the private-host
+    // switch; loopback/LAN ranges stay allowed by default for self-hosted subscription
+    // converters, and the settings switch narrows that down.
     val host = runCatching { java.net.URI(url.trim()).host?.lowercase() }.getOrNull()
     if (host != null) {
-        val isLinkLocal = host.startsWith("169.254.") || host.startsWith("fe80:")
-        val isPrivate = isPrivateNetworkHost(host)
-        if (isLinkLocal || (!allowPrivateHosts && isPrivate)) {
+        val literal = parseLiteralAddress(host)
+        val isLinkLocal = literal != null &&
+            (literal.isLinkLocalAddress || literal.isAnyLocalAddress)
+        if (isLinkLocal || (!allowPrivateHosts && isPrivateNetworkHost(host))) {
             error("不允许的地址：${redactUrl(url)}")
         }
     }
 }
 
-/** True for loopback, RFC1918 LAN ranges, IPv6 ULA and the localhost hostname. */
+/**
+ * True for loopback, RFC1918 LAN ranges, IPv6 ULA, link-local literals and local hostnames.
+ *
+ * Only IP literals are inspected: hostnames are not resolved here, because doing DNS in the
+ * validation path would block the caller and enable rebinding races. A public hostname that
+ * resolves to a private address is therefore not detected — an accepted, documented limit of
+ * the "reject private subscription hosts" switch.
+ */
 internal fun isPrivateNetworkHost(host: String): Boolean {
     val clean = host.trim().trim('[', ']').lowercase()
-    if (clean == "localhost" || clean.endsWith(".localhost") || clean == "::1") return true
-    if (clean.startsWith("127.")) return true
-    if (clean.startsWith("10.")) return true
-    if (clean.startsWith("192.168.")) return true
-    if (clean.startsWith("172.")) {
-        val second = clean.substringAfter("172.").substringBefore('.').toIntOrNull()
-        if (second != null && second in 16..31) return true
+    if (clean.isEmpty()) return false
+    if (clean == "localhost" || clean.endsWith(".localhost") || clean.endsWith(".local")) {
+        return true
     }
-    // IPv6 unique-local (fc00::/7) and link-local literals
-    if (clean.startsWith("fc") || clean.startsWith("fd") || clean.startsWith("fe80")) return true
-    return false
+    val address = parseLiteralAddress(clean) ?: return false
+    return address.isAnyLocalAddress ||
+        address.isLoopbackAddress ||
+        address.isLinkLocalAddress ||
+        address.isSiteLocalAddress ||
+        isUniqueLocalIpv6(address)
 }
 
-/**
- * Strips credentials, query string and fragment so subscription tokens embedded in URLs
- * never reach logcat, crash files or user-visible toasts.
- */
+/** Strips credentials, query string and fragment so subscription tokens never reach logcat. */
 internal fun redactUrl(url: String): String {
     return runCatching {
         val uri = java.net.URI(url.trim())
@@ -55,4 +60,37 @@ internal fun redactUrl(url: String): String {
     }.getOrDefault(
         url.substringBefore('?').substringBefore('#')
     )
+}
+
+/**
+ * Parses an IP literal without ever triggering a DNS lookup. `InetAddress.getByName` is only
+ * called for strings that are syntactically an IPv4 or IPv6 literal; a hostname such as
+ * `fc2.com` or `backend.internal` is never handed to the resolver here.
+ */
+private fun parseLiteralAddress(raw: String): InetAddress? {
+    // Drop an IPv6 zone id ("fe80::1%wlan0") before parsing so it is still recognised as a
+    // link-local literal; getByName does not accept the zoned form on every JVM/Android version.
+    val host = raw.trim().trim('[', ']').substringBefore('%')
+    if (host.isEmpty()) return null
+    return when {
+        isIpv4Literal(host) -> runCatching { InetAddress.getByName(host) }.getOrNull()
+        host.contains(':') -> runCatching { InetAddress.getByName(host) }.getOrNull()
+        else -> null
+    }
+}
+
+private fun isIpv4Literal(host: String): Boolean {
+    val parts = host.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } &&
+            part.toIntOrNull()?.let { it in 0..255 } == true
+    }
+}
+
+private fun isUniqueLocalIpv6(address: InetAddress): Boolean {
+    if (address !is Inet6Address) return false
+    val bytes = address.address
+    // fc00::/7 (unique local addresses)
+    return bytes.isNotEmpty() && (bytes[0].toInt() and 0xFE) == 0xFC
 }

@@ -47,6 +47,10 @@ fun NetworkShareScreen(
     val clipboardManager = LocalClipboardManager.current
     val haptic = rememberIosHaptic()
 
+    // Local draft: the parent must only see (and reload the core for) a committed value.
+    // Writing on every keystroke used to reload the whole tunnel on each typing pause.
+    var passwordDraft by remember(allowLanPassword) { mutableStateOf(allowLanPassword) }
+
     val localIp = remember(allowLan, vpnStatus) {
         getLocalIpAddress(context)
     }
@@ -131,10 +135,20 @@ fun NetworkShareScreen(
                                 .padding(horizontal = 16.dp, vertical = 12.dp)
                         ) {
                             CupertinoTextField(
-                                value = allowLanPassword,
-                                onValueChange = onAllowLanPasswordChanged,
+                                value = passwordDraft,
+                                onValueChange = { passwordDraft = it },
                                 placeholder = AppStrings.get("share_password_hint", lang),
                                 visualTransformation = PasswordVisualTransformation()
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            CupertinoButton(
+                                text = AppStrings.get("action_save", lang),
+                                onClick = {
+                                    onAllowLanPasswordChanged(passwordDraft)
+                                    CupertinoToast.show(AppStrings.get("saved_toast", lang))
+                                },
+                                enabled = passwordDraft != allowLanPassword,
+                                modifier = Modifier.align(Alignment.End)
                             )
                         }
                     }

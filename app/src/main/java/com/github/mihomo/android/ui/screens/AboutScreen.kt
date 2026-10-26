@@ -48,25 +48,46 @@ import okhttp3.Request
 import java.io.File
 import java.util.Locale
 
-private fun localeText(lang: String, zh: String, en: String): String {
-    val effective = if (lang == "SYSTEM") Locale.getDefault().language else lang
-    return if (effective.startsWith("zh", ignoreCase = true)) zh else en
+/** Streams the release apk into cacheDir/updates/, replacing any previously downloaded one. */
+private const val MAX_UPDATE_APK_BYTES = 200L * 1024 * 1024
+
+private val updateHttpClient by lazy {
+    OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(10, java.util.concurrent.TimeUnit.MINUTES)
+        .build()
 }
 
-/** Streams the release apk into cacheDir/updates/, replacing any previously downloaded one. */
 private suspend fun downloadUpdateApk(context: Context, asset: UpdateChecker.ReleaseAsset): File? =
     withContext(Dispatchers.IO) {
         runCatching {
             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
             dir.listFiles()?.forEach { it.delete() }
-            val fileName = asset.browserDownloadUrl.substringAfterLast('/').ifBlank { "nexus-update.apk" }
-            val target = File(dir, fileName)
+            // Never derive the destination from the URL: a hostile release asset name could
+            // contain path separators. The file is always cache/updates/nexus-update.apk.
+            val target = File(dir, "nexus-update.apk")
             val request = Request.Builder().url(asset.browserDownloadUrl).build()
-            OkHttpClient().newCall(request).execute().use { response ->
+            updateHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code}")
                 val body = response.body ?: error("Empty response body")
+                if (body.contentLength() > MAX_UPDATE_APK_BYTES) {
+                    error(AppStrings.get("update_apk_too_large", SettingsManager(context).appLanguage))
+                }
                 body.byteStream().use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
+                    target.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            total += read
+                            if (total > MAX_UPDATE_APK_BYTES) {
+                                error(AppStrings.get("update_apk_too_large", SettingsManager(context).appLanguage))
+                            }
+                            output.write(buffer, 0, read)
+                        }
+                    }
                 }
             }
             target
@@ -87,7 +108,7 @@ private fun installUpdateApk(context: Context, apk: File, lang: String) {
             )
         }
         CupertinoToast.show(
-            localeText(lang, "请先允许安装未知来源应用", "Allow installing unknown apps first"),
+            AppStrings.get("unknown_sources_required", lang),
             isDestructive = true
         )
         return
@@ -122,7 +143,7 @@ private fun beginUpdateDownload(
         if (apk == null) {
             CupertinoToast.show(
                 AppStrings.get("settings_update_install_failed", lang)
-                    .replace("{reason}", localeText(lang, "下载失败", "download failed")),
+                    .replace("{reason}", AppStrings.get("download_failed_short", lang)),
                 isDestructive = true
             )
         } else {
@@ -366,8 +387,21 @@ fun AboutScreen(
             onConfirm = {
                 showUpdateDialog = false
                 if (result is UpdateChecker.CheckResult.Success && result.info.isNewer) {
-                    val browserIntent = Intent(Intent.ACTION_VIEW, result.info.htmlUrl.toUri())
-                    runCatching { context.startActivity(browserIntent) }
+                    val asset = result.info.apkAsset
+                    when {
+                        asset != null && !isDownloadingUpdate -> {
+                            // Prefer the in-app path so the user does not have to find the right
+                            // asset on the release page; fall back to the browser only when the
+                            // release ships no apk.
+                            isDownloadingUpdate = true
+                            beginUpdateDownload(context, asset, lang, scope) { isDownloadingUpdate = it }
+                        }
+                        asset == null -> {
+                            val browserIntent = Intent(Intent.ACTION_VIEW, result.info.htmlUrl.toUri())
+                            runCatching { context.startActivity(browserIntent) }
+                        }
+                        // A download is already in flight: ignore the extra tap.
+                    }
                 }
             },
             onDismiss = { showUpdateDialog = false },
@@ -409,30 +443,6 @@ fun AboutScreen(
                                         )
                                     }
                                 }
-                                info.apkAsset?.let { asset ->
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        CupertinoButton(
-                                            text = AppStrings.get("settings_update_download", lang),
-                                            onClick = {
-                                                if (!isDownloadingUpdate) {
-                                                    isDownloadingUpdate = true
-                                                    beginUpdateDownload(context, asset, lang, scope) {
-                                                        isDownloadingUpdate = it
-                                                    }
-                                                }
-                                            }
-                                        )
-                                        if (isDownloadingUpdate) {
-                                            CupertinoActivityIndicator(
-                                                modifier = Modifier.size(16.dp),
-                                                color = IosBlue
-                                            )
-                                        }
-                                    }
-                                }
                             } else {
                                 Text(
                                     text = AppStrings.get("update_up_to_date", lang).replace("{v}", installedVersion),
@@ -457,11 +467,7 @@ fun AboutScreen(
     pendingImportUri?.let { importUri ->
         CupertinoAlertDialog(
             title = AppStrings.get("settings_backup_import", lang),
-            message = localeText(
-                lang,
-                "导入将覆盖当前全部配置、脚本与设置，确定继续吗？",
-                "Importing will overwrite all profiles, scripts and settings. Continue?"
-            ),
+            message = AppStrings.get("backup_import_confirm", lang),
             confirmText = AppStrings.get("confirm", lang),
             isDestructive = true,
             onConfirm = {

@@ -61,11 +61,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 private val qrDecodeHints: Map<DecodeHintType, Any> =
     mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE))
 
-private fun qrLocaleText(lang: String, zh: String, en: String): String {
-    val effective = if (lang == "SYSTEM") Locale.getDefault().language else lang
-    return if (effective.startsWith("zh", ignoreCase = true)) zh else en
-}
-
 /**
  * Per-frame QR decode worker: feeds the camera Y plane into zxing and reports the first
  * valid subscription URL. Duplicate callbacks for the same session are suppressed by
@@ -239,7 +234,7 @@ fun QrScanScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         CupertinoButton(
-                            text = qrLocaleText(lang, "去授权", "Grant Access"),
+                            text = AppStrings.get("qr_grant_access", lang),
                             onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }
                         )
                     }

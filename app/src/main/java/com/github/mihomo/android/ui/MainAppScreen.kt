@@ -263,21 +263,8 @@ fun MainAppScreen(
         }
     }
 
-    // Debounced config reload while typing a LAN access password: one reload per pause
-    // instead of one per keystroke. The first fire is the restored initial value.
-    var allowLanPasswordInitialized by remember { mutableStateOf(false) }
-    LaunchedEffect(allowLanPassword) {
-        if (!allowLanPasswordInitialized) {
-            allowLanPasswordInitialized = true
-            return@LaunchedEffect
-        }
-        if (vpnStatus == VpnState.Status.RUNNING || ClashCore.isCoreLoaded) {
-            delay(800L)
-            withContext(Dispatchers.IO) {
-                ClashCore.reloadActiveConfig(activity)
-            }
-        }
-    }
+    // The LAN password is committed explicitly from the network-share screen, which reloads
+    // the config once per save instead of once per typing pause.
 
     val profileImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -291,9 +278,16 @@ fun MainAppScreen(
                 withContext(Dispatchers.Main) {
                     if (res.isSuccess) {
                         vm.reloadProfiles()
-                        CupertinoToast.show("成功导入配置: ${res.getOrNull()?.name}")
+                        CupertinoToast.show(
+                            AppStrings.get("imported_toast", settingsManager.appLanguage)
+                                .replace("{name}", res.getOrNull()?.name.orEmpty())
+                        )
                     } else {
-                        CupertinoToast.show("导入失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
+                        CupertinoToast.show(
+                            AppStrings.get("import_failed", settingsManager.appLanguage)
+                                .replace("{msg}", res.exceptionOrNull()?.message.orEmpty()),
+                            isDestructive = true
+                        )
                     }
                 }
             }
@@ -365,7 +359,8 @@ fun MainAppScreen(
                         coreVersion = vpnCoreVersion,
                         vpnTraffic = vpnTraffic,
                         currentMode = tunnelMode,
-                        activeProfileName = profiles.firstOrNull { it.id == selectedProfileId }?.name ?: "默认配置",
+                        activeProfileName = profiles.firstOrNull { it.id == selectedProfileId }?.name
+                            ?: AppStrings.get("default_profile_name", appLanguage),
                         mainGroupName = mainProxyGroupName,
                         mainGroupProxies = mainGroupProxies,
                         activeNodeName = currentMainActiveNode,
@@ -425,9 +420,9 @@ fun MainAppScreen(
                             val liveMap = vm.liveGroupMap
                             val allGroupKeys = (parsed.groups.keys + liveMap.keys).distinct()
                             allGroupKeys.associateWith { gName ->
-                                val baseGroup = parsed.groups[gName] ?: liveMap[gName]!!
+                                val baseGroup = parsed.groups[gName] ?: liveMap.getValue(gName)
                                 val live = liveMap[gName]
-                                val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live!!.proxies else baseGroup.proxies
+                                val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live.proxies else baseGroup.proxies
                                 val liveProxyMap = live?.proxies?.associateBy { it.name } ?: emptyMap()
                                 val savedNode = settingsManager.getSelectedNode(gName)
                                 val resolvedNow = if (!savedNode.isNullOrBlank() && sourceProxies.any { it.name == savedNode }) {
@@ -817,6 +812,12 @@ fun MainAppScreen(
                                 onAllowLanPasswordChanged = { pwd ->
                                     allowLanPassword = pwd
                                     settingsManager.allowLanPassword = pwd
+                                    // Committed explicitly by the screen; one reload per save.
+                                    if (coreActive) {
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            ClashCore.reloadActiveConfig(activity)
+                                        }
+                                    }
                                 },
                                 mixedPort = mixedPort,
                                 vpnStatus = vpnStatus,
@@ -924,7 +925,7 @@ fun MainAppScreen(
                                         val result = runCatching {
                                             activity.contentResolver.openOutputStream(uri)?.use { output ->
                                                 BackupManager.exportBackup(activity, output)
-                                            } ?: error("无法写入所选位置")
+                                            } ?: error(AppStrings.get("backup_write_failed", settingsManager.appLanguage))
                                         }
                                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                                             result.fold(
@@ -932,7 +933,7 @@ fun MainAppScreen(
                                                 onFailure = {
                                                     CupertinoToast.show(
                                                         AppStrings.get("settings_backup_failed", appLanguage)
-                                                            .replace("{reason}", it.message ?: "未知错误"),
+                                                            .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
                                                         isDestructive = true
                                                     )
                                                 }
@@ -944,8 +945,12 @@ fun MainAppScreen(
                                     coroutineScope.launch(Dispatchers.IO) {
                                         val result = runCatching {
                                             val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
-                                                BackupManager.importBackup(activity, input)
-                                            } ?: error("无法读取所选文件")
+                                                BackupManager.importBackup(
+                                                    activity,
+                                                    input,
+                                                    AppStrings.get("backup_too_large", settingsManager.appLanguage)
+                                                )
+                                            } ?: error(AppStrings.get("backup_read_failed", settingsManager.appLanguage))
                                             inner.getOrThrow()
                                         }
                                         kotlinx.coroutines.withContext(Dispatchers.Main) {
@@ -959,7 +964,7 @@ fun MainAppScreen(
                                                 onFailure = {
                                                     CupertinoToast.show(
                                                         AppStrings.get("settings_backup_failed", appLanguage)
-                                                            .replace("{reason}", it.message ?: "未知错误"),
+                                                            .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
                                                         isDestructive = true
                                                     )
                                                 }

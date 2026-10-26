@@ -593,11 +593,10 @@ object ConfigManager {
         blockThirdPartyDns: Boolean = false
     ): String {
         return try {
-            val yaml = org.yaml.snakeyaml.Yaml(org.yaml.snakeyaml.DumperOptions().apply {
-                defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
-                isPrettyFlow = true
-                indent = 2
-            })
+            // Shared, hardened SnakeYAML setup: 100 MB code point limit (the default 3 MB
+            // silently rejected large subscriptions) and YAML 1.2 booleans, so nodes such as
+            // `name: on` or a password `yes` survive the parse/dump round-trip.
+            val yaml = YamlSupport.create()
             val parsed = yaml.load<Any?>(raw)
             if (parsed !is Map<*, *>) return raw
 
@@ -643,6 +642,13 @@ object ConfigManager {
             yaml.dump(sanitized)
         } catch (e: Throwable) {
             Log.w(TAG, "Structural config sanitization failed, falling back to text filter", e)
+            // The text fallback cannot apply the structured overrides or the plaintext-DNS
+            // reject rule, so surface it instead of silently loading a partially sanitized
+            // config. LogRepository deduplicates repeated identical lines.
+            LogRepository.addLog(
+                "warning",
+                "配置 YAML 结构解析失败，已回退到文本清洗；本次不会应用前置规则、Hosts 覆写与第三方 DNS 拦截"
+            )
             sanitizeUserConfigByText(raw)
         }
     }
@@ -812,6 +818,14 @@ $fallbackYaml
 
         // Bring the REST controller up with the same credentials on every config load.
         ApiController.acquire()
+        if (!ApiController.isReady) {
+            // Request records, DNS and the core status page all read from the controller;
+            // without it those views stay silently empty, so make the cause visible once.
+            LogRepository.addLog(
+                "warning",
+                "本机 9090-9199 端口均被占用，external-controller 不可用；请求记录与内核状态将为空"
+            )
+        }
 
         val header = buildRuntimeHeader(
             RuntimeHeaderOptions(

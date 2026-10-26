@@ -1,21 +1,21 @@
 package com.github.mihomo.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.ui.components.*
@@ -25,16 +25,19 @@ import kotlinx.coroutines.launch
 
 private enum class DnsServerSection { NAMESERVERS, FALLBACK }
 
-/** First configured server of a (comma/newline separated) list; empty when none. */
-private fun firstServer(raw: String): String =
-    raw.split(',', '\n')
-        .map { it.trim() }
-        .firstOrNull { it.isNotBlank() }
-        .orEmpty()
+/** Comma/newline separated list → trimmed, non-empty entries. */
+private fun parseServers(raw: String): List<String> =
+    raw.split(',', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+
+/** Back to the single string the config header expects; empty falls back to built-ins. */
+private fun joinServers(servers: List<String>): String =
+    servers.map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(",")
 
 /**
- * DNS settings: resolution-mode switches plus two server entries (upstream / fallback),
- * each edited in place through a tap-to-edit dialog with a single value.
+ * DNS settings: resolution-mode switches plus independently editable upstream/fallback server
+ * lists. Each entry is added, edited and removed on its own — the previous single-value editor
+ * overwrote the whole list with its first entry on every save (and on a block-DNS toggle), so
+ * the other configured servers were silently lost.
  */
 @Composable
 fun DnsSettingsScreen(
@@ -53,20 +56,41 @@ fun DnsSettingsScreen(
 
     var currentFakeIp by remember { mutableStateOf(fakeIpEnabled) }
     var currentIpv6 by remember { mutableStateOf(settingsManager.dnsIpv6Enabled) }
-    var currentNameserver by remember(nameservers) { mutableStateOf(firstServer(nameservers)) }
-    var currentFallback by remember(fallbackServers) { mutableStateOf(firstServer(fallbackServers)) }
+    var upstreamServers by remember(nameservers) { mutableStateOf(parseServers(nameservers)) }
+    var fallbackList by remember(fallbackServers) { mutableStateOf(parseServers(fallbackServers)) }
     var currentBlockThirdParty by remember(blockThirdPartyDns) { mutableStateOf(blockThirdPartyDns) }
 
     var editingSection by remember { mutableStateOf<DnsServerSection?>(null) }
+    var editingIndex by remember { mutableStateOf<Int?>(null) }
     var serverInput by remember { mutableStateOf("") }
 
-    val applyDnsChanges = {
+    fun reloadCore() {
         coroutineScope.launch(Dispatchers.IO) {
-            runCatching {
-                ClashCore.reloadActiveConfig(context)
-            }
+            runCatching { ClashCore.reloadActiveConfig(context) }
         }
-        CupertinoToast.show(AppStrings.get("dns_settings_updated", lang), isDestructive = false)
+    }
+
+    fun persistServers(upstream: List<String>, fallback: List<String>, block: Boolean) {
+        onSaveDns(joinServers(upstream), joinServers(fallback), block)
+    }
+
+    fun openEditor(section: DnsServerSection, index: Int?, current: String) {
+        editingSection = section
+        editingIndex = index
+        serverInput = current
+    }
+
+    fun serversOf(section: DnsServerSection): List<String> =
+        if (section == DnsServerSection.NAMESERVERS) upstreamServers else fallbackList
+
+    fun applyServers(section: DnsServerSection, updated: List<String>) {
+        if (section == DnsServerSection.NAMESERVERS) {
+            upstreamServers = updated
+            persistServers(updated, fallbackList, currentBlockThirdParty)
+        } else {
+            fallbackList = updated
+            persistServers(upstreamServers, updated, currentBlockThirdParty)
+        }
     }
 
     Column(
@@ -100,7 +124,6 @@ fun DnsSettingsScreen(
                                     currentFakeIp = checked
                                     settingsManager.fakeIpEnabled = checked
                                     onFakeIpEnabledChanged?.invoke(checked)
-                                    applyDnsChanges()
                                 }
                             )
                         }
@@ -115,7 +138,7 @@ fun DnsSettingsScreen(
                                 onCheckedChange = { checked ->
                                     currentIpv6 = checked
                                     settingsManager.dnsIpv6Enabled = checked
-                                    applyDnsChanges()
+                                    reloadCore()
                                 }
                             )
                         }
@@ -124,33 +147,71 @@ fun DnsSettingsScreen(
             }
 
             item {
-                CupertinoGroupedSection(header = AppStrings.get("dns_nameservers_title", lang)) {
-                    CupertinoCell(
-                        title = AppStrings.get("dns_server_edit", lang),
-                        value = currentNameserver.ifBlank {
-                            AppStrings.get("dns_server_unset", lang)
-                        },
-                        showChevron = true,
-                        onClick = {
-                            serverInput = currentNameserver
-                            editingSection = DnsServerSection.NAMESERVERS
+                CupertinoGroupedSection(
+                    header = AppStrings.get("dns_nameservers_title", lang),
+                    footer = AppStrings.get("dns_nameservers_footer", lang)
+                ) {
+                    if (upstreamServers.isEmpty()) {
+                        CupertinoCell(
+                            title = AppStrings.get("dns_server_unset", lang),
+                            showChevron = false
+                        )
+                    } else {
+                        upstreamServers.forEachIndexed { index, server ->
+                            DnsServerRow(
+                                server = server,
+                                onEdit = { openEditor(DnsServerSection.NAMESERVERS, index, server) },
+                                onDelete = {
+                                    applyServers(
+                                        DnsServerSection.NAMESERVERS,
+                                        upstreamServers.filterIndexed { i, _ -> i != index }
+                                    )
+                                }
+                            )
+                            CupertinoIndentedDivider(startIndent = 16.dp)
                         }
+                    }
+                    CupertinoCell(
+                        title = AppStrings.get("dns_server_add", lang),
+                        icon = Icons.Default.Add,
+                        iconBg = IosBlue,
+                        showChevron = false,
+                        onClick = { openEditor(DnsServerSection.NAMESERVERS, null, "") }
                     )
                 }
             }
 
             item {
-                CupertinoGroupedSection(header = AppStrings.get("dns_fallback_title", lang)) {
-                    CupertinoCell(
-                        title = AppStrings.get("dns_server_edit", lang),
-                        value = currentFallback.ifBlank {
-                            AppStrings.get("dns_server_unset", lang)
-                        },
-                        showChevron = true,
-                        onClick = {
-                            serverInput = currentFallback
-                            editingSection = DnsServerSection.FALLBACK
+                CupertinoGroupedSection(
+                    header = AppStrings.get("dns_fallback_title", lang),
+                    footer = AppStrings.get("dns_fallback_footer", lang)
+                ) {
+                    if (fallbackList.isEmpty()) {
+                        CupertinoCell(
+                            title = AppStrings.get("dns_server_unset", lang),
+                            showChevron = false
+                        )
+                    } else {
+                        fallbackList.forEachIndexed { index, server ->
+                            DnsServerRow(
+                                server = server,
+                                onEdit = { openEditor(DnsServerSection.FALLBACK, index, server) },
+                                onDelete = {
+                                    applyServers(
+                                        DnsServerSection.FALLBACK,
+                                        fallbackList.filterIndexed { i, _ -> i != index }
+                                    )
+                                }
+                            )
+                            CupertinoIndentedDivider(startIndent = 16.dp)
                         }
+                    }
+                    CupertinoCell(
+                        title = AppStrings.get("dns_server_add", lang),
+                        icon = Icons.Default.Add,
+                        iconBg = IosGreen,
+                        showChevron = false,
+                        onClick = { openEditor(DnsServerSection.FALLBACK, null, "") }
                     )
                 }
             }
@@ -165,8 +226,7 @@ fun DnsSettingsScreen(
                                 checked = currentBlockThirdParty,
                                 onCheckedChange = { checked ->
                                     currentBlockThirdParty = checked
-                                    onSaveDns(currentNameserver, currentFallback, checked)
-                                    applyDnsChanges()
+                                    persistServers(upstreamServers, fallbackList, checked)
                                 }
                             )
                         }
@@ -177,26 +237,41 @@ fun DnsSettingsScreen(
     }
 
     editingSection?.let { section ->
+        val isNew = editingIndex == null
         CupertinoAlertDialog(
             title = AppStrings.get(
-                if (section == DnsServerSection.NAMESERVERS) "dns_nameservers_title" else "dns_fallback_title",
+                if (isNew) "dns_server_add" else "dns_server_edit",
                 lang
             ),
-            confirmText = AppStrings.get("confirm", lang),
+            confirmText = AppStrings.get("action_save", lang),
             dismissText = AppStrings.get("cancel", lang),
             onConfirm = {
                 val server = serverInput.trim()
-                if (section == DnsServerSection.NAMESERVERS) {
-                    currentNameserver = server
-                } else {
-                    currentFallback = server
+                if (server.isNotEmpty()) {
+                    val current = serversOf(section)
+                    val updated = buildList {
+                        addAll(current)
+                        val index = editingIndex
+                        if (index != null && index in current.indices) {
+                            this[index] = server
+                        } else {
+                            add(server)
+                        }
+                    }.distinct()
+                    applyServers(section, updated)
+                    CupertinoToast.show(AppStrings.get("saved_toast", lang))
+                    editingSection = null
+                    editingIndex = null
                 }
-                editingSection = null
-                onSaveDns(currentNameserver, currentFallback, currentBlockThirdParty)
-                applyDnsChanges()
             },
-            onDismiss = { editingSection = null },
-            onDismissRequest = { editingSection = null }
+            onDismiss = {
+                editingSection = null
+                editingIndex = null
+            },
+            onDismissRequest = {
+                editingSection = null
+                editingIndex = null
+            }
         ) {
             Spacer(modifier = Modifier.height(14.dp))
             CupertinoTextField(
@@ -207,6 +282,37 @@ fun DnsSettingsScreen(
             )
         }
     }
+}
+
+@Composable
+private fun DnsServerRow(
+    server: String,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val lang = LocalAppLanguage.current
+    CupertinoCell(
+        title = server,
+        showChevron = false,
+        onClick = onEdit,
+        trailing = {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onDelete),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = AppStrings.get("profile_delete", lang),
+                    tint = RedDanger,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+        },
+        modifier = Modifier.padding(end = 4.dp)
+    )
 }
 
 @Preview(name = "Light Mode", showBackground = true, showSystemUi = true)

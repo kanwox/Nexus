@@ -13,6 +13,10 @@
     <!-- In-app APK updates downloaded from GitHub Releases -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Only the QR scanner needs the camera: keep the app installable on devices without one. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:name=".MihomoApplication"

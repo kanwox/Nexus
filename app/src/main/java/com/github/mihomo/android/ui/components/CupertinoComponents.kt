@@ -1396,7 +1396,7 @@ fun CupertinoModalBottomSheet(
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     title: String? = null,
-    doneText: String? = "完成",
+    doneText: String? = AppStrings.get("action_done", LocalAppLanguage.current),
     leadingAction: (@Composable () -> Unit)? = null,
     trailingAction: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit

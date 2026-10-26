@@ -63,10 +63,26 @@ data class BackupData(
  */
 object BackupManager {
     private const val TAG = "BackupManager"
+    private const val MAX_BACKUP_BYTES = 50L * 1024 * 1024
 
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
+    }
+
+    /** Bounded read: a malformed/huge backup must fail cleanly instead of OOMing the process. */
+    private fun readBounded(input: InputStream, tooLargeMessage: String): String {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > MAX_BACKUP_BYTES) error(tooLargeMessage)
+            out.write(buffer, 0, read)
+        }
+        return out.toString("UTF-8")
     }
 
     /**
@@ -130,8 +146,12 @@ object BackupManager {
      * so profile script bindings are remapped old-id -> new-id; profiles are then created
      * with [ConfigManager.saveLocalProfile] and enriched via [ConfigManager.updateProfile].
      */
-    fun importBackup(context: Context, input: InputStream): Result<Int> = runCatching {
-        val text = input.use { stream -> stream.bufferedReader(Charsets.UTF_8).readText() }
+    fun importBackup(
+        context: Context,
+        input: InputStream,
+        tooLargeMessage: String = "Backup file is too large"
+    ): Result<Int> = runCatching {
+        val text = input.use { stream -> readBounded(stream, tooLargeMessage) }
         val data = json.decodeFromString<BackupData>(text)
         var imported = 0
 

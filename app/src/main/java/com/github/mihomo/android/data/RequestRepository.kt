@@ -152,7 +152,7 @@ object RequestRepository {
         chains.firstOrNull()?.equals("REJECT", ignoreCase = true) == true
 
     private fun resolveAppLabel(conn: MihomoApi.ApiConnection): Pair<String, String?> {
-        val resolver = uidResolver ?: return "系统" to null
+        val resolver = uidResolver ?: return "" to null
         val uid = runCatching {
             resolver(
                 if (conn.network == "UDP") android.system.OsConstants.IPPROTO_UDP
@@ -161,7 +161,7 @@ object RequestRepository {
                 "${conn.destinationIp.ifBlank { conn.host }}:${conn.destinationPort}"
             )
         }.getOrDefault(0)
-        if (uid <= 0) return "系统" to null
+        if (uid <= 0) return "" to null
         synchronized(uidLabelCache) {
             uidLabelCache[uid]?.let { return it }
         }

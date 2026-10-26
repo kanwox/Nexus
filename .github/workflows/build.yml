@@ -11,10 +11,16 @@ on:
 permissions:
   contents: write
 
+# A newer push supersedes an in-flight build of the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
@@ -37,13 +43,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # detekt fails the build on any issue (ignoreFailures = false in app/build.gradle.kts),
-      # so this gate is meaningful.
+      # All three gates must stay green; they are also what CONTRIBUTING-level local
+      # checks run (`./gradlew testDebugUnitTest detekt lintDebug`).
       - name: Static analysis (detekt)
         run: ./gradlew detekt --no-configuration-cache
 
       - name: Unit tests
         run: ./gradlew testDebugUnitTest --no-configuration-cache
+
+      - name: Android lint
+        run: ./gradlew lintDebug --no-configuration-cache
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon
@@ -85,6 +94,23 @@ jobs:
             echo "RELEASE_IS_PRERELEASE=false" >> "$GITHUB_ENV"
           fi
 
+      # Release notes live in CHANGELOG.md (Keep a Changelog format). The workflow extracts
+      # the section matching the current versionName, so a release body can never drift from
+      # the code again. Bump versionName in app/build.gradle.kts and add the matching
+      # "## [x.y.z]" section in the same commit.
+      - name: Extract Release Notes
+        run: |
+          mkdir -p build_output
+          awk -v ver="$VERSION_NAME" '
+            $0 ~ "^## \\[" ver "\\]" { in_section = 1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > build_output/release-notes.md
+          if [ ! -s build_output/release-notes.md ]; then
+            printf 'See CHANGELOG.md for the full release history.\n' > build_output/release-notes.md
+          fi
+          cat build_output/release-notes.md
+
       # Publishes the APK as a GitHub release for the version tag. Tags with a pre-release
       # marker (v1.0.4-Alpha.1, v1.0.1-Beta.2, v2.0.0-RC1, …) are marked as pre-releases.
       - name: Publish Automatic Release
@@ -93,51 +119,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
-          body: |
-            ### Changes in v1.0.5-Alpha.1
-
-            First preview of the next feature release, focused on correctness fixes and moving observation, providers and connection data onto the core's external-controller REST API.
-
-            #### Added
-            - external-controller data source: the injected config now enables the controller (loopback-only, random per-process secret; subscriptions cannot override it). Request records, core status and providers come from the structured REST API instead of regex-parsed core logs.
-            - Core status screen (dashboard "Core" shortcut): version, active connections, memory, uptime, total traffic and a per-host traffic ranking.
-            - Providers: proxy and rule provider lists with vehicle type, item count, last-update time and manual update buttons.
-            - Node details: long-press a proxy card for protocol, UDP support, availability and the last 12 latency samples, plus test/select actions.
-            - Subscription auto-update: background WorkManager scheduling with a per-subscription interval (30 minutes to 3 days); toggle and interval picker on each profile.
-            - Subscription info: used/total progress bar (color-coded) and expiry countdown on profile cards.
-            - Per-profile overrides: prepend rules, hosts mapping and DNS upstream override, applied inside a single YAML pass so they cannot be defeated by key quoting.
-            - Rule tester: enter a domain or IP on the rules screen for an instant local match (DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR incl. IPv6).
-            - DNS upstream editor: add/remove upstream and fallback servers individually.
-            - QR import: scan a subscription QR code with the camera and auto-fill the add dialog.
-            - Backup & restore: export/import a JSON backup containing all profiles (with metadata and ordering), scripts including their code, and every setting.
-            - Script template library: blank script, ad-domain blocker, custom DNS upstream and node renamer.
-            - App lock (Face/fingerprint/device credential) and screenshot/recents-preview protection.
-            - Dashboard: live throughput chart (last 120 seconds) and a connections/memory/total-traffic stats row.
-            - Request screen: filter by app and by protocol (TCP/UDP), real per-connection byte counters, and "close connection" now actually asks the core to drop it.
-            - In-app updates: download the release APK and launch the installer directly, with unknown-sources permission guidance.
-            - Mode switching (rule/global/direct) now patches the running core (PATCH /configs) instead of reloading the config, so the tunnel stays up.
-
-            #### Fixed
-            - DNS leak: new "block third-party plaintext DNS" switch (default off) rejects outbound UDP:53 to any address except the tunnel's own resolver, so apps with hardcoded DNS fall back to the system resolver the tunnel controls.
-            - Physical-network IPv6 DNS servers are no longer dropped; IPv6-only networks no longer fall back to hardcoded resolvers.
-            - Kill switch (default on): app traffic is blocked while the tunnel is not connected, closing the reconnect leak window; a separate "allow apps to bypass VPN" switch keeps casting/printers working.
-            - Script scope: profiles with no bound scripts no longer silently run every enabled script (existing profiles are migrated once so behavior is preserved); empty bindings now mean "no scripts".
-            - Config synthesis is serialized with a mutex — a UI-triggered reload and a VPN start can no longer interleave and clobber config.yaml.
-            - Subscription URL validation: new "allow LAN subscription URLs" switch (default on); when off, private-range (192.168/10/172.16/loopback) targets are rejected. Link-local (cloud metadata) targets are always rejected.
-            - Removed the pointless `www.google.com/generate_204` fake-ip-filter entry.
-            - The quick-settings tile no longer shows the opposite of the real state during start/stop transitions.
-            - Dashboard "Rules" shortcut shows 0 when the config has no rules (was hardcoded to "1").
-
-            #### Changed
-            - Mixed port and TUN MTU are configurable (were hardcoded 7890/9000).
-            - System notification strings fully localized (简体中文 / English / Русский); a denied notification permission now explains the consequence.
-            - Core logs: pause/resume and a confirmation dialog before clearing.
-            - Profiles support long-press drag to reorder.
-
-            #### Upgrade notes
-            - Coming from 1.0.4: nothing to do — profiles that relied on "all enabled scripts apply" are backfilled automatically on first launch.
-            - Kill switch is on by default; apps being blocked for the brief moment a reconnect is pending is expected. Turn it off under Settings → Network & Core if needed.
-            - The request screen relies on the external-controller, which is injected automatically (nothing to configure); it stays empty while the core is not running.
+          body_path: build_output/release-notes.md
           draft: false
           prerelease: ${{ env.RELEASE_IS_PRERELEASE == 'true' }}
           files: build_output/*.apk

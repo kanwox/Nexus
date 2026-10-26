@@ -40,7 +40,9 @@ object ApiController {
     @Synchronized
     fun acquire(): Boolean {
         if (isReady) return true
-        for (candidate in 9090..9099) {
+        // A wider window makes a silent "controller disabled" state unlikely when other
+        // local tools already hold one of the usual Clash ports.
+        for (candidate in 9090..9199) {
             runCatching {
                 ServerSocket(candidate, 1, InetAddress.getByName("127.0.0.1")).use { }
             }.onSuccess {
@@ -52,6 +54,15 @@ object ApiController {
         return false
     }
 }
+
+/**
+ * Percent-encodes a single REST path segment. [java.net.URLEncoder] writes `+` for spaces,
+ * but `+` is only decoded as a space inside query strings; the controller's router treats
+ * it literally, so any node/provider whose name contains a space (most real subscriptions)
+ * failed to resolve. `%20` is unambiguous in both paths and queries.
+ */
+internal fun encodePathSegment(value: String): String =
+    java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
 /** Structured access to the core's REST API (external-controller on loopback, Bearer secret). */
 object MihomoApi {
@@ -141,13 +152,13 @@ object MihomoApi {
     fun proxies(): JsonObject? = getJson("/proxies")
 
     fun proxyDetail(name: String): ApiProxy? {
-        val encoded = java.net.URLEncoder.encode(name, "UTF-8")
+        val encoded = encodePathSegment(name)
         val obj = getJson("/proxies/$encoded") ?: return null
         return parseProxy(obj)
     }
 
     fun selectProxy(group: String, name: String): Boolean {
-        val encoded = java.net.URLEncoder.encode(group, "UTF-8")
+        val encoded = encodePathSegment(group)
         val body = buildJsonObject { put("name", name) }.toString().toRequestBody(jsonBody)
         return runCatching {
             client.newCall(requestBuilder("/proxies/$encoded").put(body).build()).execute().use { it.isSuccessful }
@@ -160,7 +171,7 @@ object MihomoApi {
     }
 
     fun closeConnection(id: String): Boolean {
-        val encoded = java.net.URLEncoder.encode(id, "UTF-8")
+        val encoded = encodePathSegment(id)
         return runCatching {
             client.newCall(requestBuilder("/connections/$encoded").delete().build()).execute().use { it.isSuccessful }
         }.getOrDefault(false)
@@ -202,7 +213,7 @@ object MihomoApi {
     fun updateRuleProvider(name: String): Boolean = updateProvider("rules", name)
 
     private fun updateProvider(kind: String, name: String): Boolean {
-        val encoded = java.net.URLEncoder.encode(name, "UTF-8")
+        val encoded = encodePathSegment(name)
         return runCatching {
             client.newCall(requestBuilder("/providers/$kind/$encoded").put(byteArrayOf().toRequestBody(jsonBody)).build())
                 .execute().use { it.isSuccessful }

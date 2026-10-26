@@ -23,11 +23,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import com.github.mihomo.android.ui.theme.AppStrings
 
 private const val TAG = "ProxiesViewModel"
 
@@ -120,6 +123,10 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         parseJob = viewModelScope.launch(Dispatchers.IO) {
             val savedMap = settings.getAllSelectedNodes()
             val parsed = ProfileParser.parse(active?.file, savedMap, app())
+            // ProfileParser has no suspension points, so a cancel issued while switching
+            // profiles would otherwise be ignored and the stale result would overwrite the
+            // newer parse. Check explicitly before publishing.
+            currentCoroutineContext().ensureActive()
             parsedProfile = parsed
             proxyGroups = parsed.groupNames
             if (selectedGroupName.isBlank() || !parsed.groupNames.contains(selectedGroupName)) {
@@ -495,13 +502,18 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
         if (parsedProfile.groups.containsKey(nodeName) || liveGroupMap.containsKey(nodeName)) {
             addTesting(scopedKey)
-            val job = runSpeedTestForGroup(nodeName, isAutoTest = false)
-            job.invokeOnCompletion {
-                val resolved = delayCache[nodeName]
-                if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
-                    delayCache["$groupName:$nodeName"] = resolved
+            // join() instead of invokeOnCompletion: the public one-argument overload is
+            // ambiguous to static analysis (the 3-arg overload is @InternalCoroutinesApi).
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    runSpeedTestForGroup(nodeName, isAutoTest = false).join()
+                    val resolved = delayCache[nodeName]
+                    if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
+                        delayCache["$groupName:$nodeName"] = resolved
+                    }
+                } finally {
+                    removeTesting(scopedKey)
                 }
-                removeTesting(scopedKey)
             }
             return
         }
@@ -597,7 +609,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         settings.selectedProfileId = profile.id
         parseActiveProfile()
         reloadCoreAndRefresh(coreActive)
-        CupertinoToast.show("已生效配置: ${profile.name}")
+        CupertinoToast.show(
+            AppStrings.get("profile_activated", settings.appLanguage).replace("{name}", profile.name)
+        )
     }
 
     fun addSubscription(name: String, url: String) {
@@ -605,9 +619,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             val res = ConfigManager.downloadSubscription(app(), url, name)
             if (res.isSuccess) {
                 reloadProfiles()
-                CupertinoToast.show("订阅添加成功")
+                CupertinoToast.show(AppStrings.get("subscription_added", settings.appLanguage))
             } else {
-                CupertinoToast.show("下载失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
+                CupertinoToast.show(
+                    AppStrings.get("download_failed", settings.appLanguage)
+                        .replace("{msg}", res.exceptionOrNull()?.message ?: ""),
+                    isDestructive = true
+                )
             }
         }
     }
@@ -621,9 +639,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                 if (selectedProfileId == profile.id) {
                     reloadCoreAndRefresh(coreActive)
                 }
-                CupertinoToast.show("订阅更新成功")
+                CupertinoToast.show(AppStrings.get("subscription_updated", settings.appLanguage))
             } else {
-                CupertinoToast.show("更新失败: ${res.exceptionOrNull()?.message}", isDestructive = true)
+                CupertinoToast.show(
+                    AppStrings.get("update_failed", settings.appLanguage)
+                        .replace("{msg}", res.exceptionOrNull()?.message ?: ""),
+                    isDestructive = true
+                )
             }
         }
     }

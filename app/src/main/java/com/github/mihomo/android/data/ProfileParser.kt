@@ -4,9 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
-import org.yaml.snakeyaml.LoaderOptions
-import org.yaml.snakeyaml.Yaml
-import org.yaml.snakeyaml.constructor.SafeConstructor
 import java.io.File
 
 data class ParsedRule(
@@ -28,13 +25,6 @@ data class ParsedProfile(
 
 object ProfileParser {
     private const val TAG = "ProfileParser"
-
-    private val yaml: Yaml by lazy {
-        val loaderOptions = LoaderOptions().apply {
-            codePointLimit = 100 * 1024 * 1024 // 100 MB safe limit
-        }
-        Yaml(SafeConstructor(loaderOptions))
-    }
 
     private data class CacheEntry(
         val lastModified: Long,
@@ -102,6 +92,9 @@ object ProfileParser {
         }
 
         try {
+            // SnakeYAML instances carry per-load parser state and are not thread-safe; a new
+            // one per parse keeps the UI parse and a background loader from corrupting it.
+            val yaml = YamlSupport.create()
             val data = runCatching { yaml.load<Map<String, Any?>>(content) }.getOrNull()
             if (data == null) {
                 return parseFallback(content, savedNodes)

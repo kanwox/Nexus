@@ -246,7 +246,7 @@ fun VpnTunnelScreen(
             title = AppStrings.get("settings_mixed_port", lang),
             initialValue = mixedPort,
             range = 1024..65535,
-            rangeHint = localeRangeText(lang, "端口需在 1024 - 65535 之间", "Port must be between 1024 and 65535"),
+            rangeHint = AppStrings.get("port_range_hint", lang),
             onConfirm = {
                 onMixedPortChanged(it)
                 showMixedPortDialog = false
@@ -260,7 +260,7 @@ fun VpnTunnelScreen(
             title = AppStrings.get("settings_tun_mtu", lang),
             initialValue = tunMtu,
             range = 1280..65535,
-            rangeHint = localeRangeText(lang, "MTU 需在 1280 - 65535 之间", "MTU must be between 1280 and 65535"),
+            rangeHint = AppStrings.get("mtu_range_hint", lang),
             onConfirm = {
                 onTunMtuChanged(it)
                 showTunMtuDialog = false
@@ -286,11 +286,6 @@ private fun TunStackCell(
         showChevron = true,
         onClick = onClick
     )
-}
-
-private fun localeRangeText(lang: String, zh: String, en: String): String {
-    val effective = if (lang == "SYSTEM") java.util.Locale.getDefault().language else lang
-    return if (effective.startsWith("zh", ignoreCase = true)) zh else en
 }
 
 /** Cupertino alert with a numeric-only text field, validated against [range] on confirm. */

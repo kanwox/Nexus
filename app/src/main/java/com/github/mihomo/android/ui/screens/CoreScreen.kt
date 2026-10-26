@@ -20,6 +20,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,8 +38,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.github.kr328.clash.core.util.rawDownload
-import com.github.kr328.clash.core.util.rawUpload
 import com.github.kr328.clash.core.util.trafficString
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.MihomoApi
@@ -75,35 +75,40 @@ private val RuleProviderIcon: ImageVector = Icons.Default.Dns
 fun CoreScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val lang = com.github.mihomo.android.ui.theme.LocalAppLanguage.current
-    val vpnState by MihomoVpnService.vpnState.collectAsStateWithLifecycle()
-    val isRunning = vpnState.status == VpnState.Status.RUNNING
+    // Collect the full state once, but derive every value the page actually reads. Reading
+    // vpnState directly here would recompose the whole page (providers, ranking, …) on every
+    // once-per-second traffic tick; the derived states only invalidate when their value changes.
+    val vpnState = MihomoVpnService.vpnState.collectAsStateWithLifecycle()
+    val isRunning by remember { derivedStateOf { vpnState.value.status == VpnState.Status.RUNNING } }
+    val runningCoreVersion by remember { derivedStateOf { vpnState.value.coreVersion } }
+    val startedAtMs by remember { derivedStateOf { vpnState.value.startedAtMs } }
+    val totalTraffic = remember {
+        derivedStateOf { vpnState.value.totalUp to vpnState.value.totalDown }
+    }
     val connectionsCount by RequestRepository.activeCountFlow.collectAsStateWithLifecycle()
     val records by RequestRepository.recordsFlow.collectAsStateWithLifecycle()
 
     var memoryBytes by remember { mutableStateOf<Long?>(null) }
     var apiVersion by remember { mutableStateOf<String?>(null) }
+    var fallbackVersion by remember { mutableStateOf("") }
     var proxyProviders by remember { mutableStateOf<List<MihomoApi.ApiProvider>>(emptyList()) }
     var ruleProviders by remember { mutableStateOf<List<MihomoApi.ApiProvider>>(emptyList()) }
     var updatingNames by remember { mutableStateOf(setOf<String>()) }
-    var startedAtMs by remember { mutableLongStateOf(0L) }
-    var uptimeTickMs by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { fallbackVersion = ClashCore.getCoreVersion() }
+    }
 
     LaunchedEffect(isRunning) {
         if (isRunning) {
-            if (startedAtMs == 0L) {
-                startedAtMs = System.currentTimeMillis()
-                uptimeTickMs = startedAtMs
-            }
             while (isActive) {
                 withContext(Dispatchers.IO) {
                     memoryBytes = MihomoApi.memoryInuse()
                     if (apiVersion == null) apiVersion = MihomoApi.version()
                 }
-                uptimeTickMs = System.currentTimeMillis()
                 delay(3000L)
             }
         } else {
-            startedAtMs = 0L
             memoryBytes = null
         }
     }
@@ -153,7 +158,7 @@ fun CoreScreen(onBack: () -> Unit) {
             CupertinoGroupedSection(title = AppStrings.current("core_title")) {
                 InfoRow(
                     AppStrings.current("core_version"),
-                    apiVersion ?: vpnState.coreVersion.ifBlank { ClashCore.getCoreVersion() }
+                    apiVersion ?: runningCoreVersion.ifBlank { fallbackVersion.ifBlank { "—" } }
                 )
                 CupertinoIndentedDivider()
                 InfoRow(
@@ -166,20 +171,9 @@ fun CoreScreen(onBack: () -> Unit) {
                     memoryBytes?.takeIf { it > 0L }?.let { trafficString(it) } ?: "—"
                 )
                 CupertinoIndentedDivider()
-                InfoRow(
-                    AppStrings.current("core_uptime"),
-                    if (isRunning && startedAtMs > 0L) {
-                        formatUptime(uptimeTickMs - startedAtMs)
-                    } else {
-                        "—"
-                    }
-                )
+                UptimeInfoRow(startedAtMs = startedAtMs, isRunning = isRunning, lang = lang)
                 CupertinoIndentedDivider()
-                val total = ClashCore.queryTrafficTotal()
-                InfoRow(
-                    AppStrings.current("core_total_traffic"),
-                    "↑ ${trafficString(total.rawUpload())}   ↓ ${trafficString(total.rawDownload())}"
-                )
+                TotalTrafficInfoRow(totalTraffic)
             }
 
             Spacer(Modifier.height(20.dp))
@@ -347,6 +341,32 @@ private fun InfoRow(label: String, value: String) {
     }
 }
 
+/**
+ * Uptime is the only value that changes every second, so it owns its ticker inside a child
+ * composable; the surrounding core page is not recomposed on every tick.
+ */
+@Composable
+private fun UptimeInfoRow(startedAtMs: Long, isRunning: Boolean, lang: String) {
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(isRunning, startedAtMs) {
+        while (isActive && isRunning) {
+            nowMs = System.currentTimeMillis()
+            delay(1000L)
+        }
+    }
+    InfoRow(
+        AppStrings.get("core_uptime", lang),
+        if (isRunning && startedAtMs > 0L) formatUptime(nowMs - startedAtMs, lang) else "—"
+    )
+}
+
+/** Reads the traffic strings here so only this row recomposes as bytes accumulate. */
+@Composable
+private fun TotalTrafficInfoRow(totalTraffic: State<Pair<String, String>>) {
+    val (up, down) = totalTraffic.value
+    InfoRow(AppStrings.current("core_total_traffic"), "↑ $up   ↓ $down")
+}
+
 @Composable
 private fun ProviderRow(
     icon: ImageVector,
@@ -355,6 +375,7 @@ private fun ProviderRow(
     updating: Boolean,
     onUpdate: () -> Unit
 ) {
+    val lang = com.github.mihomo.android.ui.theme.LocalAppLanguage.current
     CupertinoCell(
         title = provider.name,
         subtitle = buildString {
@@ -366,7 +387,7 @@ private fun ProviderRow(
             append(provider.vehicleType)
             append(" · ")
             append(
-                if (provider.updatedAtMs > 0L) relativeTime(provider.updatedAtMs)
+                if (provider.updatedAtMs > 0L) relativeTime(provider.updatedAtMs, lang)
                 else AppStrings.current("core_provider_never")
             )
         },
@@ -393,24 +414,28 @@ private fun ProviderRow(
     )
 }
 
-private fun relativeTime(timestampMs: Long): String {
+private fun relativeTime(timestampMs: Long, lang: String): String {
     val diff = System.currentTimeMillis() - timestampMs
     val minutes = diff / 60_000L
     return when {
-        minutes < 1L -> "刚刚"
-        minutes < 60L -> "$minutes 分钟前"
-        minutes < 60L * 24L -> "${minutes / 60L} 小时前"
-        else -> "${minutes / 60L / 24L} 天前"
+        minutes < 1L -> AppStrings.get("time_just_now", lang)
+        minutes < 60L -> AppStrings.get("time_minutes_ago", lang).replace("{n}", minutes.toString())
+        minutes < 60L * 24L ->
+            AppStrings.get("time_hours_ago", lang).replace("{n}", (minutes / 60L).toString())
+        else ->
+            AppStrings.get("time_days_ago", lang).replace("{n}", (minutes / 60L / 24L).toString())
     }
 }
 
-private fun formatUptime(durationMs: Long): String {
-    val seconds = durationMs / 1000L
+private fun formatUptime(durationMs: Long, lang: String): String {
+    val seconds = (durationMs / 1000L).coerceAtLeast(0L)
     val hours = seconds / 3600L
     val minutes = (seconds % 3600L) / 60L
     return when {
-        hours > 0L -> "$hours 小时 $minutes 分"
-        minutes > 0L -> "$minutes 分钟"
-        else -> "$seconds 秒"
+        hours > 0L -> AppStrings.get("uptime_hours", lang)
+            .replace("{h}", hours.toString())
+            .replace("{m}", minutes.toString())
+        minutes > 0L -> AppStrings.get("uptime_minutes", lang).replace("{m}", minutes.toString())
+        else -> AppStrings.get("uptime_seconds", lang).replace("{s}", seconds.toString())
     }
 }

@@ -40,6 +40,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.github.mihomo.android.ui.theme.AppStrings
 
 data class VpnState(
     val status: Status = Status.STOPPED,
@@ -48,7 +50,9 @@ data class VpnState(
     val totalUp: String = "0 B",
     val totalDown: String = "0 B",
     val coreVersion: String = "",
-    val error: String? = null
+    val error: String? = null,
+    /** Wall-clock time the tunnel reached RUNNING; 0 when it is not running. */
+    val startedAtMs: Long = 0L
 ) {
     enum class Status {
         STOPPED, STARTING, RUNNING, STOPPING
@@ -81,7 +85,10 @@ class MihomoVpnService : VpnService() {
         }
 
         fun restart(context: Context) {
-            if (_vpnState.value.status != VpnState.Status.RUNNING) return
+            val status = _vpnState.value.status
+            // A restart requested while STARTING must not be dropped: the tunnel is already
+            // being built from stale settings, so queue it instead of ignoring the change.
+            if (status != VpnState.Status.RUNNING && status != VpnState.Status.STARTING) return
             val intent = Intent(context, MihomoVpnService::class.java).apply {
                 action = ACTION_RESTART
             }
@@ -245,14 +252,16 @@ class MihomoVpnService : VpnService() {
     }
 
     private fun restartVpn() {
-        if (_vpnState.value.status == VpnState.Status.STOPPED) {
-            startVpn()
-            return
+        when (_vpnState.value.status) {
+            VpnState.Status.STOPPED -> startVpn()
+            // Tear down asynchronously (stopTun is a blocking JNI call) and start again from
+            // closeTunnel once the old tunnel is fully gone.
+            VpnState.Status.STARTING, VpnState.Status.RUNNING -> {
+                pendingStartAfterStop = true
+                stopVpn()
+            }
+            VpnState.Status.STOPPING -> pendingStartAfterStop = true
         }
-        // Tear down asynchronously (stopTun is a blocking JNI call) and start again from
-        // closeTunnel once the old tunnel is fully gone.
-        pendingStartAfterStop = true
-        stopVpn()
     }
 
     private fun startVpn() {
@@ -268,8 +277,14 @@ class MihomoVpnService : VpnService() {
             return
         }
 
-        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STARTING, error = null)
-        startForegroundServiceNotification("启动 Nexus 核心")
+        val settings = SettingsManager(this)
+        val appLanguage = settings.appLanguage
+        _vpnState.value = _vpnState.value.copy(
+            status = VpnState.Status.STARTING,
+            error = null,
+            startedAtMs = 0L
+        )
+        startForegroundServiceNotification(AppStrings.get("notification_starting_core", appLanguage))
 
         startJob = serviceScope.launch {
             try {
@@ -278,22 +293,36 @@ class MihomoVpnService : VpnService() {
                 val coreVer = ClashCore.getCoreVersion()
 
                 // 2. Select and prepare configuration
-                val settings = SettingsManager(this@MihomoVpnService)
                 val profiles = ConfigManager.getProfiles(this@MihomoVpnService)
                 val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
                 if (activeProfile != null && activeProfile.id != settings.selectedProfileId) {
                     com.github.mihomo.android.data.LogRepository.addLog(
                         "warning",
-                        "选中的配置不存在，已回退到 ${activeProfile.name}"
+                        AppStrings.get("profile_fallback_missing", appLanguage)
+                            .replace("{name}", activeProfile.name)
                     )
                 }
 
-                val configFile = ConfigManager.prepareConfig(this@MihomoVpnService, activeProfile?.file)
+                // Per-app whitelist with nothing selected used to fall through to "route every
+                // app", which is the opposite of the label. Fail fast with an explicit reason
+                // instead of silently proxying apps the user meant to leave alone.
+                if (settings.perAppProxyMode == PerAppProxyMode.WHITELIST &&
+                    settings.selectedPackages.none { it != packageName }
+                ) {
+                    error(AppStrings.get("whitelist_empty", appLanguage))
+                }
+
+                val configFile = withContext(Dispatchers.IO) {
+                    ConfigManager.prepareConfig(this@MihomoVpnService, activeProfile?.file)
+                }
 
                 // 3. Load config into core
                 val loadRes = ClashCore.load(configFile, activeProfile?.id)
                 if (loadRes.isFailure) {
-                    error("加载配置文件失败: ${loadRes.exceptionOrNull()?.message}")
+                    error(
+                        AppStrings.get("vpn_error_load_config", appLanguage)
+                            .replace("{msg}", loadRes.exceptionOrNull()?.message ?: "unknown")
+                    )
                 }
                 // From here on the coroutine never suspends, so a stop request must be able to
                 // abort before we establish the TUN interface; otherwise it would tear down
@@ -356,13 +385,10 @@ class MihomoVpnService : VpnService() {
                     val packages = settings.selectedPackages
                     when (settings.perAppProxyMode) {
                         PerAppProxyMode.WHITELIST -> {
-                            val allowed = packages.filter { it != packageName }
-                            if (allowed.isEmpty()) {
-                                runCatching { addDisallowedApplication(packageName) }
-                            } else {
-                                allowed.forEach { pkg ->
-                                    runCatching { addAllowedApplication(pkg) }
-                                }
+                            // startVpn() already rejects an empty whitelist, so there is no
+                            // silent "no allowed apps -> route everything" fallback here.
+                            packages.filter { it != packageName }.forEach { pkg ->
+                                runCatching { addAllowedApplication(pkg) }
                             }
                         }
                         PerAppProxyMode.BLACKLIST -> {
@@ -377,7 +403,8 @@ class MihomoVpnService : VpnService() {
                     }
                 }
 
-                val pfd = builder.establish() ?: error("无法建立 VPN TUN 接口 (Builder.establish() 返回 null)")
+                val pfd = builder.establish()
+                    ?: error(AppStrings.get("vpn_error_establish_tun", appLanguage))
                 if (!isActive) {
                     // vpnInterface is not assigned yet, so this is the only place that can
                     // release the freshly established fd before the cancellation aborts us.
@@ -411,7 +438,8 @@ class MihomoVpnService : VpnService() {
                 _vpnState.value = _vpnState.value.copy(
                     status = VpnState.Status.RUNNING,
                     coreVersion = coreVer,
-                    error = null
+                    error = null,
+                    startedAtMs = System.currentTimeMillis()
                 )
 
                 // Structured connection tracking via the external-controller API.
@@ -430,16 +458,24 @@ class MihomoVpnService : VpnService() {
                     updateNotification("\u2191 0 B/s   \u2193 0 B/s")
                 }
                 Log.i(TAG, "Nexus VPN successfully started! Core: $coreVer")
-                com.github.mihomo.android.data.LogRepository.addLog("info", "Nexus VPN 已成功建立！核心版本: $coreVer")
+                com.github.mihomo.android.data.LogRepository.addLog(
+                    "info",
+                    AppStrings.get("log_vpn_started", appLanguage).replace("{version}", coreVer)
+                )
 
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to start Nexus VPN", e)
-                com.github.mihomo.android.data.LogRepository.addLog("error", "启动失败: ${e.message}")
+                val message = e.message?.takeIf { it.isNotBlank() }
+                    ?: AppStrings.get("vpn_error_unknown", appLanguage)
+                com.github.mihomo.android.data.LogRepository.addLog(
+                    "error",
+                    AppStrings.get("log_vpn_start_failed", appLanguage).replace("{msg}", message)
+                )
                 _vpnState.value = _vpnState.value.copy(
                     status = VpnState.Status.STOPPED,
-                    error = e.message ?: "未知启动错误"
+                    error = message
                 )
                 stopSelf()
             }
@@ -610,6 +646,13 @@ class MihomoVpnService : VpnService() {
         com.github.mihomo.android.data.RequestRepository.stopPolling()
         unregisterScreenStateReceiver()
         unregisterPhysicalNetworkCallback()
+        // The screen-state receiver lives only as long as this service. Without this reset a
+        // teardown while the screen is off left LogRepository (and the native core) gated off
+        // forever. Refresh both from the authoritative PowerManager state instead of blindly
+        // clearing them, so an actually-off screen keeps its battery-saving gate.
+        val interactive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
+        com.github.mihomo.android.data.LogRepository.isScreenOff = !interactive
+        ClashCore.setSuspended(!interactive)
         trafficMonitorJob?.cancel()
         startJob?.cancel()
         serviceScope.cancel()
