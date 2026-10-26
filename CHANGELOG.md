@@ -9,6 +9,36 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.5-Alpha.5] - 2026-10-27
+
+### Performance & UI optimization
+
+- **Recomposition storm mitigation**: Completely removed global `delayCache` queries from
+  `MainAppScreen` and `DashboardScreen`'s `derivedStateOf`. Node latency updates now bind
+  locally to individual node cards in `ProxiesScreen` and the quick-switch sheet, eliminating
+  UI stutter, frame drops, and battery heating during concurrent group health checks.
+- **Request repository polling budget**: Switched connection polling to an adaptive schedule
+  (1s when UI is visible, 5s when running in background or screen is off), cutting background
+  CPU wakeups and power usage by up to 80%.
+
+### Security & reliability
+
+- **Global scripting master switch honored**: `SettingsManager.scriptingEnabled` is now strictly
+  checked in `ConfigManager.prepareConfig` and `ProfileParser`, ensuring that disabling scripts
+  globally always takes immediate effect.
+- **Subscription update corrupt/HTML payload guard**: Added `isValidSubscriptionPayload`
+  pre-validation to reject Cloudflare challenge pages, 200 HTML error responses, or truncated
+  bodies before writing to disk, protecting existing working profiles from corruption.
+- **Injected config header & listeners hardening**: Protected `listeners` and `sub-rules`
+  from untrusted subscription override, and enforced whitelist sanitization for `tunnelMode`,
+  `logLevel`, and `mixedPort` in `buildRuntimeHeader`.
+- **QuickJS 64MB memory limit**: Enforced a 64 MB heap limit on `QuickJs` to prevent runaway
+  or memory-leaking JS scripts from exhausting native RAM.
+
+### Changed
+
+- `versionName` 1.0.5-Alpha.5 / `versionCode` 21.
+
 ## [1.0.5-Alpha.4] - 2026-10-26
 
 ### Stability & performance

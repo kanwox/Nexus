@@ -59,7 +59,9 @@ object ProfileParser {
         } else null
         // Explicit bindings win; an empty list means no scripts apply (legacy profiles are
         // backfilled once in MihomoApplication so old "run everything enabled" setups survive).
-        val resolvedScriptIds = if (context != null && activeProfile != null && activeProfile.scriptEnabled) {
+        // Honors the global scriptingEnabled master switch in Settings.
+        val allowScripts = (context != null) && SettingsManager(context).scriptingEnabled
+        val resolvedScriptIds = if (allowScripts && activeProfile?.scriptEnabled == true) {
             activeProfile.scriptIds
         } else emptyList()
         val scriptKey = resolvedScriptIds.sorted().joinToString(",")

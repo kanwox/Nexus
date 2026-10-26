@@ -23,6 +23,7 @@ import org.yaml.snakeyaml.Yaml
 object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
     private const val SCRIPT_TIMEOUT_MS = 5_000L
+    private const val SCRIPT_MEMORY_LIMIT_BYTES = 64L * 1024 * 1024 // 64 MB heap limit
 
     // Detection of a JS entry point. A plain substring check for "main" misfired on YAML
     // containing e.g. "maintain", but the first tightened regex overcorrected and also
@@ -540,6 +541,7 @@ object ConfigScriptEngine {
                 // a native `while (true) {}` spin loop, so a runaway script can no longer
                 // leak a spinning thread and its runtime memory past the timeout.
                 quickJs.evaluationTimeoutMillis = scriptTimeoutMs
+                quickJs.memoryLimit = SCRIPT_MEMORY_LIMIT_BYTES
                 quickJs.define("console") {
                     function("log") { args -> pushConsoleLog(logs, "LOG", args) }
                     function("info") { args -> pushConsoleLog(logs, "INFO", args) }

@@ -102,6 +102,39 @@ object ConfigManager {
         return text
     }
 
+    private val HTML_ERROR_INDICATORS = listOf("<!doctype html", "<html", "<head>", "cf-browser-verification")
+    private val YAML_KEY_INDICATORS = listOf("proxies:", "Proxy:", "proxy-groups:", "rules:", "proxy-providers:")
+    private val PROTOCOL_PREFIXES = listOf("vmess://", "vless://", "ss://", "trojan://", "hysteria://", "hysteria2://")
+
+    /** Pre-validates subscription response to reject HTML error pages, Cloudflare captchas, or corrupted payloads. */
+    internal fun isValidSubscriptionPayload(content: String): Boolean {
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return false
+        val lower = trimmed.lowercase()
+        // Reject obvious HTML error / Cloudflare challenge pages
+        if (HTML_ERROR_INDICATORS.any { lower.contains(it) }) {
+            return false
+        }
+        // 1. Standard Clash/Mihomo YAML structure keys
+        if (YAML_KEY_INDICATORS.any { trimmed.contains(it) }) {
+            return true
+        }
+        // 2. Standard protocol URLs
+        if (PROTOCOL_PREFIXES.any { trimmed.startsWith(it) }) {
+            return true
+        }
+        // 3. Base64 encoded payload
+        val firstLine = trimmed.lines().firstOrNull()?.trim() ?: ""
+        if (firstLine.length > 20 && !firstLine.contains(" ")) {
+            val isBase64 = runCatching {
+                java.util.Base64.getDecoder().decode(firstLine)
+            }.isSuccess
+            if (isBase64) return true
+        }
+        // 4. Valid YAML Map fallback
+        return runCatching { YamlSupport.create().load<Any>(trimmed) is Map<*, *> }.getOrDefault(false)
+    }
+
     /** Top-level config keys that only the injected runtime header may set. */
     private val PROTECTED_TOP_LEVEL_KEYS = setOf(
         "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
@@ -110,7 +143,8 @@ object ConfigManager {
         "authentication", "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
         "external-ui", "external-ui-name", "external-ui-url",
         "tun", "dns", "interface-name", "routing-mark",
-        "geodata-mode", "geo-auto-update", "geox-url"
+        "geodata-mode", "geo-auto-update", "geox-url",
+        "listeners", "sub-rules"
     )
 
     fun parseSubscriptionUserInfo(header: String?): SubscriptionUserInfo? {
@@ -239,6 +273,9 @@ object ConfigManager {
                 )
 
                 val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
+                if (!isValidSubscriptionPayload(body)) {
+                    error("响应内容不是有效的配置或节点数据 (疑似网页或拦截错误页)")
+                }
                 val id = java.util.UUID.randomUUID().toString()
                 val file = getProfilesDir(context).resolve("$id.yaml")
                 writeTextAtomic(file, body)
@@ -286,8 +323,15 @@ object ConfigManager {
                 // A capped, atomic replacement: a failed or oversized download must never
                 // destroy the currently working profile file.
                 val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
+                if (!isValidSubscriptionPayload(body)) {
+                    error("更新失败：响应内容不是有效的配置或节点数据 (疑似网页或拦截错误页)")
+                }
                 // Overwrite the EXISTING file without creating a duplicate ID!
                 val file = getProfilesDir(context).resolve("$id.yaml")
+                val backupFile = getProfilesDir(context).resolve("$id.yaml.bak")
+                if (file.exists() && file.length() > 0) {
+                    runCatching { file.copyTo(backupFile, overwrite = true) }
+                }
                 writeTextAtomic(file, body)
 
                 val existing = getProfiles(context).find { it.id == id }
@@ -710,14 +754,28 @@ object ConfigManager {
         nameserversYaml: String,
         fallbackYaml: String
     ): String {
+        val safeMode = when (options.tunnelMode.lowercase().trim()) {
+            "global" -> "global"
+            "direct" -> "direct"
+            else -> "rule"
+        }
+        val safeLogLevel = when (options.logLevel.lowercase().trim()) {
+            "silent" -> "silent"
+            "error" -> "error"
+            "warning" -> "warning"
+            "debug" -> "debug"
+            else -> "info"
+        }
+        val safeMixedPort = options.mixedPort.coerceIn(1024, 65535)
+
         val lanAuthYaml = buildLanAuthBlock(options.allowLan, options.lanPassword)
         val controllerYaml = buildControllerBlock(options.externalController, options.apiSecret)
         return """
             # Mihomo Android Injected Runtime Config
-            mode: ${options.tunnelMode}
-            log-level: ${options.logLevel}
+            mode: $safeMode
+            log-level: $safeLogLevel
             ipv6: ${options.ipv6Enabled}
-            mixed-port: ${options.mixedPort}
+            mixed-port: $safeMixedPort
             allow-lan: ${options.allowLan}
 $lanAuthYaml$controllerYaml
             geodata-mode: false
@@ -848,7 +906,8 @@ $fallbackYaml
             var rawContent = sourceFile.readText()
             // Empty scriptIds means "no scripts bound" (explicit binding wins); legacy
             // profiles that predate bindings are migrated in MihomoApplication.
-            val targetIds = if (activeProfile != null && activeProfile.scriptEnabled) {
+            // Honors the global scriptingEnabled master switch in Settings.
+            val targetIds = if (settings.scriptingEnabled && activeProfile != null && activeProfile.scriptEnabled) {
                 activeProfile.scriptIds
             } else emptyList()
             if (targetIds.isNotEmpty()) {

@@ -69,18 +69,22 @@ fun AnimatedSpeedTestIcon(
 
 private fun sortProxies(
     proxies: List<Proxy>,
-    sortMode: String
+    sortMode: String,
+    delayCache: Map<String, Int> = emptyMap(),
+    groupName: String = ""
 ): List<Proxy> {
     return when (sortMode) {
         "DELAY" -> proxies.sortedWith(
             compareBy<Proxy> { proxy ->
+                val d = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name] ?: proxy.delay
                 when {
-                    proxy.delay in 1..65534 -> 0
-                    proxy.delay == -2 || proxy.delay >= 65535 -> 2
+                    d in 1..65534 -> 0
+                    d == -2 || d >= 65535 -> 2
                     else -> 1
                 }
             }.thenBy { proxy ->
-                if (proxy.delay in 1..65534) proxy.delay else Int.MAX_VALUE
+                val d = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name] ?: proxy.delay
+                if (d in 1..65534) d else Int.MAX_VALUE
             }
         )
         "NAME" -> proxies.sortedBy { it.name.lowercase() }
@@ -111,6 +115,7 @@ fun ProxiesScreen(
     showGroupIcons: Boolean = true,
     nodeColumns: Int = 1,
     nodeSortMode: String = "DEFAULT",
+    delayCache: Map<String, Int> = emptyMap(),
     onViewModeChanged: (String) -> Unit,
     onShowGroupIconsChanged: (Boolean) -> Unit,
     onNodeColumnsChanged: (Int) -> Unit = {},
@@ -451,7 +456,7 @@ fun ProxiesScreen(
                 }
                 val rawProxies = targetGroup?.proxies ?: emptyList()
                 val proxies = remember(rawProxies, nodeSortMode) {
-                    sortProxies(rawProxies, nodeSortMode)
+                    sortProxies(rawProxies, nodeSortMode, delayCache, targetGroupName)
                 }
                 val groupState = if (targetGroupName.isNotBlank()) {
                     perGroupTabStates.getOrPut(targetGroupName) { LazyListState() }
@@ -498,8 +503,12 @@ fun ProxiesScreen(
                                 for (proxy in rowProxies) {
                                     Box(modifier = Modifier.weight(1f)) {
                                         val isItemTesting = testingNodes.contains("$targetGroupName:${proxy.name}")
+                                        val effectiveDelay = delayCache["$targetGroupName:${proxy.name}"]
+                                            ?: delayCache[proxy.name]
+                                            ?: proxy.delay
                                         LoonProxyItemCard(
                                             proxy = proxy,
+                                            delay = effectiveDelay,
                                             isSelected = proxy.name == currentNow,
                                             columns = cols,
                                             isTesting = isItemTesting,
@@ -558,7 +567,7 @@ fun ProxiesScreen(
                         val iconUrl = groupIcons[groupName]
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
-                            val proxies = sortProxies(rawProxies, nodeSortMode)
+                            val proxies = sortProxies(rawProxies, nodeSortMode, delayCache, groupName)
                             val isGroupTesting = testingNodes.contains("group:$groupName")
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 LoonGroupHeaderCard(
@@ -615,8 +624,12 @@ fun ProxiesScreen(
                                                 for (proxy in rowProxies) {
                                                     Box(modifier = Modifier.weight(1f)) {
                                                         val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
+                                                        val effectiveDelay = delayCache["$groupName:${proxy.name}"]
+                                                            ?: delayCache[proxy.name]
+                                                            ?: proxy.delay
                                                         LoonProxyItemCard(
                                                             proxy = proxy,
+                                                            delay = effectiveDelay,
                                                             isSelected = proxy.name == groupNow,
                                                             columns = cols,
                                                             isTesting = isItemTesting,
@@ -1008,6 +1021,7 @@ private fun LoonGroupHeaderCard(
 @Composable
 private fun LoonProxyItemCard(
     proxy: Proxy,
+    delay: Int = proxy.delay,
     isSelected: Boolean,
     columns: Int = 1,
     isTesting: Boolean = false,
@@ -1082,7 +1096,7 @@ private fun LoonProxyItemCard(
                 }
 
                 CupertinoLatencyText(
-                    delay = proxy.delay,
+                    delay = delay,
                     isTesting = isTesting,
                     compact = false,
                     onClick = onTestSingleNode
@@ -1122,7 +1136,7 @@ private fun LoonProxyItemCard(
                     )
 
                     CupertinoLatencyText(
-                        delay = proxy.delay,
+                        delay = delay,
                         isTesting = isTesting,
                         compact = isCompact3Col,
                         onClick = onTestSingleNode

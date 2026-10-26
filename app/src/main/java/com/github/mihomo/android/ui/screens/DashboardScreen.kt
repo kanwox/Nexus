@@ -75,6 +75,7 @@ fun DashboardScreen(
     activeProfileName: String,
     mainGroupName: String,
     mainGroupProxies: List<Proxy>,
+    delayCache: Map<String, Int> = emptyMap(),
     activeNodeName: String,
     totalNodes: Int,
     totalRules: Int,
@@ -657,19 +658,22 @@ fun DashboardScreen(
                                     Spacer(modifier = Modifier.width(10.dp))
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        val nodeDelay = delayCache["$mainGroupName:${proxy.name}"]
+                                            ?: delayCache[proxy.name]
+                                            ?: proxy.delay
                                         if (isTestingQuickNodes) {
                                             CupertinoActivityIndicator(
                                                 modifier = Modifier.size(13.dp),
                                                 color = IosBlue
                                             )
-                                        } else if (proxy.delay in 1..65534) {
-                                            val delayColor = when (proxy.delay) {
+                                        } else if (nodeDelay in 1..65534) {
+                                            val delayColor = when (nodeDelay) {
                                                 in 1..250 -> LoonSuccessText
                                                 in 251..600 -> LoonWarningText
                                                 else -> LoonDangerText
                                             }
                                             Text(
-                                                text = "${proxy.delay} ms",
+                                                text = "$nodeDelay ms",
                                                 color = delayColor,
                                                 fontSize = LoonTypeScale.footnote,
                                                 fontWeight = FontWeight.SemiBold

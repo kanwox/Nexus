@@ -343,13 +343,8 @@ fun MainAppScreen(
                     // forever on a cold start with existing data.
                     val mainGroupProxies by remember(mainProxyGroupName) {
                         derivedStateOf {
-                            val rawProxies = vm.liveGroupMap[mainProxyGroupName]?.proxies
+                            vm.liveGroupMap[mainProxyGroupName]?.proxies
                                 ?: (vm.parsedProfile.groups[mainProxyGroupName]?.proxies ?: emptyList())
-                            rawProxies.map { p ->
-                                val scopedKey = "$mainProxyGroupName:${p.name}"
-                                val d = vm.delayCache[p.name] ?: vm.delayCache[scopedKey]
-                                if (d != null) p.copy(delay = d) else p
-                            }
                         }
                     }
                     val currentMainActiveNode = (liveGroupMap[mainProxyGroupName]?.now
@@ -367,6 +362,7 @@ fun MainAppScreen(
                             ?: AppStrings.get("default_profile_name", appLanguage),
                         mainGroupName = mainProxyGroupName,
                         mainGroupProxies = mainGroupProxies,
+                        delayCache = delayCache,
                         activeNodeName = currentMainActiveNode,
                         totalNodes = parsedProfile.totalNodes,
                         totalRules = parsedProfile.totalRules,
@@ -436,12 +432,7 @@ fun MainAppScreen(
                                 }
                                 baseGroup.copy(
                                     now = resolvedNow,
-                                    proxies = sourceProxies.map { bp ->
-                                        val p = liveProxyMap[bp.name] ?: bp
-                                        val scopedKey = "$gName:${bp.name}"
-                                        val cached = vm.delayCache[scopedKey] ?: vm.delayCache[bp.name]
-                                        if (cached != null) p.copy(delay = cached) else p
-                                    }
+                                    proxies = sourceProxies.map { bp -> liveProxyMap[bp.name] ?: bp }
                                 )
                             }
                         }
@@ -458,6 +449,7 @@ fun MainAppScreen(
                         showGroupIcons = showGroupIcons,
                         nodeColumns = nodeColumns,
                         nodeSortMode = nodeSortMode,
+                        delayCache = delayCache,
                         tabsListState = proxiesTabsListState,
                         listModeState = proxiesListModeState,
                         groupRowState = proxiesGroupRowState,

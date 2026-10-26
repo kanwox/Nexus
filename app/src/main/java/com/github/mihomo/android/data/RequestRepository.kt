@@ -24,6 +24,7 @@ object RequestRepository {
     private const val MAX_RECORDS = 500
     private const val PUBLISH_INTERVAL_MS = 400L
     private const val POLL_INTERVAL_MS = 1000L
+    private const val BACKGROUND_POLL_INTERVAL_MS = 5000L
 
     private val nextId = AtomicLong(1)
     // O(1) lookup map preserving insertion order. Eldest entries are at the beginning.
@@ -59,7 +60,12 @@ object RequestRepository {
         if (pollJob?.isActive == true) return
         pollJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
-                delay(POLL_INTERVAL_MS)
+                val pollInterval = if (com.github.mihomo.android.service.MihomoVpnService.isUiInForeground) {
+                    POLL_INTERVAL_MS
+                } else {
+                    BACKGROUND_POLL_INTERVAL_MS
+                }
+                delay(pollInterval)
                 // Screen-off pauses everything non-essential (same gate as LogRepository).
                 if (LogRepository.isScreenOff) continue
                 val snapshot = MihomoApi.connections() ?: continue
