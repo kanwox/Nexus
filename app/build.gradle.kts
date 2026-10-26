@@ -28,6 +28,8 @@ val hasReleaseSigning = (releaseStoreFile != null) && releaseStoreFile.exists()
 android {
     namespace = "com.github.mihomo.android"
     compileSdk = 36
+    // Pinned so AGP never resolves a different default (and tries to download it) on CI.
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "com.github.mihomo.android"

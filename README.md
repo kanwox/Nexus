@@ -15,6 +15,10 @@
 
 ## 构建
 
+需要预装 Android SDK **Platform 36**、**Build-Tools 36.0.0** 与 **Platform-Tools**。
+AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺少组件时会直接给出明确错误，
+而不是在配置阶段联网拉取 SDK 清单（CI 上曾因此出现 `IO exception while downloading manifest`）。
+
 ```bash
 # Debug APK
 ./gradlew assembleDebug

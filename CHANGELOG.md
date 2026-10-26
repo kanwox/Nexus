@@ -62,6 +62,10 @@ Correctness, security-hardening and localization pass over the 1.0.5 alpha line.
 - `versionName` 1.0.5-Alpha.2 / `versionCode` 18.
 - Android Gradle Plugin upgraded from 9.0.1 to **9.2.1**, which fixes the R8 "error parsing
   Kotlin metadata" warnings on release builds and the stale lint opt-in false positives.
+- CI robustness: installs `platform-tools`, pins `build-tools 36.0.0`, accepts SDK licenses,
+  disables AGP's automatic SDK download (`android.builder.sdkDownload=false`) and uses the
+  official Google/Maven Central repositories instead of the China mirrors. This fixes the
+  "IO exception while downloading manifest" configuration failure on GitHub runners.
 - YAML serialization keeps long scalars on one physical line (no 80-column folding that
   corrupted long rules/URLs) and allows up to 1000 aliases for anchor-heavy configs.
 - CI now runs Android Lint in addition to detekt and unit tests, and has a concurrency

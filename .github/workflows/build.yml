@@ -35,7 +35,25 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "platforms;android-36 build-tools;36.0.0"
+          # AGP 9.2.1 targets build-tools 36.0.0 and compileSdk 36. platform-tools is
+          # installed explicitly so AGP never has to reach the SDK manager at build time.
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+
+      - name: Install required Android SDK packages
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | head -n 1)"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager not found (ANDROID_HOME=$ANDROID_HOME)" >&2
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          # Explicit install as a safety net: AGP's own SDK download is disabled, so the
+          # packages must exist before Gradle configures the project.
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --list_installed | grep -E 'platform-tools|platforms;android-36|build-tools;36.0.0'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -43,19 +61,24 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Toolchain versions
+        run: |
+          java -version
+          ./gradlew --version
+
       # All three gates must stay green; they are also what CONTRIBUTING-level local
       # checks run (`./gradlew testDebugUnitTest detekt lintDebug`).
       - name: Static analysis (detekt)
-        run: ./gradlew detekt --no-configuration-cache
+        run: ./gradlew detekt --no-configuration-cache --stacktrace
 
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --no-configuration-cache
+        run: ./gradlew testDebugUnitTest --no-configuration-cache --stacktrace
 
       - name: Android lint
-        run: ./gradlew lintDebug --no-configuration-cache
+        run: ./gradlew lintDebug --no-configuration-cache --stacktrace
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare APK Output
         run: |
