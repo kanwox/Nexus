@@ -23,6 +23,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 
 /** VPN & tunnel second-level settings: stack, MTU, ports, protections and boot behavior. */
@@ -209,14 +211,14 @@ fun VpnTunnelScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = label,
-                                fontSize = 15.sp,
+                                fontSize = LoonTypeScale.body,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isSelected) IosBlue else LoonTextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = desc,
-                                fontSize = 12.sp,
+                                fontSize = LoonTypeScale.footnote,
                                 color = LoonTextSecondary
                             )
                         }
@@ -301,8 +303,8 @@ private fun NumberValueDialog(
     var input by remember { mutableStateOf(initialValue.toString()) }
     CupertinoAlertDialog(
         title = title,
-        confirmText = AppStrings.get("action_save", com.github.mihomo.android.ui.theme.LocalAppLanguage.current),
-        dismissText = AppStrings.get("cancel", com.github.mihomo.android.ui.theme.LocalAppLanguage.current),
+        confirmText = AppStrings.get("action_save", com.github.mihomo.android.i18n.LocalAppLanguage.current),
+        dismissText = AppStrings.get("cancel", com.github.mihomo.android.i18n.LocalAppLanguage.current),
         onConfirm = {
             val parsed = input.trim().toIntOrNull()
             if (parsed != null && parsed in range) {

@@ -575,8 +575,26 @@ style:
         value: 'TODO:'
     allowedPatterns: ''
   ForbiddenImport:
-    active: false
-    imports: []
+    active: true
+    imports:
+      - reason: 'Use com.github.mihomo.android.ui.theme.RoundedCornerShape (continuous corners).'
+        value: 'androidx\.compose\.foundation\.shape\.RoundedCornerShape'
+      - reason: 'Use CupertinoAlertDialog instead of the Material alert.'
+        value: 'androidx\.compose\.material3\.AlertDialog'
+      - reason: 'Use CupertinoButton instead of Material buttons.'
+        value: 'androidx\.compose\.material3\.Button'
+      - reason: 'Use CupertinoButton instead of Material buttons.'
+        value: 'androidx\.compose\.material3\.TextButton'
+      - reason: 'Use CupertinoButton instead of Material buttons.'
+        value: 'androidx\.compose\.material3\.OutlinedButton'
+      - reason: 'Use CupertinoSwitch instead of the Material switch.'
+        value: 'androidx\.compose\.material3\.Switch'
+      - reason: 'Use the custom checkbox row instead of a Material radio button.'
+        value: 'androidx\.compose\.material3\.RadioButton'
+      - reason: 'Use the Cupertino floating bar instead of a Material FAB.'
+        value: 'androidx\.compose\.material3\.FloatingActionButton'
+      - reason: 'Import Material primitives explicitly; wildcard imports bypass the forbidden-control rules.'
+        value: 'androidx\.compose\.material3\.\*'
     forbiddenPatterns: ''
   ForbiddenMethodCall:
     active: false

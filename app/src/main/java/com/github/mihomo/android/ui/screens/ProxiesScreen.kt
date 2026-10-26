@@ -17,7 +17,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
@@ -37,6 +41,8 @@ import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.mihomo.android.data.MihomoApi
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 
 @Composable
@@ -170,9 +176,7 @@ fun ProxiesScreen(
             Text(
                 text = AppStrings.get("proxies_title", lang),
                 color = LoonTextPrimary,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
+                style = LoonTextStyles.largeTitleBold()
             )
 
             Box(
@@ -217,7 +221,7 @@ fun ProxiesScreen(
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
                                     text = AppStrings.get("proxies_view_mode", lang),
-                                    fontSize = 13.sp,
+                                    fontSize = LoonTypeScale.callout,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
                                 )
@@ -237,7 +241,7 @@ fun ProxiesScreen(
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
                                     text = AppStrings.get("proxies_columns", lang),
-                                    fontSize = 13.sp,
+                                    fontSize = LoonTypeScale.callout,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
                                 )
@@ -260,7 +264,7 @@ fun ProxiesScreen(
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
                                     text = AppStrings.get("proxies_sort", lang),
-                                    fontSize = 13.sp,
+                                    fontSize = LoonTypeScale.callout,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextSecondary
                                 )
@@ -291,14 +295,14 @@ fun ProxiesScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = AppStrings.get("proxies_show_icons", lang),
-                                    fontSize = 15.sp,
+                                    fontSize = LoonTypeScale.body,
                                     fontWeight = FontWeight.Normal,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     text = AppStrings.get("proxies_show_icons_desc", lang),
-                                    fontSize = 12.sp,
+                                    fontSize = LoonTypeScale.footnote,
                                     color = LoonTextSecondary
                                 )
                             }
@@ -383,7 +387,7 @@ fun ProxiesScreen(
                                     text = groupName,
                                     color = pillTextColor,
                                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                                    fontSize = 13.5.sp,
+                                    fontSize = LoonTypeScale.calloutLarge,
                                     maxLines = 1
                                 )
                                 if (isSelected || isPillTesting) {
@@ -709,14 +713,14 @@ private fun NodeDetailSheet(
                 DetailInfoRow(
                     AppStrings.get("node_detail_udp", lang),
                     AppStrings.get(if (udpSupported) "node_udp_yes" else "node_udp_no", lang),
-                    valueColor = if (udpSupported) IosGreen else LoonTextSecondary
+                    valueColor = if (udpSupported) LoonSuccessText else LoonTextSecondary
                 )
                 CupertinoIndentedDivider()
                 val alive = detail?.alive ?: ((localProxy?.delay ?: 0) > 0)
                 DetailInfoRow(
                     AppStrings.get("node_detail_alive", lang),
                     AppStrings.get(if (alive) "node_detail_alive_ok" else "node_detail_alive_dead", lang),
-                    valueColor = if (alive) IosGreen else RedDanger
+                    valueColor = if (alive) LoonSuccessText else LoonDangerText
                 )
                 CupertinoIndentedDivider()
                 DetailInfoRow(AppStrings.get("node_detail_groups", lang), groupName)
@@ -727,7 +731,7 @@ private fun NodeDetailSheet(
                 if (history.isEmpty()) {
                     Text(
                         text = AppStrings.get("node_detail_no_history", lang),
-                        fontSize = 13.sp,
+                        fontSize = LoonTypeScale.callout,
                         color = LoonTextSecondary,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                     )
@@ -740,18 +744,18 @@ private fun NodeDetailSheet(
                         items(history.size) { index ->
                             val (timeMs, delay) = history[index]
                             val (color, label) = when {
-                                delay <= 0 -> RedDanger to "×"
-                                delay <= 250 -> IosGreen to "${delay}ms"
-                                delay <= 600 -> IosOrange to "${delay}ms"
-                                else -> RedDanger to "${delay}ms"
+                                delay <= 0 -> LoonDangerText to "×"
+                                delay <= 250 -> LoonSuccessText to "${delay}ms"
+                                delay <= 600 -> LoonWarningText to "${delay}ms"
+                                else -> LoonDangerText to "${delay}ms"
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = label, color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Text(text = label, color = color, fontSize = LoonTypeScale.footnote, fontWeight = FontWeight.SemiBold)
                                 Text(
                                     text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
                                         .format(java.util.Date(timeMs)),
                                     color = LoonTextSecondary,
-                                    fontSize = 10.sp
+                                    fontSize = LoonTypeScale.micro
                                 )
                             }
                         }
@@ -796,8 +800,8 @@ private fun DetailInfoRow(label: String, value: String, valueColor: Color = Loon
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, color = LoonTextPrimary, fontSize = 15.sp)
-        Text(text = value, color = valueColor, fontSize = 14.sp)
+        Text(text = label, color = LoonTextPrimary, fontSize = LoonTypeScale.body)
+        Text(text = value, color = valueColor, fontSize = LoonTypeScale.subhead)
     }
 }
 
@@ -818,7 +822,7 @@ private fun DetailActionButton(
             Text(
                 text = label,
                 color = if (emphasized) Color.White else IosBlue,
-                fontSize = 16.sp,
+                fontSize = LoonTypeScale.title3,
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -839,7 +843,7 @@ private fun IosEmptyProxiesPlaceholder(message: String) {
         Text(
             text = message,
             color = LoonTextSecondary,
-            fontSize = 14.sp,
+            fontSize = LoonTypeScale.subhead,
             lineHeight = 20.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp)
@@ -920,7 +924,7 @@ private fun LoonGroupHeaderCard(
                     Text(
                         text = groupName,
                         color = LoonTextPrimary,
-                        fontSize = 15.sp,
+                        fontSize = LoonTypeScale.body,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -930,7 +934,7 @@ private fun LoonGroupHeaderCard(
                         Text(
                             text = activeNode,
                             color = LoonTextSecondary,
-                            fontSize = 12.sp,
+                            fontSize = LoonTypeScale.footnote,
                             fontWeight = FontWeight.Normal,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -974,7 +978,7 @@ private fun LoonGroupHeaderCard(
                         Text(
                             text = standardType,
                             color = LoonTextSecondary,
-                            fontSize = 11.5.sp,
+                            fontSize = LoonTypeScale.captionLarge,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1
                         )
@@ -1018,7 +1022,7 @@ private fun LoonProxyItemCard(
         LoonCard
     }
     val borderColor = if (isSelected) IosBlue.copy(alpha = 0.65f) else LoonCardBorder
-    val titleColor = if (isSelected) IosBlue else LoonTextPrimary
+    val titleColor = if (isSelected) LoonInfoText else LoonTextPrimary
 
     val isSingleCol = columns == 1
     val isCompact3Col = columns >= 3
@@ -1063,7 +1067,7 @@ private fun LoonProxyItemCard(
                     Text(
                         text = proxy.name,
                         color = titleColor,
-                        fontSize = 14.5.sp,
+                        fontSize = LoonTypeScale.subheadLarge,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1071,7 +1075,7 @@ private fun LoonProxyItemCard(
                     Text(
                         text = proxy.type.uppercase(),
                         color = LoonTextSecondary,
-                        fontSize = 11.sp,
+                        fontSize = LoonTypeScale.caption,
                         fontWeight = FontWeight.Normal,
                         maxLines = 1
                     )
@@ -1141,9 +1145,9 @@ private fun CupertinoLatencyText(
 ) {
     val isValidDelay = delay in 1..65534
     val delayColor = when {
-        isValidDelay && delay <= 250 -> IosGreen
-        isValidDelay && delay <= 600 -> IosOrange
-        else -> IosRed
+        isValidDelay && delay <= 250 -> LoonSuccessText
+        isValidDelay && delay <= 600 -> LoonWarningText
+        else -> LoonDangerText
     }
 
     Box(

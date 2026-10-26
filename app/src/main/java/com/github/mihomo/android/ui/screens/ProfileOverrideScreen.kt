@@ -11,7 +11,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +32,8 @@ import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -89,7 +93,7 @@ private fun OverrideTextArea(
                 Text(
                     text = placeholder,
                     color = LoonTextMuted,
-                    fontSize = 13.sp,
+                    fontSize = LoonTypeScale.callout,
                     lineHeight = 19.sp
                 )
             }
@@ -98,7 +102,7 @@ private fun OverrideTextArea(
                 onValueChange = onValueChange,
                 textStyle = LocalTextStyle.current.copy(
                     color = LoonTextPrimary,
-                    fontSize = 13.sp,
+                    fontSize = LoonTypeScale.callout,
                     lineHeight = 19.sp
                 ),
                 cursorBrush = SolidColor(IosBlue),
@@ -175,7 +179,7 @@ fun ProfileOverrideScreen(
                         text = AppStrings.get("action_save", lang),
                         color = IosBlue,
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp
+                        fontSize = LoonTypeScale.title3
                     )
                 }
             }
@@ -259,14 +263,14 @@ fun ProfileOverrideScreen(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
                                     text = AppStrings.get("override_no_scripts_title", lang),
-                                    fontSize = 14.sp,
+                                    fontSize = LoonTypeScale.subhead,
                                     fontWeight = FontWeight.Medium,
                                     color = LoonTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = AppStrings.get("override_empty_hint", lang).replace("{link}", AppStrings.get("override_go_scripts", lang)),
-                                    fontSize = 12.sp,
+                                    fontSize = LoonTypeScale.footnote,
                                     color = LoonTextSecondary
                                 )
                             }
@@ -349,7 +353,7 @@ fun ProfileOverrideScreen(
                 Text(
                     text = sheetDesc,
                     color = LoonTextSecondary,
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     lineHeight = 16.sp
                 )
                 Spacer(modifier = Modifier.height(12.dp))

@@ -30,6 +30,8 @@ import com.github.mihomo.android.data.RequestRecord
 import com.github.mihomo.android.data.RequestRepository
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -179,7 +181,7 @@ fun RequestLogsScreen(
                                 Text(
                                     text = AppStrings.get(selectedFilter.labelKey, lang),
                                     color = IosBlue,
-                                    fontSize = 13.5.sp,
+                                    fontSize = LoonTypeScale.calloutLarge,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
@@ -200,8 +202,8 @@ fun RequestLogsScreen(
                         ) {
                             Text(
                                 text = AppStrings.get("action_clear", lang),
-                                color = RedDanger,
-                                fontSize = 16.sp,
+                                color = LoonDangerText,
+                                fontSize = LoonTypeScale.title3,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -274,7 +276,7 @@ fun RequestLogsScreen(
                             Text(
                                 text = if (searchQuery.isNotBlank()) AppStrings.get("dns_empty_search", lang) else AppStrings.get("requests_empty", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     }
@@ -336,8 +338,8 @@ fun RequestLogsScreen(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = AppStrings.get("requests_status_active", lang),
-                            color = IosGreen,
-                            fontSize = 12.sp,
+                            color = LoonSuccessText,
+                            fontSize = LoonTypeScale.footnote,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -345,7 +347,7 @@ fun RequestLogsScreen(
                     Text(
                         text = AppStrings.get("requests_status_closed", lang),
                         color = LoonTextMuted,
-                        fontSize = 12.sp
+                        fontSize = LoonTypeScale.footnote
                     )
                 }
             }
@@ -361,7 +363,7 @@ fun RequestLogsScreen(
                 // Card 1: 目标与网络
                 Text(
                     text = AppStrings.get("requests_target_section", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -404,7 +406,7 @@ fun RequestLogsScreen(
                 // Card 2: 分流与策略
                 Text(
                     text = AppStrings.get("requests_policy_section", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -430,7 +432,7 @@ fun RequestLogsScreen(
                         label = AppStrings.get("requests_field_node", lang),
                         value = rec.outbound,
                         valueColor = when {
-                            rec.outbound.equals("REJECT", ignoreCase = true) -> RedDanger
+                            rec.outbound.equals("REJECT", ignoreCase = true) -> LoonDangerText
                             rec.outbound.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
                             else -> IosBlue
                         }
@@ -449,7 +451,7 @@ fun RequestLogsScreen(
                 // Card 3: 来源与流量统计
                 Text(
                     text = AppStrings.get("requests_source_section", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -517,8 +519,8 @@ fun RequestLogsScreen(
                     ) {
                         Text(
                             text = AppStrings.get("requests_close_action", lang),
-                            color = RedDanger,
-                            fontSize = 15.sp,
+                            color = LoonDangerText,
+                            fontSize = LoonTypeScale.body,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -659,7 +661,7 @@ private fun RequestRecordCell(
 ) {
     val lang = LocalAppLanguage.current
     val (outboundColor, outboundText) = when {
-        record.outbound.equals("REJECT", ignoreCase = true) -> Pair(RedDanger, "REJECT")
+        record.outbound.equals("REJECT", ignoreCase = true) -> Pair(LoonDangerText, "REJECT")
         record.outbound.equals("DIRECT", ignoreCase = true) -> Pair(LoonTextSecondary, "DIRECT")
         else -> Pair(IosBlue, record.outbound)
     }
@@ -685,7 +687,7 @@ private fun RequestRecordCell(
             Text(
                 text = displayHost,
                 color = LoonTextPrimary,
-                fontSize = 15.sp,
+                fontSize = LoonTypeScale.body,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -697,7 +699,7 @@ private fun RequestRecordCell(
             Text(
                 text = outboundText,
                 color = outboundColor,
-                fontSize = 13.sp,
+                fontSize = LoonTypeScale.callout,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -719,7 +721,7 @@ private fun RequestRecordCell(
                 Text(
                     text = record.sourceApp.ifBlank { AppStrings.get("system_app", lang) },
                     color = LoonTextSecondary,
-                    fontSize = 12.5.sp,
+                    fontSize = LoonTypeScale.footnoteLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -727,7 +729,7 @@ private fun RequestRecordCell(
                 Text(
                     text = " · ",
                     color = LoonTextMuted,
-                    fontSize = 12.5.sp
+                    fontSize = LoonTypeScale.footnoteLarge
                 )
 
                 val midText = if (record.uploadBytes > 0L || record.downloadBytes > 0L) {
@@ -741,7 +743,7 @@ private fun RequestRecordCell(
                 Text(
                     text = midText,
                     color = LoonTextSecondary,
-                    fontSize = 12.5.sp,
+                    fontSize = LoonTypeScale.footnoteLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -749,13 +751,13 @@ private fun RequestRecordCell(
                 Text(
                     text = " · ",
                     color = LoonTextMuted,
-                    fontSize = 12.5.sp
+                    fontSize = LoonTypeScale.footnoteLarge
                 )
 
                 Text(
                     text = record.network,
                     color = LoonTextMuted,
-                    fontSize = 12.sp
+                    fontSize = LoonTypeScale.footnote
                 )
             }
 
@@ -772,8 +774,8 @@ private fun RequestRecordCell(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = AppStrings.get("filter_active", lang),
-                        color = IosGreen,
-                        fontSize = 12.sp,
+                        color = LoonSuccessText,
+                        fontSize = LoonTypeScale.footnote,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -781,7 +783,7 @@ private fun RequestRecordCell(
                 Text(
                     text = formattedTime,
                     color = LoonTextMuted,
-                    fontSize = 12.sp
+                    fontSize = LoonTypeScale.footnote
                 )
             }
         }
@@ -807,7 +809,7 @@ private fun DetailRow(
     ) {
         Text(
             text = label,
-            fontSize = 13.sp,
+            fontSize = LoonTypeScale.callout,
             color = LoonTextSecondary
         )
         Row(
@@ -818,7 +820,7 @@ private fun DetailRow(
         ) {
             Text(
                 text = value,
-                fontSize = 13.5.sp,
+                fontSize = LoonTypeScale.calloutLarge,
                 fontWeight = FontWeight.Medium,
                 color = valueColor,
                 maxLines = 1,
@@ -862,7 +864,7 @@ private fun AppFilterOptionRow(
             Text(
                 text = label,
                 color = if (isSelected) IosBlue else LoonTextPrimary,
-                fontSize = 15.sp,
+                fontSize = LoonTypeScale.body,
                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -872,7 +874,7 @@ private fun AppFilterOptionRow(
                 Text(
                     text = subtitle,
                     color = LoonTextMuted,
-                    fontSize = 11.5.sp,
+                    fontSize = LoonTypeScale.captionLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

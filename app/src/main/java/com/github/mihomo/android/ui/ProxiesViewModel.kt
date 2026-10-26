@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.i18n.AppStrings
 
 private const val TAG = "ProxiesViewModel"
 

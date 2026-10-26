@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

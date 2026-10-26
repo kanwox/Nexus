@@ -38,6 +38,8 @@ import com.github.mihomo.android.data.UpdateChecker
 import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -321,14 +323,14 @@ fun AboutScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = label,
-                                fontSize = 15.sp,
+                                fontSize = LoonTypeScale.body,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (isSelected) IosBlue else LoonTextPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = desc,
-                                fontSize = 12.sp,
+                                fontSize = LoonTypeScale.footnote,
                                 color = LoonTextSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -423,9 +425,9 @@ fun AboutScreen(
                                     )
                                     Text(
                                         text = AppStrings.get("update_found", lang).replace("{v}", info.tagName),
-                                        color = IosGreen,
+                                        color = LoonSuccessText,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp
+                                        fontSize = LoonTypeScale.body
                                     )
                                 }
                                 if (info.releaseNotes.isNotBlank()) {
@@ -437,7 +439,7 @@ fun AboutScreen(
                                         Text(
                                             text = info.releaseNotes.take(300),
                                             color = LoonTextSecondary,
-                                            fontSize = 12.sp,
+                                            fontSize = LoonTypeScale.footnote,
                                             lineHeight = 16.sp,
                                             modifier = Modifier.padding(10.dp)
                                         )
@@ -447,15 +449,15 @@ fun AboutScreen(
                                 Text(
                                     text = AppStrings.get("update_up_to_date", lang).replace("{v}", installedVersion),
                                     color = LoonTextPrimary,
-                                    fontSize = 14.sp
+                                    fontSize = LoonTypeScale.subhead
                                 )
                             }
                         }
                         is UpdateChecker.CheckResult.Error -> {
                             Text(
                                 text = AppStrings.get("update_check_failed", lang).replace("{msg}", result.message),
-                                color = RedDanger,
-                                fontSize = 13.5.sp
+                                color = LoonDangerText,
+                                fontSize = LoonTypeScale.calloutLarge
                             )
                         }
                     }

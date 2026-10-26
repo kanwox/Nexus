@@ -35,8 +35,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.0.5-Alpha.2"
+        versionCode = 19
+        versionName = "1.0.5-Alpha.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -170,3 +170,41 @@ detekt {
     config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
     ignoreFailures = false
 }
+
+// Enforces the executable part of UI_GUIDELINES.md: feature UI must not reintroduce raw
+// font sizes or hex colors now that DesignTokens/LoonTextStyles/LoonTypeScale exist.
+// The theme package is the only place allowed to contain literal values.
+val checkUiTokens = tasks.register("checkUiTokens") {
+    group = "verification"
+    description = "Fails when feature UI contains raw colors or font sizes instead of theme tokens."
+    val uiRoot = layout.projectDirectory.dir("src/main/java/com/github/mihomo/android/ui")
+    inputs.dir(uiRoot)
+    doLast {
+        val root = uiRoot.asFile
+        val patterns = listOf(
+            Regex("""fontSize\s*=\s*\d""") to "raw fontSize literal (use LoonTextStyles/LoonTypeScale)",
+            Regex("""Color\(0x""") to "raw Color(0x…) literal (use a theme token)"
+        )
+        val violations = mutableListOf<String>()
+        root.walkTopDown()
+            .filter {
+                it.isFile && it.extension == "kt" &&
+                    !it.toRelativeString(root).replace('\\', '/').startsWith("theme/")
+            }
+            .forEach { file ->
+                val text = file.readText()
+                patterns.forEach { (regex, label) ->
+                    regex.findAll(text).forEach { match ->
+                        val line = text.substring(0, match.range.first).count { it == '\n' } + 1
+                        violations += "${file.toRelativeString(root)}:$line: $label"
+                    }
+                }
+            }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "UI token violations (UI_GUIDELINES.md §3):\n" + violations.joinToString("\n")
+            )
+        }
+    }
+}
+tasks.named("check").configure { dependsOn(checkUiTokens) }

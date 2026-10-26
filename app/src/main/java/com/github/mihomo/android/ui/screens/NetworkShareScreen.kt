@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -97,14 +99,14 @@ fun NetworkShareScreen(
                             Text(
                                 text = AppStrings.get("share_allow_lan", lang),
                                 color = LoonTextPrimary,
-                                fontSize = 15.sp,
+                                fontSize = LoonTypeScale.body,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = AppStrings.get("share_listen_hint", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 12.5.sp
+                                fontSize = LoonTypeScale.footnoteLarge
                             )
                         }
 
@@ -183,7 +185,7 @@ fun NetworkShareScreen(
                             Text(
                                 text = if (isRunning) AppStrings.get("share_running_title", lang).replace("{n}", proxyPort.toString()) else AppStrings.get("share_vpn_not_running", lang),
                                 color = if (isRunning) IosGreen else IosOrange,
-                                fontSize = 13.5.sp,
+                                fontSize = LoonTypeScale.calloutLarge,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(2.dp))
@@ -194,7 +196,7 @@ fun NetworkShareScreen(
                                     AppStrings.get("share_offline_hint", lang)
                                 },
                                 color = if (isRunning) IosGreen.copy(alpha = 0.85f) else IosOrange.copy(alpha = 0.85f),
-                                fontSize = 12.sp,
+                                fontSize = LoonTypeScale.footnote,
                                 lineHeight = 16.sp
                             )
                         }
@@ -329,7 +331,7 @@ private fun ShareParamRow(
     ) {
         Text(
             text = label,
-            fontSize = 14.5.sp,
+            fontSize = LoonTypeScale.subheadLarge,
             color = LoonTextSecondary
         )
 
@@ -339,7 +341,7 @@ private fun ShareParamRow(
         ) {
             Text(
                 text = value,
-                fontSize = 14.5.sp,
+                fontSize = LoonTypeScale.subheadLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = LoonTextPrimary,
                 maxLines = 1,
@@ -387,7 +389,7 @@ private fun GuideRow(
         ) {
             Text(
                 text = title,
-                fontSize = 14.5.sp,
+                fontSize = LoonTypeScale.subheadLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = LoonTextPrimary
             )
@@ -406,7 +408,7 @@ private fun GuideRow(
 
         Text(
             text = steps,
-            fontSize = 12.5.sp,
+            fontSize = LoonTypeScale.footnoteLarge,
             color = if (isCommand) IosBlue else LoonTextSecondary,
             lineHeight = 17.sp
         )

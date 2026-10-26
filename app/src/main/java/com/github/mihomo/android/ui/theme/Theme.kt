@@ -3,6 +3,7 @@ package com.github.mihomo.android.ui.theme
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -17,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -24,67 +26,36 @@ import androidx.compose.ui.text.font.DeviceFontFamilyName
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.github.mihomo.android.data.AppFont
 import com.github.mihomo.android.data.ThemeMode
 
 
-data class LoonThemeColors(
-    val bg: Color,
-    val card: Color,
-    val cardBorder: Color,
-    val textPrimary: Color,
-    val textSecondary: Color,
-    val textMuted: Color,
-    val bottomBarBg: Color,
-    val bottomBarBorder: Color,
-    val isDark: Boolean,
-    val separator: Color = if (isDark) Color(0x38545458) else Color(0x263C3C43),
-    val secondaryBg: Color = if (isDark) Color(0xFF1C1C1E) else Color(0xFFFFFFFF),
-    val tertiaryBg: Color = if (isDark) Color(0xFF2C2C2E) else Color(0xFFE5E5EA),
-    val chevronTint: Color = if (isDark) Color(0xFF636366) else Color(0xFFC7C7CC),
-    val switchUncheckedTrack: Color = if (isDark) Color(0xFF39393D) else Color(0xFFE9E9EA)
-)
-
-val LightLoonThemeColors = LoonThemeColors(
-    bg = Color(0xFFF2F2F7), // Apple System Grouped Background
-    card = Color(0xFFFFFFFF), // Apple Secondary System Grouped Background
-    cardBorder = Color(0x1A000000), // Clean iOS hairline border
-    textPrimary = Color(0xFF000000), // iOS Primary Text
-    textSecondary = Color(0xFF8E8E93), // iOS Secondary Label
-    textMuted = Color(0xFFC7C7CC), // iOS Tertiary Label
-    bottomBarBg = Color.White.copy(alpha = 0.88f),
-    bottomBarBorder = Color(0x1F000000),
-    isDark = false,
-    separator = Color(0x263C3C43),
-    secondaryBg = Color(0xFFFFFFFF),
-    tertiaryBg = Color(0xFFE5E5EA),
-    chevronTint = Color(0xFFC7C7CC),
-    switchUncheckedTrack = Color(0xFFE9E9EA)
-)
-
-val DarkLoonThemeColors = LoonThemeColors(
-    bg = Color(0xFF000000), // True OLED Pure Black
-    card = Color(0xFF1C1C1E), // Apple Secondary System Grouped Background
-    cardBorder = Color(0x2EFFFFFF), // Clean iOS dark hairline border
-    textPrimary = Color(0xFFFFFFFF), // iOS White Text
-    textSecondary = Color(0xFF8E8E93), // iOS Secondary Label
-    textMuted = Color(0xFF636366), // iOS Tertiary Label
-    bottomBarBg = Color(0xFF1C1C1E).copy(alpha = 0.90f),
-    bottomBarBorder = Color(0x26FFFFFF),
-    isDark = true,
-    separator = Color(0x38545458),
-    secondaryBg = Color(0xFF1C1C1E),
-    tertiaryBg = Color(0xFF2C2C2E),
-    chevronTint = Color(0xFF636366),
-    switchUncheckedTrack = Color(0xFF39393D)
-)
-
 val LocalLoonColors = staticCompositionLocalOf { LightLoonThemeColors }
 val LocalAppFont = staticCompositionLocalOf { AppFont.SYSTEM }
 val LocalAppFontFamily = staticCompositionLocalOf<FontFamily> { FontFamily.Default }
+
+/**
+ * True when the system animator scale is zero (accessibility "remove animations" or battery
+ * saver). Components use it to snap instead of spring so the iOS micro-interactions never
+ * fight the platform accessibility setting.
+ */
+val LocalReduceMotion = staticCompositionLocalOf { false }
+
+@Composable
+private fun rememberReduceMotion(): Boolean {
+    val context = LocalContext.current
+    return remember(context) {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
+}
 
 /**
  * Apple iOS Typography family: SF Pro (Latin/Cyrillic/Numeric) + PingFang SC (苹方-简, CJK)
@@ -111,11 +82,11 @@ val IosSfProPingFangFontFamily: FontFamily = FontFamily(
 )
 
 private val IosContinuousShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(20.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    extraSmall = RoundedCornerShape(LoonRadii.badge),
+    small = RoundedCornerShape(LoonRadii.control),
+    medium = RoundedCornerShape(LoonRadii.card),
+    large = RoundedCornerShape(LoonRadii.sheet),
+    extraLarge = RoundedCornerShape(LoonRadii.extraLarge)
 )
 
 private fun buildAppTypography(appFont: AppFont): Typography {
@@ -235,6 +206,8 @@ fun MihomoTheme(
     val loonColors = if (isDark) DarkLoonThemeColors else LightLoonThemeColors
     val typography = remember(appFont) { buildAppTypography(appFont) }
     val activeFontFamily = if (appFont == AppFont.IOS) IosSfProPingFangFontFamily else FontFamily.Default
+    val reduceMotion = rememberReduceMotion()
+    val windowWidthClass = rememberWindowWidthClass()
 
     val colorScheme = if (isDark) {
         darkColorScheme(
@@ -287,6 +260,8 @@ fun MihomoTheme(
         LocalLoonColors provides loonColors,
         LocalAppFont provides appFont,
         LocalAppFontFamily provides activeFontFamily,
+        LocalReduceMotion provides reduceMotion,
+        LocalWindowWidthClass provides windowWidthClass,
         androidx.compose.foundation.LocalOverscrollConfiguration provides null,
         androidx.compose.foundation.LocalIndication provides NoIndication
     ) {

@@ -9,6 +9,46 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.5-Alpha.3] - 2026-10-26
+
+### Design system & accessibility
+
+- Added a single source of truth for the visual language: `DesignTokens.kt` (semantic
+  light/dark colors, spacing, radii, sizes, motion) and `LoonTextStyles.kt` (semantic text
+  roles). The component library now consumes those tokens instead of raw sizes/colors.
+- Removed the remaining raw `fontSize = N.sp` and `Color(0x…)` literals from feature UI:
+  one-off sizes use `LoonTypeScale`, shadows/gradients/syntax colors use `LoonExtraColors`.
+  A new `checkUiTokens` Gradle task (also run by CI) rejects reintroducing them.
+- Responsive layout: `WindowWidthClass`/`LocalWindowWidthClass` and
+  `LoonResponsiveContent(maxWidth = 680.dp)` center main-tab content on tablets/foldables
+  while leaving compact phone layouts unchanged.
+- `AppStrings`/`LocalAppLanguage` moved from `ui.theme` to the neutral
+  `com.github.mihomo.android.i18n` package; service/data layers no longer depend on UI.
+- `DesignSystemPreview.kt` adds the Light/Dark × SYSTEM/IOS × zh/en/ru × 1.3-font preview
+  matrix, and `DesignTokenContrastTest` guards WCAG AA contrast in CI.
+- Introduced text-safe status colors (`successText`/`warningText`/`dangerText`/`infoText`)
+  and raised secondary/muted text contrast: light secondary `#8E8E93` (3.26:1) → `#6E6E73`
+  (5.07:1), dark secondary → `#A1A1A6`, dark muted `#636366` (2.84:1) → `#8E8E93` (5.22:1).
+  Bright Apple colors remain for fills and icons.
+- Accessibility: `CupertinoSwitch` now exposes `Role.Switch` via `toggleable` and a 48dp
+  touch target; app-selection rows use `Role.Checkbox`; segmented controls and the bottom
+  bar use `selectable`/`selectableGroup`; toasts announce through `liveRegion`; custom
+  pressables draw a visible keyboard/D-pad focus ring because ripples are disabled.
+- Motion honors the system "remove animations" setting (`LocalReduceMotion`) for press
+  scale, switch thumb/track and segmented/bottom-bar transitions.
+- Edge-swipe back is now layout-direction aware: it starts from the start edge and drags in
+  the correct direction under RTL.
+- Replaced Material 3 wildcard imports with explicit primitives and enabled detekt
+  `ForbiddenImport` for Material controls / `foundation.RoundedCornerShape`, so the
+  "no Material controls" rule is enforced by CI.
+- Rewrote `UI_GUIDELINES.md` as a rule-ID based design system with contrast table,
+  accessibility, adaptive layout, RTL/i18n, motion, interaction patterns, performance
+  budgets and an explicit review matrix.
+
+### Changed
+
+- `versionName` 1.0.5-Alpha.3 / `versionCode` 19.
+
 ## [1.0.5-Alpha.2] - 2026-10-26
 
 Correctness, security-hardening and localization pass over the 1.0.5 alpha line.

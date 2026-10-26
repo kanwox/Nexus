@@ -1,4 +1,4 @@
-package com.github.mihomo.android.ui.theme
+package com.github.mihomo.android.i18n
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
@@ -1994,7 +1994,8 @@ object AppStrings {
             else -> enAll
         }
 
-        return dict[key] ?: zhAll[key] ?: key
+        // Fall back to English before Chinese so a new key never shows Chinese to en/ru users.
+        return dict[key] ?: enAll[key] ?: zhAll[key] ?: key
     }
 
     @Composable

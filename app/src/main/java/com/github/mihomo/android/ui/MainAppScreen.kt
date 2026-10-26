@@ -18,6 +18,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.unit.dp
@@ -45,9 +47,10 @@ import com.github.mihomo.android.ui.components.CupertinoToast
 import com.github.mihomo.android.ui.components.CupertinoToastHost
 import com.github.mihomo.android.ui.components.LoonFloatingBottomBar
 import com.github.mihomo.android.ui.screens.*
-import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.ui.theme.LoonBg
-import com.github.mihomo.android.ui.theme.LocalAppLanguage
+import com.github.mihomo.android.ui.theme.LoonResponsiveContent
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -330,7 +333,8 @@ fun MainAppScreen(
             beyondViewportPageCount = 2,
             modifier = Modifier.fillMaxSize()
         ) { page ->
-            when (page) {
+            LoonResponsiveContent(maxWidth = 680.dp) {
+                when (page) {
                 0 -> {
                     // The derived blocks below MUST read vm.* state properties directly:
                     // capturing the dereferenced local vals (val parsedProfile = vm.parsedProfile)
@@ -504,6 +508,7 @@ fun MainAppScreen(
                     onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
                     onNavigateToAbout = { currentSubScreen = SubScreen.ABOUT }
                 )
+                }
             }
         }
 
@@ -519,6 +524,7 @@ fun MainAppScreen(
         var isEdgeDragging by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val edgeZonePx = with(density) { 32.dp.toPx() }
+        val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
         LaunchedEffect(currentSubScreen) {
             edgeSwipeOffsetX.snapTo(0f)
@@ -529,26 +535,33 @@ fun MainAppScreen(
         AnimatedVisibility(
             visible = currentSubScreen != null,
             enter = slideInHorizontally(
-                initialOffsetX = { it },
+                initialOffsetX = { if (isRtl) -it else it },
                 animationSpec = tween(300, easing = FastOutSlowInEasing)
             ) + fadeIn(animationSpec = tween(220)),
             exit = slideOutHorizontally(
-                targetOffsetX = { it },
+                targetOffsetX = { if (isRtl) -it else it },
                 animationSpec = tween(260, easing = FastOutSlowInEasing)
             ) + fadeOut(animationSpec = tween(200)),
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(20f)
-                .pointerInput(currentSubScreen) {
+                .pointerInput(currentSubScreen, isRtl) {
                     if (currentSubScreen == null) return@pointerInput
                     detectHorizontalDragGestures(
                         onDragStart = { startOffset ->
-                            isEdgeDragging = startOffset.x <= edgeZonePx
+                            // The interactive back zone lives on the *start* edge; in RTL that
+                            // is the right side of the screen and the drag goes left.
+                            isEdgeDragging = if (isRtl) {
+                                startOffset.x >= size.width - edgeZonePx
+                            } else {
+                                startOffset.x <= edgeZonePx
+                            }
                         },
                         onHorizontalDrag = { change, dragAmount ->
-                            if (isEdgeDragging && (dragAmount > 0f || edgeSwipeOffsetX.value > 0f)) {
+                            val delta = if (isRtl) -dragAmount else dragAmount
+                            if (isEdgeDragging && (delta > 0f || edgeSwipeOffsetX.value > 0f)) {
                                 change.consume()
-                                val next = (edgeSwipeOffsetX.value + dragAmount).coerceAtLeast(0f)
+                                val next = (edgeSwipeOffsetX.value + delta).coerceAtLeast(0f)
                                 coroutineScope.launch { edgeSwipeOffsetX.snapTo(next) }
                             }
                         },
@@ -587,7 +600,7 @@ fun MainAppScreen(
                     )
                 }
                 .graphicsLayer {
-                    translationX = edgeSwipeOffsetX.value
+                    translationX = if (isRtl) -edgeSwipeOffsetX.value else edgeSwipeOffsetX.value
                 }
         ) {
             AnimatedContent(

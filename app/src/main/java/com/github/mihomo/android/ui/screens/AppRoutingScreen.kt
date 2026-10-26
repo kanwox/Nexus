@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
@@ -22,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -31,6 +33,8 @@ import androidx.core.graphics.drawable.toBitmap
 import com.github.mihomo.android.data.InstalledApp
 import com.github.mihomo.android.data.PerAppProxyMode
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 
 @Suppress("UnusedParameter", "UNUSED_PARAMETER")
@@ -177,7 +181,7 @@ fun AppRoutingScreen(
                                 Text(
                                     text = AppStrings.get("app_loading", lang),
                                     color = LoonTextSecondary,
-                                    fontSize = 13.5.sp
+                                    fontSize = LoonTypeScale.calloutLarge
                                 )
                             }
                         }
@@ -201,7 +205,7 @@ fun AppRoutingScreen(
                                 Text(
                                     text = if (searchQuery.isNotBlank()) AppStrings.get("app_no_match_short", lang) else AppStrings.get("app_empty", lang),
                                     color = LoonTextSecondary,
-                                    fontSize = 14.sp
+                                    fontSize = LoonTypeScale.subhead
                                 )
                             }
                         }
@@ -319,7 +323,7 @@ private fun ModeRow(
         Text(
             text = title,
             color = LoonTextPrimary,
-            fontSize = 15.5.sp,
+            fontSize = LoonTypeScale.bodyLarge,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
         )
 
@@ -347,7 +351,12 @@ private fun AppItemCell(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .iosPressable(onClick = onClick)
+            // A real checkbox role so TalkBack announces checked/unchecked instead of "button".
+            .toggleable(
+                value = isSelected,
+                role = Role.Checkbox,
+                onValueChange = { onClick() }
+            )
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -367,7 +376,7 @@ private fun AppItemCell(
             Text(
                 text = app.label,
                 color = LoonTextPrimary,
-                fontSize = 15.sp,
+                fontSize = LoonTypeScale.body,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -376,7 +385,7 @@ private fun AppItemCell(
             Text(
                 text = app.packageName,
                 color = LoonTextMuted,
-                fontSize = 11.5.sp,
+                fontSize = LoonTypeScale.captionLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -442,7 +451,7 @@ private fun AppIcon(
             Text(
                 text = label.take(1).uppercase(),
                 color = LoonTextPrimary,
-                fontSize = 14.sp,
+                fontSize = LoonTypeScale.subhead,
                 fontWeight = FontWeight.Bold
             )
         }

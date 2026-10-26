@@ -51,6 +51,32 @@ val LoonTextMuted: Color
     @ReadOnlyComposable
     get() = LocalLoonColors.current.textMuted
 
+/** Text-safe status colors. The bright Ios* palette remains for fills, icons and badges. */
+val LoonSuccessText: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalLoonColors.current.successText
+
+val LoonWarningText: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalLoonColors.current.warningText
+
+val LoonDangerText: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalLoonColors.current.dangerText
+
+val LoonInfoText: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalLoonColors.current.infoText
+
+val LoonFocusRing: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalLoonColors.current.focusRing
+
 // Apple Official System Palette
 val IosBlue = Color(0xFF007AFF)
 val IosGreen = Color(0xFF34C759)

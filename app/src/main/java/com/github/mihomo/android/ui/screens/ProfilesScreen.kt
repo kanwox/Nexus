@@ -44,6 +44,8 @@ import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.data.SubscriptionUpdateWorker
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -232,7 +234,7 @@ fun ProfilesScreen(
                             Text(
                                 text = AppStrings.get("profiles_empty_short", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     }
@@ -243,7 +245,7 @@ fun ProfilesScreen(
                         Text(
                             text = AppStrings.current("profile_reorder_hint"),
                             color = LoonTextMuted,
-                            fontSize = 11.sp,
+                            fontSize = LoonTypeScale.caption,
                             modifier = Modifier.padding(start = 4.dp)
                         )
                     }
@@ -283,7 +285,7 @@ fun ProfilesScreen(
                         val now = System.currentTimeMillis()
                         if (expireMillis <= now) {
                             expireText = AppStrings.current("profile_expired")
-                            expireColor = RedDanger
+                            expireColor = LoonDangerText
                         } else {
                             val daysLeft = (expireMillis - now + DAY_MS - 1L) / DAY_MS
                             expireText = if (daysLeft <= EXPIRE_WARN_DAYS) {
@@ -292,7 +294,7 @@ fun ProfilesScreen(
                                 AppStrings.current("profile_expire_at")
                                     .replace("{date}", expireDateFormat.format(Date(expireMillis)))
                             }
-                            expireColor = if (daysLeft <= EXPIRE_WARN_DAYS) IosOrange else LoonTextSecondary
+                            expireColor = if (daysLeft <= EXPIRE_WARN_DAYS) LoonWarningText else LoonTextSecondary
                         }
                     } else {
                         expireText = null
@@ -406,7 +408,7 @@ fun ProfilesScreen(
                                 Text(
                                     text = profile.name,
                                     color = LoonTextPrimary,
-                                    fontSize = 15.5.sp,
+                                    fontSize = LoonTypeScale.bodyLarge,
                                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -423,7 +425,7 @@ fun ProfilesScreen(
                                         Text(
                                             text = infoText,
                                             color = LoonTextSecondary,
-                                            fontSize = 12.sp,
+                                            fontSize = LoonTypeScale.footnote,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f, fill = false)
@@ -433,7 +435,7 @@ fun ProfilesScreen(
                                             Text(
                                                 text = expireText,
                                                 color = expireColor,
-                                                fontSize = 12.sp,
+                                                fontSize = LoonTypeScale.footnote,
                                                 fontWeight = FontWeight.Medium,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -444,7 +446,7 @@ fun ProfilesScreen(
                                     Text(
                                         text = timeText,
                                         color = LoonTextSecondary,
-                                        fontSize = 12.sp,
+                                        fontSize = LoonTypeScale.footnote,
                                         maxLines = 1
                                     )
                                 }
@@ -666,7 +668,7 @@ fun ProfilesScreen(
                     Text(
                         text = AppStrings.current("action_save"),
                         color = IosBlue,
-                        fontSize = 16.sp,
+                        fontSize = LoonTypeScale.title3,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -701,14 +703,14 @@ fun ProfilesScreen(
                     Text(
                         text = AppStrings.current("profile_interval_unit"),
                         color = LoonTextSecondary,
-                        fontSize = 12.sp
+                        fontSize = LoonTypeScale.footnote
                     )
                 }
             }
             Text(
                 text = AppStrings.current("profile_auto_update_desc"),
                 color = LoonTextSecondary,
-                fontSize = 12.sp,
+                fontSize = LoonTypeScale.footnote,
                 lineHeight = 16.sp,
                 modifier = Modifier
                     .fillMaxWidth()

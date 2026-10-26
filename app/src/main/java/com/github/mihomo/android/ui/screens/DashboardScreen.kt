@@ -16,7 +16,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +48,8 @@ import com.github.mihomo.android.core.model.TunnelMode
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlin.math.roundToInt
 
@@ -168,8 +174,8 @@ fun DashboardScreen(
         } else {
             Brush.verticalGradient(
                 colors = listOf(
-                    Color(0xFFFFF6EE),
-                    Color(0xFFF9F9FD),
+                    LoonExtraColors.orangeTint,
+                    LoonExtraColors.lavender,
                     bgColor
                 ),
                 startY = 0f,
@@ -208,9 +214,7 @@ fun DashboardScreen(
                         Text(
                             text = "NEXUS",
                             color = LoonOrange,
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
+                            style = LoonTextStyles.largeTitle()
                         )
 
                         // Top Right iOS Cupertino Switch (aligned directly with NEXUS title)
@@ -238,7 +242,7 @@ fun DashboardScreen(
                                     TunnelMode.DIRECT -> AppStrings.get("mode_direct", lang)
                                 },
                                 color = LoonOrangeLight,
-                                fontSize = 14.sp,
+                                fontSize = LoonTypeScale.subhead,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Icon(
@@ -271,7 +275,7 @@ fun DashboardScreen(
                     Text(
                         text = AppStrings.get("shortcuts", lang),
                         color = LoonTextPrimary,
-                        fontSize = 22.sp,
+                        fontSize = LoonTypeScale.title1,
                         fontWeight = FontWeight.Bold
                     )
 
@@ -279,7 +283,7 @@ fun DashboardScreen(
                     Text(
                         text = if (isEditingShortcuts) AppStrings.get("shortcuts_done", lang) else AppStrings.get("shortcuts_edit", lang),
                         color = IosBlue,
-                        fontSize = 16.sp,
+                        fontSize = LoonTypeScale.title3,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -501,7 +505,7 @@ fun DashboardScreen(
                         Text(
                             text = if (hiddenShortcuts.isEmpty()) AppStrings.get("shortcuts_all_shown", lang) else "${AppStrings.get("shortcuts_add", lang)} (${hiddenShortcuts.size})",
                             color = LoonTextPrimary,
-                            fontSize = 14.sp,
+                            fontSize = LoonTypeScale.subhead,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -521,7 +525,7 @@ fun DashboardScreen(
                     ) {
                         Icon(Icons.Default.Info, contentDescription = null, tint = RedDanger, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = vpnError, color = RedDanger, fontSize = 13.sp)
+                        Text(text = vpnError, color = LoonDangerText, fontSize = LoonTypeScale.callout)
                     }
                 }
             }
@@ -595,7 +599,7 @@ fun DashboardScreen(
                             Text(
                                 text = if (mainGroupProxies.isEmpty()) AppStrings.get("quick_node_empty", lang) else AppStrings.get("quick_node_no_match", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     } else {
@@ -637,7 +641,7 @@ fun DashboardScreen(
                                         Text(
                                             text = proxy.name,
                                             color = if (isSelected) IosBlue else LoonTextPrimary,
-                                            fontSize = 15.sp,
+                                            fontSize = LoonTypeScale.body,
                                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -646,7 +650,7 @@ fun DashboardScreen(
                                         Text(
                                             text = proxy.type.uppercase(),
                                             color = LoonTextMuted,
-                                            fontSize = 11.5.sp
+                                            fontSize = LoonTypeScale.captionLarge
                                         )
                                     }
 
@@ -660,14 +664,14 @@ fun DashboardScreen(
                                             )
                                         } else if (proxy.delay in 1..65534) {
                                             val delayColor = when (proxy.delay) {
-                                                in 1..250 -> IosGreen
-                                                in 251..600 -> IosOrange
-                                                else -> RedDanger
+                                                in 1..250 -> LoonSuccessText
+                                                in 251..600 -> LoonWarningText
+                                                else -> LoonDangerText
                                             }
                                             Text(
                                                 text = "${proxy.delay} ms",
                                                 color = delayColor,
-                                                fontSize = 12.sp,
+                                                fontSize = LoonTypeScale.footnote,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                         }
@@ -713,7 +717,7 @@ fun DashboardScreen(
                             Text(
                                 text = AppStrings.get("shortcuts_all_added", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     } else {
@@ -752,8 +756,8 @@ fun DashboardScreen(
                                             }
                                             Spacer(modifier = Modifier.width(12.dp))
                                             Column {
-                                                Text(item.title, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, color = LoonTextPrimary)
-                                                Text(item.subtitle, fontSize = 11.5.sp, color = LoonTextSecondary)
+                                                Text(item.title, fontWeight = FontWeight.SemiBold, fontSize = LoonTypeScale.subheadLarge, color = LoonTextPrimary)
+                                                Text(item.subtitle, fontSize = LoonTypeScale.captionLarge, color = LoonTextSecondary)
                                             }
                                         }
 
@@ -811,14 +815,14 @@ fun DashboardScreen(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = title,
-                                            fontSize = 15.sp,
+                                            fontSize = LoonTypeScale.body,
                                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                             color = LoonTextPrimary
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = desc,
-                                            fontSize = 12.sp,
+                                            fontSize = LoonTypeScale.footnote,
                                             color = LoonTextSecondary
                                         )
                                     }

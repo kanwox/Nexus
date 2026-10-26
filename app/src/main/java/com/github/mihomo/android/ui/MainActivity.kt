@@ -20,7 +20,7 @@ import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.CupertinoToast
-import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.ui.theme.MihomoTheme
 
 /**

@@ -49,14 +49,17 @@ import com.github.mihomo.android.ui.components.CupertinoGroupedSection
 import com.github.mihomo.android.ui.components.CupertinoIndentedDivider
 import com.github.mihomo.android.ui.components.CupertinoNavBar
 import com.github.mihomo.android.ui.components.CupertinoToast
-import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.ui.theme.IosBlue
 import com.github.mihomo.android.ui.theme.IosGreen
 import com.github.mihomo.android.ui.theme.IosOrange
 import com.github.mihomo.android.ui.theme.LoonCard
 import com.github.mihomo.android.ui.theme.LoonCardBorder
+import com.github.mihomo.android.ui.theme.LoonInfoText
 import com.github.mihomo.android.ui.theme.LoonTextPrimary
+import com.github.mihomo.android.ui.theme.LoonTypeScale
 import com.github.mihomo.android.ui.theme.LoonTextSecondary
+import com.github.mihomo.android.ui.theme.LoonWarningText
 import com.github.mihomo.android.ui.theme.RoundedCornerShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -74,7 +77,7 @@ private val RuleProviderIcon: ImageVector = Icons.Default.Dns
 @Composable
 fun CoreScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val lang = com.github.mihomo.android.ui.theme.LocalAppLanguage.current
+    val lang = com.github.mihomo.android.i18n.LocalAppLanguage.current
     // Collect the full state once, but derive every value the page actually reads. Reading
     // vpnState directly here would recompose the whole page (providers, ranking, …) on every
     // once-per-second traffic tick; the derived states only invalidate when their value changes.
@@ -150,7 +153,7 @@ fun CoreScreen(onBack: () -> Unit) {
             if (!isRunning) {
                 StatusBanner(
                     text = AppStrings.current("core_not_running"),
-                    color = IosOrange
+                    color = LoonWarningText
                 )
                 Spacer(Modifier.height(16.dp))
             }
@@ -194,7 +197,7 @@ fun CoreScreen(onBack: () -> Unit) {
                             Text(
                                 text = host,
                                 color = LoonTextPrimary,
-                                fontSize = 15.sp,
+                                fontSize = LoonTypeScale.body,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
@@ -202,7 +205,7 @@ fun CoreScreen(onBack: () -> Unit) {
                             Text(
                                 text = "↑ ${trafficString(up)}  ↓ ${trafficString(down)}",
                                 color = LoonTextSecondary,
-                                fontSize = 13.sp
+                                fontSize = LoonTypeScale.callout
                             )
                         }
                     }
@@ -321,7 +324,7 @@ private fun StatusBanner(text: String, color: Color) {
         Text(
             text = text,
             color = color,
-            fontSize = 14.sp,
+            fontSize = LoonTypeScale.subhead,
             modifier = Modifier.padding(14.dp)
         )
     }
@@ -336,8 +339,8 @@ private fun InfoRow(label: String, value: String) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, color = LoonTextPrimary, fontSize = 15.sp)
-        Text(text = value, color = LoonTextSecondary, fontSize = 14.sp)
+        Text(text = label, color = LoonTextPrimary, fontSize = LoonTypeScale.body)
+        Text(text = value, color = LoonTextSecondary, fontSize = LoonTypeScale.subhead)
     }
 }
 
@@ -375,7 +378,7 @@ private fun ProviderRow(
     updating: Boolean,
     onUpdate: () -> Unit
 ) {
-    val lang = com.github.mihomo.android.ui.theme.LocalAppLanguage.current
+    val lang = com.github.mihomo.android.i18n.LocalAppLanguage.current
     CupertinoCell(
         title = provider.name,
         subtitle = buildString {
@@ -399,13 +402,13 @@ private fun ProviderRow(
                 Text(
                     text = AppStrings.current("core_provider_updating"),
                     color = LoonTextSecondary,
-                    fontSize = 14.sp
+                    fontSize = LoonTypeScale.subhead
                 )
             } else {
                 Text(
                     text = AppStrings.current("core_provider_update"),
-                    color = IosBlue,
-                    fontSize = 15.sp,
+                    color = LoonInfoText,
+                    fontSize = LoonTypeScale.body,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clickable(onClick = onUpdate)
                 )

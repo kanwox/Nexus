@@ -14,11 +14,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import com.github.mihomo.android.ui.theme.RoundedCornerShape
 import com.github.mihomo.android.ui.theme.LocalAppFont
-import com.github.mihomo.android.ui.theme.AppStrings
-import com.github.mihomo.android.ui.theme.LocalAppLanguage
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.data.AppFont
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -41,6 +44,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.VisualTransformation
@@ -49,7 +55,6 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -59,6 +64,11 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
@@ -123,20 +133,40 @@ class IosHapticHelper(private val view: android.view.View) {
 // iOS Pressable Modifier (Instant micro-scale & highlight, replacing ink ripples)
 // =============================================================================
 
+/**
+ * Visible keyboard/D-pad focus. The global [NoIndication] removes ripples, so a focus ring is
+ * the only affordance keyboard and switch-access users get.
+ */
+fun Modifier.iosFocusRing(
+    shape: Shape = RoundedCornerShape(LoonRadii.control)
+): Modifier = composed {
+    var focused by remember { mutableStateOf(false) }
+    val ring = LoonFocusRing
+    this
+        .onFocusChanged { focused = it.isFocused }
+        .then(if (focused) Modifier.border(2.dp, ring, shape) else Modifier)
+}
+
 fun Modifier.iosPressable(
     enabled: Boolean = true,
-    pressedScale: Float = 0.982f,
+    pressedScale: Float = LoonMotion.pressScale,
+    focusShape: Shape? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    val reduceMotion = LocalReduceMotion.current
 
     val scale by animateFloatAsState(
-        targetValue = if (enabled && isPressed) pressedScale else 1.0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
+        targetValue = if (enabled && isPressed && !reduceMotion) pressedScale else 1.0f,
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMedium
+            )
+        },
         label = "ios_press_scale"
     )
 
@@ -145,6 +175,7 @@ fun Modifier.iosPressable(
             scaleX = scale
             scaleY = scale
         }
+        .then(if (focusShape != null) Modifier.iosFocusRing(focusShape) else Modifier)
         .then(
             if (onClick != null) {
                 Modifier.clickable(
@@ -163,15 +194,26 @@ fun Modifier.iosPressable(
 fun Modifier.iosHighlightPressable(
     enabled: Boolean = true,
     highlightColor: Color? = null,
+    focusShape: Shape? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    var focused by remember { mutableStateOf(false) }
     val defaultHighlight = LocalLoonColors.current.tertiaryBg.copy(alpha = 0.65f)
     val color = highlightColor ?: defaultHighlight
+    val focusHighlight = LoonFocusRing.copy(alpha = 0.10f)
 
     this
-        .background(if (enabled && isPressed) color else Color.Transparent)
+        .background(
+            when {
+                enabled && isPressed -> color
+                enabled && focused -> focusHighlight
+                else -> Color.Transparent
+            }
+        )
+        .onFocusChanged { focused = it.isFocused }
+        .then(if (focusShape != null) Modifier.iosFocusRing(focusShape) else Modifier)
         .then(
             if (onClick != null) {
                 Modifier.clickable(
@@ -260,24 +302,22 @@ fun CupertinoGroupedSection(
             Text(
                 text = displayHeader.uppercase(),
                 color = LoonTextSecondary,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.3.sp,
-                modifier = Modifier.padding(start = 14.dp, bottom = 6.dp)
+                style = LoonTextStyles.groupHeader(),
+                modifier = Modifier.padding(start = 14.dp, bottom = LoonSpacing.xs)
             )
         }
 
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(LoonRadii.card))
                 .border(
                     width = 0.5.dp,
                     color = LoonCardBorder,
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(LoonRadii.card)
                 ),
             color = LoonCard,
-            shape = RoundedCornerShape(14.dp)
+            shape = RoundedCornerShape(LoonRadii.card)
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -289,9 +329,8 @@ fun CupertinoGroupedSection(
             Text(
                 text = footer,
                 color = LoonTextSecondary,
-                fontSize = 12.sp,
-                lineHeight = 16.sp,
-                modifier = Modifier.padding(start = 14.dp, top = 6.dp, end = 14.dp)
+                style = LoonTextStyles.subtitle(),
+                modifier = Modifier.padding(start = 14.dp, top = LoonSpacing.xs, end = 14.dp)
             )
         }
     }
@@ -315,13 +354,11 @@ fun <T> LazyListScope.cupertinoGroupedItems(
             Text(
                 text = header.uppercase(),
                 color = LoonTextSecondary,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.3.sp,
+                style = LoonTextStyles.groupHeader(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .padding(start = 14.dp, bottom = 6.dp)
+                    .padding(start = 14.dp, bottom = LoonSpacing.xs)
             )
         }
     }
@@ -335,9 +372,9 @@ fun <T> LazyListScope.cupertinoGroupedItems(
         val isFirst = index == 0
         val isLast = index == lastIdx
         val shape = when {
-            isFirst && isLast -> RoundedCornerShape(14.dp)
-            isFirst -> RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp)
-            isLast -> RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp)
+            isFirst && isLast -> RoundedCornerShape(LoonRadii.card)
+            isFirst -> RoundedCornerShape(topStart = LoonRadii.card, topEnd = LoonRadii.card)
+            isLast -> RoundedCornerShape(bottomStart = LoonRadii.card, bottomEnd = LoonRadii.card)
             else -> RoundedCornerShape(0.dp)
         }
 
@@ -360,12 +397,11 @@ fun <T> LazyListScope.cupertinoGroupedItems(
             Text(
                 text = footer,
                 color = LoonTextSecondary,
-                fontSize = 12.sp,
-                lineHeight = 16.sp,
+                style = LoonTextStyles.subtitle(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .padding(start = 14.dp, top = 6.dp, end = 14.dp)
+                    .padding(start = 14.dp, top = LoonSpacing.xs, end = 14.dp)
             )
         }
     }
@@ -410,8 +446,8 @@ fun CupertinoCell(
             if (customIcon != null) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(7.dp)),
+                        .size(LoonSizes.iconBadge)
+                        .clip(RoundedCornerShape(LoonRadii.iconBadge)),
                     contentAlignment = Alignment.Center
                 ) {
                     customIcon()
@@ -420,8 +456,8 @@ fun CupertinoCell(
             } else if (icon != null) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(7.dp))
+                        .size(LoonSizes.iconBadge)
+                        .clip(RoundedCornerShape(LoonRadii.iconBadge))
                         .background(iconBg),
                     contentAlignment = Alignment.Center
                 ) {
@@ -440,17 +476,14 @@ fun CupertinoCell(
                 Text(
                     text = title,
                     color = if (enabled) LoonTextPrimary else LoonTextMuted,
-                    fontSize = 15.5.sp,
-                    fontWeight = FontWeight.Normal,
-                    letterSpacing = if (LocalAppFont.current == AppFont.IOS) (-0.2).sp else 0.sp
+                    style = LoonTextStyles.cellTitle()
                 )
                 if (!subtitle.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(LoonSpacing.xxs))
                     Text(
                         text = subtitle,
                         color = LoonTextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 15.sp
+                        style = LoonTextStyles.subtitle()
                     )
                 }
             }
@@ -468,17 +501,16 @@ fun CupertinoCell(
                     Text(
                         text = value,
                         color = LoonTextSecondary,
-                        fontSize = 14.5.sp,
-                        fontWeight = FontWeight.Normal
+                        style = LoonTextStyles.value()
                     )
                 }
                 if (showChevron) {
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(LoonSpacing.xs))
                     Icon(
                         imageVector = Icons.Default.ChevronRight,
                         contentDescription = null,
                         tint = LoonChevronTint,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(LoonSizes.iconSmall)
                     )
                 }
             }
@@ -526,56 +558,63 @@ fun CupertinoSwitch(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    val haptic = rememberIosHaptic()
     val checkedTrackColor = IosGreen
     val uncheckedTrackColor = LoonSwitchUncheckedTrack
+    val reduceMotion = LocalReduceMotion.current
 
     val trackColor by animateColorAsState(
         targetValue = if (checked) checkedTrackColor else uncheckedTrackColor,
-        animationSpec = tween(durationMillis = 200),
+        animationSpec = if (reduceMotion) snap() else tween(durationMillis = 200),
         label = "switch_track_color"
     )
 
     // Thumb slide position: width is 51dp, thumb is 27dp, padding is 2dp on each side.
-    // Unchecked offset: 2dp. Checked offset: 51 - 27 - 2 = 22dp.
     val targetOffset = if (checked) 22.dp else 2.dp
     val thumbOffset by animateDpAsState(
         targetValue = targetOffset,
-        animationSpec = spring(
-            dampingRatio = 0.78f,
-            stiffness = 650f
-        ),
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.78f, stiffness = 650f)
+        },
         label = "switch_thumb_offset"
     )
 
+    // The visible track stays 51x31; the toggle (and its semantics / touch target) is the
+    // 48dp-high wrapper so TalkBack announces a real switch and the tap area is accessible.
     Box(
         modifier = modifier
-            .size(width = 51.dp, height = 31.dp)
-            .clip(RoundedCornerShape(15.5.dp))
-            .background(trackColor)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                enabled = enabled
-            ) {
-                haptic.lightTick()
-                onCheckedChange(!checked)
-            },
-        contentAlignment = Alignment.CenterStart
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .iosFocusRing(CircleShape)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            ),
+        contentAlignment = Alignment.Center
     ) {
-        // Thumb circle with subtle iOS drop shadow
         Box(
             modifier = Modifier
-                .offset(x = thumbOffset)
-                .size(27.dp)
-                .shadow(
-                    elevation = 2.dp,
-                    shape = CircleShape,
-                    spotColor = Color(0x33000000)
-                )
-                .clip(CircleShape)
-                .background(Color.White)
-        )
+                .size(LoonSizes.switchWidth, LoonSizes.switchHeight)
+                .clip(RoundedCornerShape(percent = 50))
+                .background(trackColor),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // Thumb circle with subtle iOS drop shadow
+            Box(
+                modifier = Modifier
+                    .offset(x = thumbOffset)
+                    .size(LoonSizes.switchThumb)
+                    .shadow(
+                        elevation = 2.dp,
+                        shape = CircleShape,
+                        spotColor = LoonExtraColors.shadowStrong
+                    )
+                    .clip(CircleShape)
+                    .background(Color.White)
+            )
+        }
     }
 }
 
@@ -604,8 +643,8 @@ fun CupertinoNavBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 8.dp),
+                    .height(LoonSizes.navBarHeight)
+                    .padding(horizontal = LoonSpacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -617,27 +656,28 @@ fun CupertinoNavBar(
                     if (showBackButton && onBack != null) {
                         Row(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(LoonRadii.control))
+                                .heightIn(min = LoonSizes.navBarHeight)
+                                .iosFocusRing(RoundedCornerShape(LoonRadii.control))
                                 .iosPressable {
                                     haptic.lightTick()
                                     onBack()
                                 }
-                                .padding(horizontal = 6.dp, vertical = 6.dp),
+                                .padding(horizontal = LoonSpacing.xs),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
                                 contentDescription = AppStrings.get("back", LocalAppLanguage.current),
-                                tint = IosBlue,
+                                tint = LoonInfoText,
                                 modifier = Modifier.size(17.dp)
                             )
                             if (!backLabel.isNullOrBlank()) {
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
                                     text = backLabel,
-                                    color = IosBlue,
-                                    fontSize = 15.5.sp,
-                                    fontWeight = FontWeight.Normal
+                                    color = LoonInfoText,
+                                    style = LoonTextStyles.body()
                                 )
                             }
                         }
@@ -652,16 +692,14 @@ fun CupertinoNavBar(
                     Text(
                         text = title,
                         color = LoonTextPrimary,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = if (LocalAppFont.current == AppFont.IOS) (-0.3).sp else 0.sp,
+                        style = LoonTextStyles.navTitle(),
                         maxLines = 1
                     )
                     if (!subtitle.isNullOrBlank()) {
                         Text(
                             text = subtitle,
                             color = LoonTextSecondary,
-                            fontSize = 11.sp,
+                            style = LoonTextStyles.caption(),
                             maxLines = 1
                         )
                     }
@@ -715,7 +753,7 @@ fun CupertinoActionSheet(
         containerColor = Color.Transparent,
         contentColor = LoonTextPrimary,
         tonalElevation = 0.dp,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(LoonRadii.card),
         dragHandle = null
     ) {
         Column(
@@ -723,12 +761,13 @@ fun CupertinoActionSheet(
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 10.dp)
-                .padding(top = 8.dp, bottom = 16.dp),
+                .padding(top = 8.dp, bottom = 16.dp)
+                .semantics { paneTitle = title ?: cancelText },
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // Actions container
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(LoonRadii.card),
                 color = LoonCard,
                 border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                 modifier = Modifier.fillMaxWidth()
@@ -750,8 +789,7 @@ fun CupertinoActionSheet(
                             if (!title.isNullOrBlank()) {
                                 Text(
                                     text = title,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
+                                    style = LoonTextStyles.actionSheetTitle(),
                                     color = LoonTextSecondary,
                                     textAlign = TextAlign.Center
                                 )
@@ -760,7 +798,7 @@ fun CupertinoActionSheet(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = message,
-                                    fontSize = 12.sp,
+                                    style = LoonTextStyles.caption(),
                                     color = LoonTextMuted,
                                     textAlign = TextAlign.Center
                                 )
@@ -783,9 +821,8 @@ fun CupertinoActionSheet(
                         ) {
                             Text(
                                 text = action.text,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.Normal,
-                                color = if (action.isDestructive) RedDanger else IosBlue,
+                                style = LoonTextStyles.actionLabel(),
+                                color = if (action.isDestructive) LoonDangerText else LoonInfoText,
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -798,7 +835,7 @@ fun CupertinoActionSheet(
 
             // Standalone Cancel button
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(LoonRadii.card),
                 color = LoonCard,
                 border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                 modifier = Modifier
@@ -815,9 +852,8 @@ fun CupertinoActionSheet(
                 ) {
                     Text(
                         text = cancelText,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = IosBlue,
+                        style = LoonTextStyles.actionLabelStrong(),
+                        color = LoonInfoText,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -855,7 +891,7 @@ fun <T> CupertinoSelectDialog(
                 Text(
                     text = title,
                     color = LoonTextPrimary,
-                    fontSize = 17.sp,
+                    fontSize = LoonTypeScale.title2,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -882,7 +918,7 @@ fun <T> CupertinoSelectDialog(
                     ) {
                         Text(
                             text = label,
-                            fontSize = 15.sp,
+                            fontSize = LoonTypeScale.body,
                             color = if (isSelected) IosBlue else LoonTextPrimary,
                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                             modifier = Modifier.weight(1f)
@@ -924,6 +960,7 @@ fun <T> CupertinoSegmentedControl(
 ) {
     if (items.isEmpty()) return
     val haptic = rememberIosHaptic()
+    val reduceMotion = LocalReduceMotion.current
     // -1 (selection not in the list, e.g. a persisted legacy value) must not be coerced to
     // zero: highlighting the first segment would misrepresent the actual selection.
     val selectedIndex = remember(items, selectedItem) {
@@ -934,7 +971,7 @@ fun <T> CupertinoSegmentedControl(
         modifier = modifier
             .fillMaxWidth()
             .height(32.dp)
-            .clip(RoundedCornerShape(8.5.dp))
+            .clip(RoundedCornerShape(LoonRadii.segmented))
             .background(LoonTertiaryBg)
             .padding(2.dp)
     ) {
@@ -944,10 +981,11 @@ fun <T> CupertinoSegmentedControl(
         // iOS spring sliding indicator (Single physical Thumb)
         val thumbOffset by animateDpAsState(
             targetValue = segmentWidth * selectedIndex.coerceAtLeast(0),
-            animationSpec = spring(
-                dampingRatio = 0.84f,
-                stiffness = 380f
-            ),
+            animationSpec = if (reduceMotion) {
+                snap()
+            } else {
+                spring(dampingRatio = 0.84f, stiffness = 380f)
+            },
             label = "segmented_thumb_offset"
         )
 
@@ -958,16 +996,26 @@ fun <T> CupertinoSegmentedControl(
                     .offset(x = thumbOffset)
                     .width(segmentWidth)
                     .fillMaxHeight()
-                    .shadow(elevation = 2.dp, shape = RoundedCornerShape(7.dp), spotColor = Color(0x28000000))
-                    .clip(RoundedCornerShape(7.dp))
+                    .shadow(
+                        elevation = 2.dp,
+                        shape = RoundedCornerShape(LoonRadii.segmentedThumb),
+                        spotColor = LoonExtraColors.shadowMedium
+                    )
+                    .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
                     .background(LoonCard)
-                    .border(0.5.dp, LoonCardBorder.copy(alpha = 0.6f), RoundedCornerShape(7.dp))
+                    .border(
+                        0.5.dp,
+                        LoonCardBorder.copy(alpha = 0.6f),
+                        RoundedCornerShape(LoonRadii.segmentedThumb)
+                    )
             )
         }
 
         // Row of items & separators
         Row(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .selectableGroup(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             items.forEachIndexed { index, item ->
@@ -996,23 +1044,28 @@ fun <T> CupertinoSegmentedControl(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .clip(RoundedCornerShape(7.dp))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) {
-                                if (index != selectedIndex) {
-                                    haptic.selection()
-                                    onItemSelected(item)
+                            .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
+                            .iosFocusRing(RoundedCornerShape(LoonRadii.segmentedThumb))
+                            .selectable(
+                                selected = isSelected,
+                                role = Role.Tab,
+                                onClick = {
+                                    if (index != selectedIndex) {
+                                        haptic.selection()
+                                        onItemSelected(item)
+                                    }
                                 }
-                            },
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = labelProvider(item),
                             color = if (isSelected) LoonTextPrimary else LoonTextSecondary,
-                            fontSize = 13.sp,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            style = if (isSelected) {
+                                LoonTextStyles.segmentedLabelStrong()
+                            } else {
+                                LoonTextStyles.segmentedLabel()
+                            },
                             maxLines = 1
                         )
                     }
@@ -1042,12 +1095,13 @@ fun CupertinoAlertDialog(
 
     Dialog(onDismissRequest = onDismissRequest) {
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(LoonRadii.dialog),
             color = LoonCard,
             border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
             modifier = Modifier
                 .widthIn(min = 270.dp, max = 310.dp)
                 .fillMaxWidth(0.85f)
+                .semantics { paneTitle = title }
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -1057,27 +1111,28 @@ fun CupertinoAlertDialog(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 18.dp, end = 18.dp, top = 20.dp, bottom = if (content != null) 12.dp else 18.dp),
+                        .padding(
+                            start = 18.dp,
+                            end = 18.dp,
+                            top = LoonSpacing.xl,
+                            bottom = if (content != null) LoonSpacing.md else 18.dp
+                        ),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
                         text = title,
                         color = LoonTextPrimary,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        lineHeight = 22.sp
+                        style = LoonTextStyles.dialogTitle(),
+                        textAlign = TextAlign.Center
                     )
 
                     if (!message.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(LoonSpacing.xs))
                         Text(
                             text = message,
                             color = LoonTextSecondary,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Normal,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 18.sp
+                            style = LoonTextStyles.dialogMessage(),
+                            textAlign = TextAlign.Center
                         )
                     }
 
@@ -1095,7 +1150,7 @@ fun CupertinoAlertDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(44.dp),
+                            .height(LoonSizes.touchTargetMin),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Dismiss button (Cancel)
@@ -1111,9 +1166,8 @@ fun CupertinoAlertDialog(
                         ) {
                             Text(
                                 text = dismissText,
-                                color = IosBlue,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Normal
+                                color = LoonInfoText,
+                                style = LoonTextStyles.button()
                             )
                         }
 
@@ -1138,9 +1192,8 @@ fun CupertinoAlertDialog(
                         ) {
                             Text(
                                 text = confirmText,
-                                color = if (isDestructive) RedDanger else IosBlue,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold
+                                color = if (isDestructive) LoonDangerText else LoonInfoText,
+                                style = LoonTextStyles.button()
                             )
                         }
                     }
@@ -1149,7 +1202,7 @@ fun CupertinoAlertDialog(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(44.dp)
+                            .height(LoonSizes.touchTargetMin)
                             .iosHighlightPressable {
                                 haptic.lightTick()
                                 onConfirm()
@@ -1158,9 +1211,8 @@ fun CupertinoAlertDialog(
                     ) {
                         Text(
                             text = confirmText,
-                            color = if (isDestructive) RedDanger else IosBlue,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            color = if (isDestructive) LoonDangerText else LoonInfoText,
+                            style = LoonTextStyles.button()
                         )
                     }
                 }
@@ -1213,7 +1265,7 @@ fun CupertinoSearchBar(
                     Text(
                         text = placeholder,
                         color = LoonTextMuted,
-                        fontSize = 14.sp
+                        fontSize = LoonTypeScale.subhead
                     )
                 }
 
@@ -1223,7 +1275,7 @@ fun CupertinoSearchBar(
                     singleLine = true,
                     textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
-                        fontSize = 14.sp,
+                        fontSize = LoonTypeScale.subhead,
                         fontWeight = FontWeight.Normal
                     ),
                     cursorBrush = SolidColor(IosBlue),
@@ -1295,7 +1347,7 @@ fun CupertinoTextField(
                     Text(
                         text = placeholder,
                         color = LoonTextMuted,
-                        fontSize = 14.5.sp
+                        fontSize = LoonTypeScale.subheadLarge
                     )
                 }
 
@@ -1307,7 +1359,7 @@ fun CupertinoTextField(
                     visualTransformation = visualTransformation,
                     textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
-                        fontSize = 14.5.sp,
+                        fontSize = LoonTypeScale.subheadLarge,
                         fontWeight = FontWeight.Normal
                     ),
                     cursorBrush = SolidColor(IosBlue),
@@ -1347,22 +1399,28 @@ fun CupertinoButton(
 
     val (bg, contentColor) = when (style) {
         CupertinoButtonStyle.Filled -> Pair(IosBlue, Color.White)
-        CupertinoButtonStyle.Tinted -> Pair(IosBlue.copy(alpha = 0.14f), IosBlue)
-        CupertinoButtonStyle.Plain -> Pair(Color.Transparent, IosBlue)
-        CupertinoButtonStyle.Destructive -> Pair(RedDanger.copy(alpha = 0.14f), RedDanger)
+        CupertinoButtonStyle.Tinted -> Pair(IosBlue.copy(alpha = 0.14f), LoonInfoText)
+        CupertinoButtonStyle.Plain -> Pair(Color.Transparent, LoonInfoText)
+        CupertinoButtonStyle.Destructive -> Pair(RedDanger.copy(alpha = 0.14f), LoonDangerText)
     }
 
     Surface(
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(LoonRadii.control),
         color = if (enabled) bg else bg.copy(alpha = 0.4f),
         modifier = modifier
-            .iosPressable(enabled = enabled, pressedScale = 0.97f) {
+            .iosPressable(
+                enabled = enabled,
+                pressedScale = LoonMotion.pressScaleStrong,
+                focusShape = RoundedCornerShape(LoonRadii.control)
+            ) {
                 haptic.lightTick()
                 onClick()
             }
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            modifier = Modifier
+                .heightIn(min = LoonSizes.buttonHeight)
+                .padding(horizontal = 16.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -1371,15 +1429,14 @@ fun CupertinoButton(
                     imageVector = icon,
                     contentDescription = null,
                     tint = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(LoonSizes.iconSmall)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
             }
             Text(
                 text = text,
                 color = if (enabled) contentColor else contentColor.copy(alpha = 0.4f),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
+                style = LoonTextStyles.buttonSmall()
             )
         }
     }
@@ -1405,7 +1462,7 @@ fun CupertinoModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
         containerColor = LoonCard,
-        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        shape = RoundedCornerShape(topStart = LoonRadii.sheet, topEnd = LoonRadii.sheet),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -1423,6 +1480,7 @@ fun CupertinoModalBottomSheet(
                 .navigationBarsPadding()
                 .imePadding()
                 .padding(bottom = 16.dp)
+                .semantics { if (title != null) paneTitle = title }
         ) {
             val showNavBar = title != null || doneText != null
             val hasActions = leadingAction != null || trailingAction != null
@@ -1430,13 +1488,13 @@ fun CupertinoModalBottomSheet(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
-                        .padding(horizontal = 16.dp),
+                        .height(LoonSizes.touchTargetMin)
+                        .padding(horizontal = LoonSpacing.lg),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
-                        modifier = Modifier.widthIn(min = 44.dp),
+                        modifier = Modifier.widthIn(min = LoonSizes.touchTargetMin),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         leadingAction?.invoke()
@@ -1445,15 +1503,14 @@ fun CupertinoModalBottomSheet(
                     if (title != null) {
                         Text(
                             text = title,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            style = LoonTextStyles.navTitle(),
                             color = LoonTextPrimary,
                             maxLines = 1
                         )
                     }
 
                     Box(
-                        modifier = Modifier.widthIn(min = 44.dp),
+                        modifier = Modifier.widthIn(min = LoonSizes.touchTargetMin),
                         contentAlignment = Alignment.CenterEnd
                     ) {
                         if (trailingAction != null) {
@@ -1462,8 +1519,9 @@ fun CupertinoModalBottomSheet(
                             val haptic = rememberIosHaptic()
                             Box(
                                 modifier = Modifier
-                                    .height(36.dp)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .height(LoonSizes.touchTargetMin)
+                                    .clip(RoundedCornerShape(LoonRadii.control))
+                                    .iosFocusRing(RoundedCornerShape(LoonRadii.control))
                                     .iosPressable {
                                         haptic.lightTick()
                                         onDismissRequest()
@@ -1473,9 +1531,8 @@ fun CupertinoModalBottomSheet(
                             ) {
                                 Text(
                                     text = doneText,
-                                    color = IosBlue,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    color = LoonInfoText,
+                                    style = LoonTextStyles.button()
                                 )
                             }
                         }
@@ -1587,6 +1644,14 @@ fun CupertinoToastHost(
                 modifier = Modifier
                     .padding(horizontal = 24.dp)
                     .widthIn(min = 120.dp, max = 340.dp)
+                    .semantics {
+                        // Screen readers announce toasts; the visual pill alone is invisible to them.
+                        liveRegion = if (data.isDestructive) {
+                            LiveRegionMode.Assertive
+                        } else {
+                            LiveRegionMode.Polite
+                        }
+                    }
             ) {
                 Row(
                     modifier = Modifier
@@ -1595,19 +1660,18 @@ fun CupertinoToastHost(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     val iconVector = data.icon ?: if (data.isDestructive) Icons.Default.Clear else Icons.Default.Check
-                    val iconTint = if (data.isDestructive) RedDanger else IosGreen
+                    val iconTint = if (data.isDestructive) LoonDangerText else LoonSuccessText
                     Icon(
                         imageVector = iconVector,
                         contentDescription = null,
                         tint = iconTint,
-                        modifier = Modifier.size(17.dp)
+                        modifier = Modifier.size(LoonSizes.iconSmall)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(LoonSpacing.sm))
                     Text(
                         text = data.message,
                         color = LocalLoonColors.current.textPrimary,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.Medium,
+                        style = LoonTextStyles.toast(),
                         maxLines = 2,
                         textAlign = TextAlign.Center
                     )

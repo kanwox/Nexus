@@ -26,6 +26,8 @@ import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.data.DnsRecord
 import com.github.mihomo.android.data.DnsRepository
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -105,8 +107,8 @@ fun DnsScreen(
                         ) {
                             Text(
                                 text = AppStrings.get("action_clear", lang),
-                                color = RedDanger,
-                                fontSize = 16.sp,
+                                color = LoonDangerText,
+                                fontSize = LoonTypeScale.title3,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -160,7 +162,7 @@ fun DnsScreen(
                                     AppStrings.get("dns_empty", lang)
                                 },
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     }
@@ -214,7 +216,7 @@ fun DnsScreen(
                 // Domain Card
                 Text(
                     text = AppStrings.get("dns_field_domain", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Medium,
                     color = LoonTextSecondary
                 )
@@ -235,7 +237,7 @@ fun DnsScreen(
                 ) {
                     Text(
                         text = rec.domain,
-                        fontSize = 14.5.sp,
+                        fontSize = LoonTypeScale.subheadLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = LoonTextPrimary,
                         modifier = Modifier.weight(1f)
@@ -253,7 +255,7 @@ fun DnsScreen(
                 // Resolved IP Card
                 Text(
                     text = AppStrings.get("dns_result_ip", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Medium,
                     color = LoonTextSecondary
                 )
@@ -274,7 +276,7 @@ fun DnsScreen(
                 ) {
                     Text(
                         text = rec.ip,
-                        fontSize = 14.5.sp,
+                        fontSize = LoonTypeScale.subheadLarge,
                         fontWeight = FontWeight.Medium,
                         color = LoonTextPrimary,
                         modifier = Modifier.weight(1f)
@@ -291,7 +293,7 @@ fun DnsScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = AppStrings.get("dns_server_label", lang),
-                        fontSize = 12.sp,
+                        fontSize = LoonTypeScale.footnote,
                         fontWeight = FontWeight.Medium,
                         color = LoonTextSecondary
                     )
@@ -306,7 +308,7 @@ fun DnsScreen(
                     ) {
                         Text(
                             text = rec.server,
-                            fontSize = 13.5.sp,
+                            fontSize = LoonTypeScale.calloutLarge,
                             fontWeight = FontWeight.Normal,
                             color = LoonTextPrimary
                         )
@@ -321,37 +323,37 @@ fun DnsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text(text = AppStrings.get("dns_mode_label", lang), fontSize = 11.sp, color = LoonTextSecondary)
+                        Text(text = AppStrings.get("dns_mode_label", lang), fontSize = LoonTypeScale.caption, color = LoonTextSecondary)
                         Text(
                             text = if (rec.isFakeIp) "Fake-IP" else AppStrings.get("dns_real_ip", lang),
-                            fontSize = 13.sp,
+                            fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.SemiBold,
                             color = if (rec.isFakeIp) IosBlue else LoonTextPrimary
                         )
                     }
                     Column {
-                        Text(text = AppStrings.get("dns_type_label", lang), fontSize = 11.sp, color = LoonTextSecondary)
+                        Text(text = AppStrings.get("dns_type_label", lang), fontSize = LoonTypeScale.caption, color = LoonTextSecondary)
                         Text(
                             text = rec.type,
-                            fontSize = 13.sp,
+                            fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.SemiBold,
                             color = LoonTextPrimary
                         )
                     }
                     Column {
-                        Text(text = AppStrings.get("dns_latency_label", lang), fontSize = 11.sp, color = LoonTextSecondary)
+                        Text(text = AppStrings.get("dns_latency_label", lang), fontSize = LoonTypeScale.caption, color = LoonTextSecondary)
                         Text(
                             text = if (rec.latencyMs <= 0) AppStrings.get("dns_cache_hit", lang) else "${rec.latencyMs}ms",
-                            fontSize = 13.sp,
+                            fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (rec.latencyMs <= 0) IosGreen else LoonTextPrimary
+                            color = if (rec.latencyMs <= 0) LoonSuccessText else LoonTextPrimary
                         )
                     }
                     Column {
-                        Text(text = AppStrings.get("dns_time_label", lang), fontSize = 11.sp, color = LoonTextSecondary)
+                        Text(text = AppStrings.get("dns_time_label", lang), fontSize = LoonTypeScale.caption, color = LoonTextSecondary)
                         Text(
                             text = formattedTime,
-                            fontSize = 13.sp,
+                            fontSize = LoonTypeScale.callout,
                             color = LoonTextSecondary
                         )
                     }
@@ -408,7 +410,7 @@ private fun DnsRecordCell(
             Text(
                 text = record.domain,
                 color = LoonTextPrimary,
-                fontSize = 15.sp,
+                fontSize = LoonTypeScale.body,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -420,15 +422,15 @@ private fun DnsRecordCell(
             if (record.latencyMs <= 0) {
                 Text(
                     text = AppStrings.get("dns_cache_badge", lang),
-                    color = IosGreen,
-                    fontSize = 12.sp,
+                    color = LoonSuccessText,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Medium
                 )
             } else {
                 Text(
                     text = "${record.latencyMs}ms",
-                    color = if (record.latencyMs > 100) IosOrange else LoonTextSecondary,
-                    fontSize = 12.sp,
+                    color = if (record.latencyMs > 100) LoonWarningText else LoonTextSecondary,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Normal
                 )
             }
@@ -449,7 +451,7 @@ private fun DnsRecordCell(
                 Text(
                     text = record.ip,
                     color = LoonTextSecondary,
-                    fontSize = 13.sp,
+                    fontSize = LoonTypeScale.callout,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -458,7 +460,7 @@ private fun DnsRecordCell(
                     Text(
                         text = " · Fake-IP",
                         color = IosBlue,
-                        fontSize = 12.sp,
+                        fontSize = LoonTypeScale.footnote,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -469,7 +471,7 @@ private fun DnsRecordCell(
             Text(
                 text = formattedTime,
                 color = LoonTextMuted,
-                fontSize = 12.sp
+                fontSize = LoonTypeScale.footnote
             )
         }
     }

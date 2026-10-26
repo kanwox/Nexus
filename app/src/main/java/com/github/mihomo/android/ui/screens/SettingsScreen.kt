@@ -21,6 +21,8 @@ import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.data.ThemeMode
 import com.github.mihomo.android.data.UpdateChecker
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -76,9 +78,7 @@ fun SettingsScreen(
             Text(
                 text = AppStrings.get("settings_title", lang),
                 color = LoonTextPrimary,
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = if (LocalAppFont.current == com.github.mihomo.android.data.AppFont.IOS) (-0.45).sp else 0.sp
+                style = LoonTextStyles.largeTitleBold()
             )
         }
 

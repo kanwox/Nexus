@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import com.github.mihomo.android.ui.theme.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,9 +41,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 
 @Composable
@@ -52,9 +57,9 @@ fun LoonTrafficCard(
     isUpload: Boolean
 ) {
     val gradient = if (isUpload) {
-        Brush.horizontalGradient(listOf(LoonGreen, Color(0xFF00E676)))
+        Brush.horizontalGradient(listOf(LoonGreen, LoonExtraColors.greenBright))
     } else {
-        Brush.horizontalGradient(listOf(LoonBlue, Color(0xFF6C5CE7)))
+        Brush.horizontalGradient(listOf(LoonBlue, LoonExtraColors.violet))
     }
 
     Surface(
@@ -63,7 +68,7 @@ fun LoonTrafficCard(
             .shadow(
                 elevation = 6.dp,
                 shape = RoundedCornerShape(18.dp),
-                spotColor = if (isUpload) Color(0x3300C853) else Color(0x334A69FF)
+                spotColor = if (isUpload) LoonExtraColors.glowGreen else LoonExtraColors.glowBlue
             ),
         shape = RoundedCornerShape(18.dp),
         color = Color.Transparent
@@ -83,14 +88,14 @@ fun LoonTrafficCard(
                 Text(
                     text = title,
                     color = Color.White.copy(alpha = 0.88f),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = if (speed.isBlank()) "--" else speed,
                     color = Color.White,
-                    fontSize = 15.5.sp,
+                    fontSize = LoonTypeScale.bodyLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
                 )
@@ -307,7 +312,7 @@ fun LoonShortcutCard(
     Surface(
         modifier = modifier
             .height(118.dp)
-            .shadow(1.5.dp, RoundedCornerShape(18.dp), spotColor = Color(0x0A000000))
+            .shadow(1.5.dp, RoundedCornerShape(18.dp), spotColor = LoonExtraColors.shadowHairline)
             .clip(RoundedCornerShape(18.dp))
             .border(
                 width = 0.5.dp,
@@ -330,7 +335,7 @@ fun LoonShortcutCard(
                 Text(
                     text = title,
                     color = LoonTextPrimary,
-                    fontSize = 15.sp,
+                    fontSize = LoonTypeScale.body,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
                 )
@@ -339,7 +344,7 @@ fun LoonShortcutCard(
                     Text(
                         text = subtitle,
                         color = LoonTextSecondary,
-                        fontSize = 12.sp,
+                        fontSize = LoonTypeScale.footnote,
                         maxLines = 1
                     )
                 }
@@ -398,7 +403,7 @@ fun LoonShortcutCard(
                     Text(
                         text = "\u2212",
                         color = Color.White,
-                        fontSize = 15.sp,
+                        fontSize = LoonTypeScale.body,
                         fontWeight = FontWeight.ExtraBold
                     )
                 }
@@ -420,7 +425,7 @@ fun RequestLogsIllustration() {
 
             // Main document paper card (vibrant violet-purple with subtle lighting)
             val docGrad = Brush.verticalGradient(
-                colors = listOf(Color(0xFFA855F7), Color(0xFF9333EA)),
+                colors = listOf(LoonExtraColors.purple, LoonExtraColors.purpleDark),
                 startY = h * 0.16f,
                 endY = h * 0.84f
             )
@@ -470,7 +475,7 @@ fun ProfilesIllustration() {
             // Two stacked card layers (from back to front)
             // 1. Back card (upper-right)
             drawRoundRect(
-                color = Color(0xFF93C5FD),
+                color = LoonExtraColors.bluePale,
                 topLeft = Offset(w * 0.22f, h * 0.18f),
                 size = Size(cardW, cardH),
                 cornerRadius = cornerRadius
@@ -486,7 +491,7 @@ fun ProfilesIllustration() {
 
             // 2. Front card (blue gradient)
             val frontGradient = Brush.linearGradient(
-                colors = listOf(Color(0xFF60A5FA), Color(0xFF1D4ED8)),
+                colors = listOf(LoonExtraColors.blue, LoonExtraColors.blueDark),
                 start = Offset(w * 0.12f, h * 0.30f),
                 end = Offset(w * 0.12f + cardW, h * 0.30f + cardH)
             )
@@ -521,7 +526,7 @@ fun RulesIllustration() {
             val w = size.width
             val h = size.height
             val gradient = Brush.linearGradient(
-                colors = listOf(Color(0xFF38BDF8), Color(0xFF0284C7)),
+                colors = listOf(LoonExtraColors.sky, LoonExtraColors.skyDark),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -559,7 +564,7 @@ fun PluginsIllustration() {
             val w = size.width
             val h = size.height
             val gradient = Brush.linearGradient(
-                colors = listOf(Color(0xFF818CF8), Color(0xFF6366F1)),
+                colors = listOf(LoonExtraColors.indigo, LoonExtraColors.indigoDark),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -594,7 +599,7 @@ fun NodesIllustration() {
             val h = size.height
 
             val bladeGradient = Brush.linearGradient(
-                colors = listOf(Color(0xFF60A5FA), Color(0xFF2563EB)),
+                colors = listOf(LoonExtraColors.blue, LoonExtraColors.blueMain),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -645,7 +650,7 @@ fun NetworkShareIllustration() {
             val w = size.width
             val h = size.height
             val gradient = Brush.linearGradient(
-                colors = listOf(Color(0xFFF87171), Color(0xFFDC2626)),
+                colors = listOf(LoonExtraColors.red, LoonExtraColors.redDark),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -683,7 +688,7 @@ fun DnsIllustration() {
             val w = size.width
             val h = size.height
             val gradient = Brush.linearGradient(
-                colors = listOf(Color(0xFF34D399), Color(0xFF059669)),
+                colors = listOf(LoonExtraColors.green, LoonExtraColors.greenDark),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -716,7 +721,7 @@ fun AppRoutingIllustration() {
 
             // Single rounded square background (scaled down to 0.72f to match other icons)
             val bgGrad = Brush.linearGradient(
-                colors = listOf(Color(0xFF6366F1), Color(0xFF2563EB)),
+                colors = listOf(LoonExtraColors.indigoDark, LoonExtraColors.blueMain),
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
@@ -778,14 +783,15 @@ fun LoonFloatingBottomBar(
 ) {
     Surface(
         modifier = modifier
-            .shadow(16.dp, RoundedCornerShape(32.dp), spotColor = Color(0x1F000000))
+            .shadow(16.dp, RoundedCornerShape(32.dp), spotColor = LoonExtraColors.shadowSoft)
             .border(0.5.dp, LocalLoonColors.current.bottomBarBorder, RoundedCornerShape(32.dp)),
         shape = RoundedCornerShape(32.dp),
         color = LocalLoonColors.current.bottomBarBg
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 28.dp, vertical = 7.dp),
+                .padding(horizontal = 28.dp, vertical = 7.dp)
+                .selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(40.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -874,17 +880,19 @@ private fun BottomNavItem(
     onClick: () -> Unit
 ) {
     val haptic = rememberIosHaptic()
+    val reduceMotion = LocalReduceMotion.current
     val tint by animateColorAsState(
         targetValue = if (isSelected) IosBlue else IosGray,
-        animationSpec = tween(durationMillis = 200),
+        animationSpec = if (reduceMotion) snap() else tween(durationMillis = 200),
         label = "nav_tint"
     )
     val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.08f else 1.0f,
-        animationSpec = spring(
-            dampingRatio = 0.7f,
-            stiffness = 400f
-        ),
+        targetValue = if (isSelected && !reduceMotion) 1.08f else 1.0f,
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.7f, stiffness = 400f)
+        },
         label = "nav_scale"
     )
 
@@ -894,13 +902,16 @@ private fun BottomNavItem(
                 scaleX = scale
                 scaleY = scale
             }
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                haptic.navTabSelection()
-                onClick()
-            }
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .iosFocusRing(RoundedCornerShape(LoonRadii.control))
+            .selectable(
+                selected = isSelected,
+                role = Role.Tab,
+                onClick = {
+                    haptic.navTabSelection()
+                    onClick()
+                }
+            )
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -918,8 +929,7 @@ private fun BottomNavItem(
         Text(
             text = label,
             color = tint,
-            fontSize = 10.5.sp,
-            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+            style = if (isSelected) LoonTextStyles.tabStrong() else LoonTextStyles.tab()
         )
     }
 }

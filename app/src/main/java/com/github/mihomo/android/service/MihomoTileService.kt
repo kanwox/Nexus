@@ -76,7 +76,7 @@ class MihomoTileService : TileService() {
         when (status) {
             VpnState.Status.RUNNING -> {
                 tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_connected"))
+                setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_connected"))
             }
             VpnState.Status.STARTING -> {
                 // Keep the last settled state during transitions: flipping to ACTIVE before
@@ -87,7 +87,7 @@ class MihomoTileService : TileService() {
             }
             VpnState.Status.STOPPED -> {
                 tile.state = Tile.STATE_INACTIVE
-                setSubtitle(tile, com.github.mihomo.android.ui.theme.AppStrings.get("tile_disconnected"))
+                setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_disconnected"))
             }
         }
         tile.updateTile()

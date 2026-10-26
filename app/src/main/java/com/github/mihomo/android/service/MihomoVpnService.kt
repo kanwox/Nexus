@@ -41,7 +41,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import com.github.mihomo.android.ui.theme.AppStrings
+import com.github.mihomo.android.i18n.AppStrings
 
 data class VpnState(
     val status: Status = Status.STOPPED,

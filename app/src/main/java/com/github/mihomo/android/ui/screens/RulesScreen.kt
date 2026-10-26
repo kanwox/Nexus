@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.core.model.TunnelMode
 import com.github.mihomo.android.data.ParsedRule
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 
 private enum class RuleFilter(val labelKey: String) {
@@ -129,7 +131,7 @@ fun RulesScreen(
                             Text(
                                 text = AppStrings.get(selectedFilter.labelKey, lang),
                                 color = IosBlue,
-                                fontSize = 13.5.sp,
+                                fontSize = LoonTypeScale.calloutLarge,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -151,7 +153,7 @@ fun RulesScreen(
                     Text(
                         text = AppStrings.get("rules_test", lang),
                         color = IosBlue,
-                        fontSize = 16.sp,
+                        fontSize = LoonTypeScale.title3,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -192,8 +194,8 @@ fun RulesScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = noticeText,
-                            color = IosOrange,
-                            fontSize = 13.sp,
+                            color = LoonWarningText,
+                            fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.Medium,
                             lineHeight = 18.sp
                         )
@@ -236,7 +238,7 @@ fun RulesScreen(
                             Text(
                                 text = if (searchQuery.isNotBlank()) AppStrings.get("rules_no_match", lang) else AppStrings.get("rules_empty", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     }
@@ -295,8 +297,8 @@ fun RulesScreen(
             trailingAction = {
                 Text(
                     text = AppStrings.get("rules_priority", lang).replace("{n}", (indexed.index + 1).toString()),
-                    color = IosBlue,
-                    fontSize = 13.sp,
+                    color = LoonInfoText,
+                    fontSize = LoonTypeScale.callout,
                     fontWeight = FontWeight.SemiBold
                 )
             }
@@ -312,7 +314,7 @@ fun RulesScreen(
                 // Card 1: 完整语法 (Raw Rule Syntax)
                 Text(
                     text = AppStrings.get("rules_syntax_label", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -333,7 +335,7 @@ fun RulesScreen(
                 ) {
                     Text(
                         text = rawRuleText,
-                        fontSize = 14.sp,
+                        fontSize = LoonTypeScale.subhead,
                         fontWeight = FontWeight.SemiBold,
                         color = LoonTextPrimary,
                         modifier = Modifier.weight(1f)
@@ -352,7 +354,7 @@ fun RulesScreen(
                 // Card 2: 规则解析属性
                 Text(
                     text = AppStrings.get("rules_attributes", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -383,7 +385,7 @@ fun RulesScreen(
                         label = AppStrings.get("rules_field_target", lang),
                         value = rule.target,
                         valueColor = when {
-                            rule.target.equals("REJECT", ignoreCase = true) -> RedDanger
+                            rule.target.equals("REJECT", ignoreCase = true) -> LoonDangerText
                             rule.target.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
                             else -> IosBlue
                         }
@@ -454,14 +456,14 @@ fun RulesScreen(
                         Text(
                             text = AppStrings.get("rules_test_no_match", lang),
                             color = LoonTextSecondary,
-                            fontSize = 13.sp,
+                            fontSize = LoonTypeScale.callout,
                             lineHeight = 18.sp
                         )
                     } else {
                         val matched = testerMatch
                         Text(
                             text = AppStrings.get("rules_test_match", lang),
-                            fontSize = 12.sp,
+                            fontSize = LoonTypeScale.footnote,
                             fontWeight = FontWeight.SemiBold,
                             color = LoonTextSecondary
                         )
@@ -487,7 +489,7 @@ fun RulesScreen(
                                 label = AppStrings.get("rules_field_target", lang),
                                 value = matched.target,
                                 valueColor = when {
-                                    matched.target.equals("REJECT", ignoreCase = true) -> RedDanger
+                                    matched.target.equals("REJECT", ignoreCase = true) -> LoonDangerText
                                     matched.target.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
                                     else -> IosBlue
                                 }
@@ -513,7 +515,7 @@ private fun RuleCell(
     val rule = indexedRule.rule
 
     val (targetColor, targetText) = when {
-        rule.target.equals("REJECT", ignoreCase = true) -> Pair(RedDanger, "REJECT")
+        rule.target.equals("REJECT", ignoreCase = true) -> Pair(LoonDangerText, "REJECT")
         rule.target.equals("DIRECT", ignoreCase = true) -> Pair(LoonTextSecondary, "DIRECT")
         else -> Pair(IosBlue, rule.target)
     }
@@ -539,7 +541,7 @@ private fun RuleCell(
             Text(
                 text = displayPayload,
                 color = LoonTextPrimary,
-                fontSize = 15.sp,
+                fontSize = LoonTypeScale.body,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -551,7 +553,7 @@ private fun RuleCell(
             Text(
                 text = targetText,
                 color = targetColor,
-                fontSize = 13.sp,
+                fontSize = LoonTypeScale.callout,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -568,20 +570,20 @@ private fun RuleCell(
             Text(
                 text = "#${indexedRule.index + 1}",
                 color = LoonTextMuted,
-                fontSize = 12.sp,
+                fontSize = LoonTypeScale.footnote,
                 fontWeight = FontWeight.Normal
             )
 
             Text(
                 text = " · ",
                 color = LoonTextMuted,
-                fontSize = 12.sp
+                fontSize = LoonTypeScale.footnote
             )
 
             Text(
                 text = rule.type,
                 color = LoonTextSecondary,
-                fontSize = 12.sp,
+                fontSize = LoonTypeScale.footnote,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -590,12 +592,12 @@ private fun RuleCell(
                 Text(
                     text = " · ",
                     color = LoonTextMuted,
-                    fontSize = 12.sp
+                    fontSize = LoonTypeScale.footnote
                 )
                 Text(
                     text = "no-resolve",
                     color = LoonTextMuted,
-                    fontSize = 12.sp
+                    fontSize = LoonTypeScale.footnote
                 )
             }
         }
@@ -621,7 +623,7 @@ private fun DetailRow(
     ) {
         Text(
             text = label,
-            fontSize = 13.sp,
+            fontSize = LoonTypeScale.callout,
             color = LoonTextSecondary
         )
         Row(
@@ -632,7 +634,7 @@ private fun DetailRow(
         ) {
             Text(
                 text = value,
-                fontSize = 13.5.sp,
+                fontSize = LoonTypeScale.calloutLarge,
                 fontWeight = FontWeight.Medium,
                 color = valueColor,
                 maxLines = 1,

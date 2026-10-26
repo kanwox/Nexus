@@ -1,153 +1,274 @@
-# Nexus UI 设计规范与工程约束指南 (iOS HIG / Loon Style)
+# Nexus UI 设计规范（iOS / Loon Style）
 
-本项目（Nexus）是一套运行于 Android 系统的 iOS / Loon 拟真风格代理应用。为确保全应用在视觉、微交互、排版、手势及能效表现上严格对齐 **Apple iOS Human Interface Guidelines (HIG)**，避免出现风格割裂或 Android Material 惯性设计，特制定本规范。所有新功能开发与已有界面重构必须严格遵循本指南。
+> 版本：2.0
+> 适用：所有界面改动
+> 所有权：UI 变更必须由设计规范 Review 通过（PR 模板勾选）
+> 唯一事实来源：`app/src/main/java/com/github/mihomo/android/ui/theme/DesignTokens.kt`、`Color.kt`、`LoonTextStyles.kt`
 
----
-
-## 1. 核心设计原则 (Core Design Principles)
-
-1. **纯正 iOS 物理微交互与手势**：
-   - **禁止墨水涟漪 (No Ripple)**：全局禁用 Material Design 水波纹（`NoIndication`）。可点击卡片、单元格与按钮统一使用 `iosPressable`（微弹性缩放默认 `0.982f`）或 `iosHighlightPressable`。
-   - **精准触感反馈 (Taptic Engine Discipline - 极简克制原则)**：
-     - **全局仅保留两处高优先级触感**：仅在「点击底部导航栏切换标签 (`navTabSelection()`)」与「开启/关闭 VPN 开关 (`vpnToggleImpact()`)」两处核心操作时触发触感反馈。
-     - **其他所有点击与滚动保持静默**：普通列表项、卡片、按钮、次级开关、弹窗菜单以及滚动容器橡皮筋阻尼回弹一律保持静默（严禁触发多余震动），杜绝触觉疲劳与冗余耗电。
-   - **iOS 边缘侧滑返回 (Interactive Pop Gesture)**：二级子页面统一支持屏幕左边缘（`32.dp` 响应区）水平右滑跟手返回与弹簧回弹。
-
-2. **严禁混用 Android / Material 原生视觉控件**：
-   - ❌ **严禁使用**：`androidx.compose.material3.AlertDialog`、`Button`、`TextButton`、`OutlinedButton`、`RadioButton`、`Switch`、`FloatingActionButton`、Android 原生 `Toast.makeText`。
-   - ❌ **严禁使用**：`androidx.compose.foundation.shape.RoundedCornerShape`（普通圆弧圆角）。
-   - ✅ **统一使用**：`com.github.mihomo.android.ui.theme.RoundedCornerShape`（iOS 连续曲率超椭圆圆角）、`CupertinoAlertDialog`、`CupertinoModalBottomSheet`、`CupertinoButton`、`CupertinoSearchBar`、`CupertinoTextField`、`CupertinoSwitch`、`CupertinoSegmentedControl`、`CupertinoToast`。
-
-3. **内容遵从与视觉克制 (Deference & Restraint)**：
-   - **内容优先 (Content-First)**：界面应服务于内容本身而非装饰。常驻界面的控件与辅助容器应保持轻量，最大限度将屏幕有效面积留给核心数据流与主任务操作，避免常驻大块低频组件挤占首屏空间。
-   - **高信噪比 (High Signal-to-Noise Ratio)**：严格控制界面的信息密度与视觉层级。剔除缺乏实际参考价值的冗余数据与无区分度的重复装饰性图元，确保主要文本具备完整的展示与阅读空间。
-   - **渐进披露 (Progressive Disclosure)**：单一视图聚焦单一核心心智。低频调试工具、次级参数及高阶操作应通过按需触发展现（如二级详情、`CupertinoModalBottomSheet` 或上下文菜单），而非在主视觉流中并列平铺。
+本规范保证两件事：**整体风格统一**，以及**在 Android 上真实符合 iOS 的视觉与交互语义**。
+它不是风格宣言，而是带编号、级别与验证方式的工程契约。
 
 ---
 
-## 2. 基础设计规范 Tokens (Design Tokens)
+## 0. 一句话原则
 
-### 2.1 色彩系统 (Color Tokens)
+**iOS 的视觉语言 + Android 的平台契约。**
 
-| Token 变量 | 浅色模式 (Light) | 深色模式 (Dark / OLED) | 说明 |
+- 视觉：连续曲率圆角、克制的色彩、原生级排版、少而精的触感、无 Material 水波纹。
+- 交互：遵循 Android 的系统返回/预测性返回、TalkBack、字体缩放、48dp 热区、权限与通知模型。
+- 冲突时：**可访问性与系统行为优先，其次才是 iOS 像素级还原**。
+
+---
+
+## 1. 规则格式与级别
+
+每条规则使用 `UI-<域>-<编号>`，级别如下：
+
+| 级别 | 含义 | 违反后果 |
+| :--- | :--- | :--- |
+| **MUST** | 必须遵守 | 阻断合并 |
+| **SHOULD** | 默认遵守，例外需在 PR 说明理由 | Review 决定 |
+| **MAY** | 可选风格建议 | 不阻断 |
+
+新规则必须同时写明：**验证方式**（自动检查/人工走查）、**示例**、**例外**。
+禁止只写“禁止/避免”而不说明如何验证。
+
+---
+
+## 2. 设计原则
+
+1. **内容优先（Content-First）**：界面服务于数据与操作，不用装饰性容器挤占首屏。
+2. **克制（Restraint）**：一屏只保留一个主操作；低频工具放进二级页、底部抽屉或上下文菜单。
+3. **一致（Consistency）**：同一语义必须使用同一 token、同一组件、同一交互；不允许“这个页面看起来像 iOS，那个页面像 Material”。
+4. **可访问（Accessible by Default）**：颜色、热区、语义、字体缩放、减少动效是默认要求，不是补丁。
+5. **高效（Efficient）**：列表虚拟化、避免高频重组、JNI/IO 不阻塞主线程、息屏降载。
+
+---
+
+## 3. 设计 Tokens（唯一来源）
+
+### 3.1 颜色
+
+业务代码**禁止**直接写 `Color(0x...)`；通过 `Loon*` 语义访问器或 `LocalLoonColors` 读取。
+
+| 语义 token | Light | Dark | 用途 |
 | :--- | :--- | :--- | :--- |
-| `LoonBg` | `#F2F2F7` | `#000000` (纯黑) | 页面全局背景 (iOS System Grouped Background) |
-| `LoonCard` | `#FFFFFF` | `#1C1C1E` | 分组卡片、弹窗与底色 (Secondary System Grouped) |
-| `LoonCardBorder` | `0x1A000000` (发丝线) | `0x2EFFFFFF` (发丝线) | `0.5.dp` 极细卡片描边 |
-| `LoonSeparator` | `0x263C3C43` | `0x38545458` | `0.5.dp` 列表发丝分割线 |
-| `LoonTertiaryBg` | `#E5E5EA` | `#2C2C2E` | 搜索栏、文本输入框、分段控件槽位底色 |
-| `LoonTextPrimary` | `#000000` | `#FFFFFF` | 主标题、正文标题文字 |
-| `LoonTextSecondary`| `#8E8E93` | `#8E8E93` | 次级说明标签、小号提示文字 (Secondary Label) |
-| `LoonTextMuted` | `#C7C7CC` | `#636366` | 占位提示文字 (Placeholder / Tertiary Label) |
-| `IosBlue` | `#007AFF` | `#007AFF` | 默认主要交互操作色 (System Blue) |
-| `IosGreen` | `#34C759` | `#34C759` | 成功、低延迟、连接就绪状态 (System Green) |
-| `IosOrange` | `#FF9500` | `#FF9500` | 警告、中等延迟、规则分流状态 (System Orange) |
-| `RedDanger` (`IosRed`)| `#FF3B30` | `#FF3B30` | 破坏性危险操作、超时或报错状态 (System Red) |
+| `bg` | `#F2F2F7` | `#000000` | 页面背景 |
+| `card` | `#FFFFFF` | `#1C1C1E` | 分组卡片 / 抽屉 |
+| `textPrimary` | `#000000` | `#FFFFFF` | 主文本 |
+| `textSecondary` | `#6E6E73` | `#A1A1A6` | 必读次级信息（5.07:1 / 6.61:1） |
+| `textMuted` | `#8E8E93` | `#8E8E93` | 占位符、装饰、disabled；**不得承载关键信息** |
+| `successText` | `#1B7F3B` | `#30D158` | 成功/低延迟文本 |
+| `warningText` | `#A85A00` | `#FFB340` | 警告/中等延迟文本 |
+| `dangerText` | `#C62828` | `#FF6961` | 错误/超时文本 |
+| `infoText` | `#0055CC` | `#409CFF` | 文本链接、可点操作 |
+| `focusRing` | `#0055CC` | `#409CFF` | 键盘/D-pad 焦点环 |
 
-### 2.2 字体与排版规范 (Typography & Font System)
+**亮色填充仍使用 Apple 原色**（`IosBlue/IosGreen/IosOrange/RedDanger`），但**小字号文本必须使用 `*Text` 变体**。
+原因：`#34C759` on white 仅 2.22:1、`#FF9500` 2.20:1、`#007AFF` 4.02:1，均不满足普通文本 4.5:1。
 
-1. **双字体选项 (`AppFont`)**：
-   - `AppFont.SYSTEM`（**默认**）：**系统默认 (Roboto / Noto Sans)**，采用中性字距（`0.sp`），去除 Material3 默认的 `+0.5.sp` 松散字距。
-   - `AppFont.IOS`：**SF Pro / 苹方 (PingFang SC)**，遵循 Apple 官方中西文排版标准，采用紧凑光学字距（大标题 `-0.45.sp`、导航标题 `-0.30.sp`、正文 `-0.22.sp`、说明标签 `-0.12.sp`）并关闭额外字体内边距（`includeFontPadding = false`）。
-2. **排版统一性铁律**：
-   - **禁止新建裸 `TextStyle(...)`**：在 `BasicTextField` 等底层输入控件中，必须使用 `LocalTextStyle.current.copy(...)` 保留全局 `fontFamily` 与 `letterSpacing`，严禁直接构造 `TextStyle(...)` 导致输入框与普通文本字体不一致。
-   - **禁止硬编码负字距**：业务界面中的标题与单元格严禁直接写死 `letterSpacing = (-0.6).sp` 等仅针对 iOS 字体的参数，应交由全局 `Typography` 或根据 `LocalAppFont.current == AppFont.IOS` 动态适配。
-   - **等宽字体 (`FontFamily.Monospace`) 使用边界**：仅限在 JS/YAML 代码编辑器、核心实时日志流、IP/端口技术字段中使用等宽字体，普通列表标题与计数标签一律使用全局当前字体。
+> 唯一例外：`CupertinoButtonStyle.Filled` 的主操作按钮保留 Apple 系统蓝 + 白色半粗标签（4.02:1），
+> 作为 iOS 品牌控件；不得把该组合用于正文、说明或长文本。其余蓝色文本（链接、可点操作、选中标题）
+> 使用 `infoText`（6.62:1）。
 
-### 2.3 iOS 连续曲率圆角与尺寸 (Continuous Corner & Sizing)
+> `textMuted` 在浅色下为 3.26:1，只允许占位符/装饰/disabled；任何要读的信息用 `textSecondary`。
 
-*   **强制使用连续曲率圆角 (`IosContinuousCornerShape`)**：
-    - 全局必须导入 `com.github.mihomo.android.ui.theme.RoundedCornerShape`（底层为 `IosContinuousCornerShape`，采用 Apple `CALayer.cornerCurve = .continuous` 三段三次贝塞尔 $G^2$ 曲率连续超椭圆算法），**严禁导入** `androidx.compose.foundation.shape.RoundedCornerShape`。
-*   **标准组件圆角与尺寸规格**：
-    - **分组卡片 / 模态弹窗 (`CupertinoGroupedSection` / `CupertinoAlertDialog`)**：`RoundedCornerShape(14.dp)`
-    - **模态底部抽屉 (`CupertinoModalBottomSheet`)**：顶部圆角 `RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)`
-    - **搜索框 / 文本输入框 (`CupertinoSearchBar` / `CupertinoTextField`)**：`RoundedCornerShape(10.dp)`，搜索栏高度 `36~38.dp`
-    - **操作按钮 (`CupertinoButton`)**：`RoundedCornerShape(10.dp)`，常规高度 `44.dp`
-    - **图标超椭圆徽章 (`CupertinoCell` 左侧图标底座)**：`RoundedCornerShape(7.dp)`，尺寸 `30.dp × 30.dp`（内部图标 `17.dp`）
-    - **iOS 物理开关 (`CupertinoSwitch`)**：尺寸 `51.dp × 31.dp`，滑块 `27.dp` 圆形
-    - **状态胶囊 (`CircleShape`)**：当必须使用胶囊标签或灵动岛提示时，采用完全圆角 `CircleShape`。❌ **严禁在列表行中堆砌 `2~6.dp` 的 Web/Material 式小圆角彩色底块标签**（列表次级元数据应直接通过字号、字重与语义文字颜色表达）。
-*   **图标尺寸与触摸热区 (Icons & Touch Targets)**：
-    - **导航栏操作项**：图标视觉尺寸 `20.dp`，文字动作字号 `16.sp`，触摸热区最小 `40.dp × 36~40.dp`。
-    - **图标风格去 Android 化**：避免使用生硬的 Material 特有隐喻图标，优先使用贴近 Apple **SF Symbols** 笔触特征的圆润符号或纯文字操作按钮。
+### 3.2 字体与排版
+
+统一使用 `LoonTextStyles` 的语义角色，禁止在业务界面新建裸 `TextStyle(...)` 或手写 `fontSize`/`letterSpacing`。
+
+| 角色 | 字号 / 字重 | iOS 字距 | 典型用途 |
+| :--- | :--- | :--- | :--- |
+| `largeTitle()` | 32 / Black | -0.45sp | 一级 Tab 标题 |
+| `sectionTitle()` | 22 / Bold | -0.30sp | 页面区块标题 |
+| `navTitle()` | 17 / SemiBold | -0.30sp | 导航栏、抽屉标题 |
+| `dialogTitle()` | 17 / Bold | -0.30sp | 弹窗标题 |
+| `cellTitle()` | 15.5 / Normal | -0.20sp | 列表主文本 |
+| `body()` | 15 / Normal | -0.22sp | 正文 |
+| `value()` | 14.5 / Normal | -0.18sp | 右侧值 |
+| `subtitle()` | 12 / Normal | -0.12sp | 次级说明 |
+| `caption()` | 11 / Normal | -0.12sp | 辅助信息 |
+| `groupHeader()` | 12.5 / SemiBold | +0.3sp | 分组大写标题 |
+| `button()` | 16 / SemiBold | -0.20sp | 主按钮/弹窗按钮 |
+| `buttonSmall()` | 14 / SemiBold | -0.20sp | 紧凑按钮 |
+| `actionLabel()` | 17 / Normal | -0.22sp | Action Sheet 项 |
+| `segmentedLabel()` | 13 / Normal | -0.15sp | 分段控件 |
+| `tab()` | 10.5 / Normal | -0.10sp | 底部导航 |
+| `mono()` | 13 / Monospace | 0 | 日志、YAML/JS 编辑器、IP/端口 |
+
+- 字距只在 `AppFont.IOS` 时生效；系统字体保持 `0sp`。
+- “SF Pro / PingFang SC”依赖设备字体；绝大多数 Android 设备没有该字体，会回退到系统字体。该选项的可见差异主要是字距与 `includeFontPadding`，必须在真机上验证，不得宣称“内置 SF Pro”。
+- 禁止在业务代码硬编码负字距；使用 `LoonTextStyles`。
+
+### 3.3 间距、圆角、尺寸
+
+使用 `LoonSpacing` / `LoonRadii` / `LoonSizes`：
+
+- 间距：`2 / 4 / 8 / 12 / 16 / 20 / 24 / 32 dp`；禁止 9、13、14、18 等随意值。
+- 字号：优先 `LoonTextStyles` 语义角色；确需一次性字号时使用 `LoonTypeScale`，禁止再写 `12.sp` 字面量。
+- 圆角：`6（badge）/ 7（图标底）/ 10（控件）/ 14（卡片、弹窗）/ 16（底部抽屉）/ 28 / 32（底栏）`。
+- 触摸热区：**最小 48×48dp**（`LoonSizes.touchTargetMin`）；视觉尺寸可以更小，但触摸/语义边界不得更小。
+- 底部抽屉顶部圆角：**16dp**。
+- 导航栏高度：**48dp**。
+
+### 3.4 动效
+
+使用 `LoonMotion`：`fast=150ms`、`normal=220ms`、`slow=300ms`、`pressScale=0.982`、`pressScaleStrong=0.97`。
+禁止使用无 token 的 `tween(137)` 之类魔法值。
 
 ---
 
-## 3. 标准组件使用规范 (Component Patterns)
+## 4. 组件规则
 
-### 1) 导航栏 (`CupertinoNavBar` & 一级大标题)
-- **一级主标签页（仪表盘、策略/节点、配置/设置）**：采用 iOS Large Title 风格（`32.sp`，`FontWeight.Bold`）。
-  - **顶部间距标准**：外层容器附带 `.statusBarsPadding()`，内层大标题头部紧凑对齐状态栏下方（`top = 8.dp, bottom = 8~10.dp`），严禁设置 `20.dp` 以上过大间距导致界面整体下坠凹陷。
-- **二级子页面**：统一采用标准居中标题导航栏 `CupertinoNavBar`：
-```kotlin
-CupertinoNavBar(
-    title = "页面标题",
-    showBackButton = true,
-    onBack = onBack,
-    actions = {
-        // 右侧操作项（最多 1~2 个，优先纯文字动作按钮）
-    }
-)
+### 4.1 允许与禁止
+
+**允许的 Material primitives**（只是底层实现，不呈现 Material 视觉）：
+`MaterialTheme`、`Surface`、`Text`、`Icon`、`HorizontalDivider`、`ModalBottomSheet`、`SheetState`、`LocalTextStyle`。
+
+**禁止的 opinionated Material 控件**：
+`material3.AlertDialog`、`Button`、`TextButton`、`OutlinedButton`、`RadioButton`、`Switch`、`FloatingActionButton`，以及 `androidx.compose.foundation.shape.RoundedCornerShape`。
+
+> 统一使用 `com.github.mihomo.android.ui.theme.RoundedCornerShape`（连续曲率）与 `Cupertino*` / `Loon*` 组件。
+
+### 4.2 组件契约
+
+每个组件必须具备：
+
+- **状态矩阵**：default / pressed / focused / disabled / loading / error（如适用）。
+- **语义**：角色（`Role.Button/Switch/Checkbox/Tab`）、状态、`contentDescription`、必要时 `paneTitle` / `liveRegion`。
+- **尺寸来源**：全部来自 tokens，不允许组件内部写死配色与字号（含 `Cupertino*` 组件）。
+- **预览**：Light/Dark × SYSTEM/IOS 字体 × zh/en/ru × 1.0/1.3/2.0 字体缩放。
+
+### 4.3 图标
+
+- 图标来源统一为 Material Icons（优先 Outlined/Rounded）或 `Canvas` 品牌图标；**不要在同一导航层级混用线性与填充风格**。
+- 尺寸使用 `LoonSizes.icon`（20）/`iconSmall`（16）/`iconBadge`（30）；禁止随手 13/17/19/22。
+- 仅图标的可点击控件必须有 `contentDescription`；纯装饰图标设 `null`。
+
+### 4.4 组件清单
+
+核心组件位于 `ui/components/CupertinoComponents.kt` 与 `LoonComponents.kt`：
+`CupertinoCell`、`CupertinoGroupedSection`、`CupertinoSwitch`、`CupertinoSegmentedControl`、`CupertinoNavBar`、`CupertinoAlertDialog`、`CupertinoActionSheet`、`CupertinoModalBottomSheet`、`CupertinoToast`、`LoonFloatingBottomBar`、`LoonProxyItemCard`。
+
+新增组件必须先加入该清单并说明与现有组件的差异，禁止复制粘贴出“第二个 Cell”。
+
+---
+
+## 5. 可访问性（MUST）
+
+| ID | 规则 | 验证 |
+| :--- | :--- | :--- |
+| UI-A11Y-01 | 所有可点击/可切换元素触摸与语义边界 ≥ 48×48dp | 人工 + 截图/布局检查 |
+| UI-A11Y-02 | 普通文本 ≥ 4.5:1，大文本 ≥ 3:1；状态色必须用 `*Text` token | 对比度脚本 + Review |
+| UI-A11Y-03 | 自定义开关/复选/分段/底栏用 `toggleable(role=…)`、`selectable(role=…)`、`selectableGroup()` | 代码 Review + TalkBack |
+| UI-A11Y-04 | 图标按钮必须有 `contentDescription`；装饰图标必须 `null` | Lint/Review |
+| UI-A11Y-05 | 禁止用“无水波纹”代替焦点反馈；自定义按压必须有 `iosFocusRing` 或等价焦点态 | 键盘/D-pad 走查 |
+| UI-A11Y-06 | Toast/短暂提示必须有 `liveRegion`；破坏性提示用 `Assertive` | TalkBack |
+| UI-A11Y-07 | 支持字体缩放至 200%；含文本的卡片使用 `heightIn` 而非固定 `height` | 1.3/2.0 预览与真机 |
+| UI-A11Y-08 | `ANIMATOR_DURATION_SCALE=0` 时必须减少/关闭弹簧、缩放、无限动画 | 开发者选项走查 |
+| UI-A11Y-09 | 不得仅用颜色表达状态；延迟/在线状态需有文字或图标 | Review |
+
+
+### 5.1 TalkBack 走查清单
+
+- 每个开关读作“开关，已开启/已关闭”，而不是“按钮”。
+- 每个复选项读作“复选框，已选中/未选中”。
+- 每个仅图标按钮有可理解的名称。
+- 弹窗/抽屉打开时焦点被限制，标题被朗读（`paneTitle`）。
+- Toast 被朗读；失败提示不静默。
+- 关闭动画/大字体下无截断、无重叠。
+
+---
+
+## 6. 布局与自适应
+
+| ID | 规则 |
+| :--- | :--- |
+| UI-ADAPT-01 | 以 `screenWidthDp` 分档：compact < 600、medium 600–839、expanded ≥ 840；内容最大宽度 680dp |
+| UI-ADAPT-02 | medium/expanded 使用两栏或居中内容，禁止把手机布局等比拉满 |
+| UI-ADAPT-03 | 横屏、分屏、折叠屏必须可用；导航/底栏不遮挡内容 |
+| UI-ADAPT-04 | 使用 `WindowInsets`/`imePadding`，适配 edge-to-edge、刘海与手势导航 |
+
+主 Tab 内容在 medium/expanded 下必须通过 `LoonResponsiveContent(maxWidth = 680.dp)` 居中限宽；compact 下保持全宽。
+
+---
+
+## 7. 本地化与 RTL
+
+| ID | 规则 |
+| :--- | :--- |
+| UI-I18N-01 | 所有用户可见字符串走 `AppStrings`；禁止在 UI 层写死中文/英文（日志与内部异常除外，且不得直接展示） |
+| UI-I18N-02 | 占位符使用 `{name}`/`{n}` 形式；禁止字符串拼接；复数、日期、数字、单位使用本地化格式 |
+| UI-I18N-03 | 三语（zh/en/ru）必须同时补齐；缺失键回退英文，不得回退中文 |
+| UI-I18N-04 | RTL 下镜像 Chevron、进度、边距、边缘返回方向；左右语义改用 start/end |
+| UI-I18N-05 | 文本膨胀 30% 不截断关键操作；按钮宽度使用内容自适应 |
+
+边缘返回必须从 start 边缘起手，RTL 下从右侧向左滑；用户可见字符串必须位于 `com.github.mihomo.android.i18n`，非 UI 层不得依赖 `ui.theme`。
+
+---
+
+## 8. 动效与手势
+
+| ID | 规则 |
+| :--- | :--- |
+| UI-MOTION-01 | 时长/曲线使用 `LoonMotion`；禁止无理由的 300ms+ 动画 |
+| UI-MOTION-02 | 减少动效开启时：取消缩放/弹簧/循环动画，保留必要的透明度变化 |
+| UI-MOTION-03 | 边缘返回必须支持 Android 系统返回与预测性返回；不得与横向 Pager 抢手势 |
+| UI-HAPTIC-01 | 仅底部导航切换与 VPN 开关触发触感；其余 `lightTick/selection/impact` 是空实现，不应新增调用 |
+| UI-HAPTIC-02 | 触感必须尊重系统设置；在无马达设备上静默降级 |
+
+---
+
+## 9. 交互模式
+
+- **导航**：Tab 根页 + 二级页滑入；导航栏右侧操作 ≤ 2 个；搜索栏在内容区。
+- **弹窗**：确认/破坏性操作 → `CupertinoAlertDialog`；多选项 → `CupertinoActionSheet`；表单/长内容 → `CupertinoModalBottomSheet`。
+- **反馈**：轻提示 → `CupertinoToast`（带 liveRegion）；错误必须可读、可恢复，禁止只显示图标。
+- **表单**：字段级校验 + 明确的保存/取消；禁止边输入边触发重网络/重内核操作。
+- **破坏性操作**：必须二次确认或提供撤销；红色仅用于破坏性语义。
+- **空/错/载入**：每种列表必须有 empty、error、loading 三态；超过 300ms 的加载显示骨架或指示器。
+
+---
+
+## 10. 性能预算
+
+| ID | 预算 | 工具 |
+| :--- | :--- | :--- |
+| UI-PERF-01 | 冷启动 ≤ 1.5s（中端机）；首帧无可感知卡顿 | Macrobenchmark |
+| UI-PERF-02 | 列表滚动丢帧 < 1%；无每帧 `animateColorAsState` 风暴 | Compose compiler metrics / Layout Inspector |
+| UI-PERF-03 | JNI/文件 IO 不进入 composition 或主线程 | Review + StrictMode |
+| UI-PERF-04 | 高频列表使用 `LazyColumn` + 稳定 key；缓冲区使用 `ArrayDeque` | Review |
+| UI-PERF-05 | 息屏/后台停止轮询、动画、日志解析 | 手工 + 电量统计 |
+| UI-PERF-06 | APK ≤ 40MB，内存峰值 ≤ 150MB | CI artifact / profiler |
+
+---
+
+## 11. 验证与治理
+
+### 11.1 自动检查
+
+```bash
+./gradlew testDebugUnitTest detekt lintDebug checkUiTokens
 ```
-- **导航栏操作项约束**：
-  - 右侧操作项原则上**不得超过 1 个（极特殊场景最多 2 个）**，严禁并排堆叠 3~4 个小图标破坏主标题居中平衡。
-  - 高频动作（如“保存”、“完成”、“编辑”、“清空”）优先采用 `IosBlue`（或危险操作 `RedDanger`）的 `16.sp` `FontWeight.SemiBold` 纯文字按钮。
-  - **搜索栏不折叠为顶栏放大镜**：`CupertinoSearchBar` 必须直接呈现在导航栏下方的内容区域，严禁在右上角放放大镜点击展开搜索框。
 
-### 2) 分组列表与长列表虚拟化 (`CupertinoGroupedSection` & `cupertinoGroupedItems`)
-- **静态短列表（如设置项）**：使用 `CupertinoGroupedSection` + `CupertinoCell` + `CupertinoIndentedDivider()`：
-```kotlin
-CupertinoGroupedSection(
-    title = "网络设置",
-    footer = "分组底部的辅助说明文案"
-) {
-    CupertinoCell(
-        title = "分应用代理",
-        icon = Icons.Default.Apps,
-        iconBg = IosBlue,
-        showChevron = true,
-        onClick = { /* 跳转详情 */ }
-    )
-    CupertinoIndentedDivider()
-    CupertinoCell(
-        title = "开机自启",
-        icon = Icons.Default.PowerSettingsNew,
-        iconBg = IosGreen,
-        trailing = {
-            CupertinoSwitch(checked = enabled, onCheckedChange = { ... })
-        }
-    )
-}
-```
-- **动态长列表（如日志、请求、DNS、规则、应用列表）**：必须使用 `LazyColumn` 配合 `cupertinoGroupedItems(...)` 扩展函数，自动为首尾项裁剪连续圆角并绘制内缩分割线，严禁在 `verticalScroll` 的 `Column` 中 `forEach` 渲染上百个节点。
+以下检查必须全部通过：
+- `detekt`：`ForbiddenImport` 禁止 Material 控件与 `foundation.RoundedCornerShape` 导入。
+- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `Color(0x…)`。
+- `DesignTokenContrastTest`：核心文本 token 必须满足 WCAG AA 对比度。
+- 组件变更必须在 `ui/components/DesignSystemPreview.kt` 的预览矩阵中覆盖 Light/Dark、SYSTEM/IOS、zh/en/ru 与 1.3 字体。
 
-### 3) 弹窗、抽屉与顶部轻提示 (`CupertinoAlertDialog` / `CupertinoModalBottomSheet` / `CupertinoToast`)
-- **确认与输入弹窗**：统一使用 `CupertinoAlertDialog`（毛玻璃质感卡片 + `0.5.dp` 十字发丝分割线）。
-- **多选操作与详情抽屉**：统一使用 `CupertinoModalBottomSheet`。
-- **轻量状态反馈**：统一调用 `CupertinoToast.show("提示文案", isDestructive = false)`（顶部灵动岛胶囊悬浮动画），严禁调用系统 `Toast`。
+### 11.2 人工走查矩阵
 
----
+| 维度 | 必测 |
+| :--- | :--- |
+| 主题 | Light / Dark（OLED 纯黑） |
+| 字体 | SYSTEM / IOS，1.0 / 1.3 / 2.0 |
+| 语言 | zh / en / ru |
+| 方向 | LTR / RTL |
+| 设备 | 手机竖屏 / 横屏 / 平板或分屏 |
+| 辅助 | TalkBack、减少动效、无马达设备 |
 
-## 4. 能效与性能规范 (Energy Efficiency & Performance Rules)
+### 11.3 例外流程
 
-1. **息屏与后台零无效唤醒 (Zero Idle Wakeups)**：
-   - 息屏状态下（`Intent.ACTION_SCREEN_OFF` / `LogRepository.isScreenOff == true`），必须挂起非必要的 JNI 流量查询、日志 JSON/正则解析与 `StateFlow` 列表拷贝，杜绝后台网络包频繁唤醒 JVM 与 GC。
-   - 应用退至后台时（`MihomoVpnService.isUiInForeground == false`），系统通知栏流量刷新必须节流至 `>= 3000ms` 并携带 `.setSilent(true)`，降低跨进程 SystemUI Binder IPC 开销。
-   - 主界面代理组在线状态轮询仅在用户处于「仪表盘」或「策略」页且无二级子页面遮挡时激活。
-2. **高频列表与编辑器渲染优化**：
-   - 高频滚动的列表单元格（如 `LoonProxyItemCard`）内禁止分配多个 `animateColorAsState` 或无限循环动画协程。
-   - 日志与请求记录等高频首部插入队列统一使用 `ArrayDeque`（$O(1)$ `addFirst` / `removeLast`），禁止对大容量 `ArrayList` 执行 `add(0, item)`。
-   - 代码编辑器行号栏采用单 `Text` 合并渲染，`VisualTransformation` 必须对未变化的源文本做高亮缓存。
-
----
-
-## 5. 样式与质量验收清单 (Acceptance Checklist)
-
-每次新增或修改界面后，请逐项核对：
-- [ ] 圆角是否全部导入自 `com.github.mihomo.android.ui.theme.RoundedCornerShape`（iOS 连续曲率圆角），且未混入 `androidx.compose.foundation.shape.RoundedCornerShape`？
-- [ ] 是否杜绝了任何 `androidx.compose.material3.Button`、`AlertDialog`、`Switch`、`RadioButton` 或系统原生 `Toast`？
-- [ ] 文本与 `BasicTextField` 是否统一继承全局字体设置（支持「系统默认」与「SF Pro / 苹方 (PingFang SC)」无缝切换），无硬编码割裂字距？
-- [ ] 背景色与分割线是否全部引用 `LoonBg`、`LoonCard`、`LoonSeparator`，确保 Light / OLED Dark 双模式自适应？
-- [ ] 滚动容器是否添加了 `.bounceOverscroll()`，且保持滚动回弹静默无震动、离散点击有 `rememberIosHaptic()` 反馈？
-- [ ] 列表次级信息是否遵循“纯排版优先”，杜绝了 `2~6.dp` 小圆角矩形彩色底块？
-- [ ] 导航栏右侧操作项是否控制在 1~2 个以内，且搜索栏位于内容区而非折叠为顶栏图标？
-- [ ] 后台任务、JNI 回调或定时器是否遵循了息屏挂起与后台节流规范，无异常耗电隐患？
+- 违反 MUST 必须在 PR 中写明：规则 ID、原因、影响范围、回滚条件、负责人。
+- 连续两个版本保留的例外必须升级为规则修订或技术债任务。

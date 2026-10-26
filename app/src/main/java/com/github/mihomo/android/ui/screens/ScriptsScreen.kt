@@ -74,6 +74,8 @@ import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -449,7 +451,7 @@ fun ScriptsScreen(
                                     Text(
                                         text = AppStrings.get("scripts_empty_short", lang),
                                         color = LoonTextSecondary,
-                                        fontSize = 14.sp
+                                        fontSize = LoonTypeScale.subhead
                                     )
                                 }
                             }
@@ -509,7 +511,7 @@ fun ScriptsScreen(
                                         Text(
                                             text = script.name,
                                             color = LoonTextPrimary,
-                                            fontSize = 15.5.sp,
+                                            fontSize = LoonTypeScale.bodyLarge,
                                             fontWeight = FontWeight.Medium,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -522,7 +524,7 @@ fun ScriptsScreen(
                                                 append(formatRelativeTime(script.updatedAt, lang))
                                             },
                                             color = LoonTextSecondary,
-                                            fontSize = 12.sp,
+                                            fontSize = LoonTypeScale.footnote,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -976,7 +978,7 @@ private fun ScriptEditorScreen(
                     Text(
                         text = AppStrings.get("action_save", lang),
                         color = IosBlue,
-                        fontSize = 16.sp,
+                        fontSize = LoonTypeScale.title3,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -1001,7 +1003,7 @@ private fun ScriptEditorScreen(
                 Text(
                     text = lineNumbersText,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
+                    fontSize = LoonTypeScale.callout,
                     lineHeight = 20.sp,
                     color = LoonTextMuted,
                     textAlign = TextAlign.End
@@ -1031,7 +1033,7 @@ private fun ScriptEditorScreen(
                     cursorBrush = SolidColor(IosBlue),
                     textStyle = LocalTextStyle.current.copy(
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
+                        fontSize = LoonTypeScale.callout,
                         lineHeight = 20.sp,
                         color = LoonTextPrimary
                     ),
@@ -1062,7 +1064,7 @@ private fun ScriptEditorScreen(
                                 Text(
                                     text = AppStrings.get("scripts_editor_hint", lang),
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp,
+                                    fontSize = LoonTypeScale.callout,
                                     lineHeight = 20.sp,
                                     color = LoonTextMuted
                                 )
@@ -1179,7 +1181,7 @@ private fun ScriptEditorScreen(
                         Text(
                             text = label,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 14.sp,
+                            fontSize = LoonTypeScale.subhead,
                             fontWeight = FontWeight.Medium,
                             color = LoonTextPrimary
                         )
@@ -1253,13 +1255,13 @@ private val STRING_REGEX = Regex(""""([^"\\]|\\.)*"|'([^'\\]|\\.)*'|`([^`\\]|\\.
 private val COMMENT_REGEX = Regex("""//.*$|#.*$|/\*[\s\S]*?\*/""", RegexOption.MULTILINE)
 
 private fun highlightCodeSnippet(raw: String, isDark: Boolean): AnnotatedString {
-    val keywordColor = if (isDark) Color(0xFFC586C0) else Color(0xFFAF00DB)
-    val builtinColor = if (isDark) Color(0xFF4EC9B0) else Color(0xFF0070C1)
-    val yamlKeyColor = if (isDark) Color(0xFF9CDCFE) else Color(0xFF0451A5)
-    val stringColor = if (isDark) Color(0xFFCE9178) else Color(0xFFA31515)
-    val numberColor = if (isDark) Color(0xFFB5CEA8) else Color(0xFF098658)
-    val commentColor = if (isDark) Color(0xFF6A9955) else Color(0xFF008000)
-    val baseColor = if (isDark) Color(0xFFD4D4D4) else Color(0xFF1C1C1E)
+    val keywordColor = if (isDark) LoonExtraColors.syntaxKeywordDark else LoonExtraColors.syntaxKeywordLight
+    val builtinColor = if (isDark) LoonExtraColors.syntaxBuiltinDark else LoonExtraColors.syntaxBuiltinLight
+    val yamlKeyColor = if (isDark) LoonExtraColors.syntaxKeyDark else LoonExtraColors.syntaxKeyLight
+    val stringColor = if (isDark) LoonExtraColors.syntaxStringDark else LoonExtraColors.syntaxStringLight
+    val numberColor = if (isDark) LoonExtraColors.syntaxNumberDark else LoonExtraColors.syntaxNumberLight
+    val commentColor = if (isDark) LoonExtraColors.syntaxCommentDark else LoonExtraColors.syntaxCommentLight
+    val baseColor = if (isDark) LoonExtraColors.syntaxTextDark else LoonExtraColors.syntaxTextLight
 
     return buildAnnotatedString {
         append(raw)

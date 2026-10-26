@@ -43,10 +43,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.github.mihomo.android.ui.components.CupertinoButton
 import com.github.mihomo.android.ui.components.CupertinoGroupedSection
 import com.github.mihomo.android.ui.components.CupertinoNavBar
-import com.github.mihomo.android.ui.theme.AppStrings
-import com.github.mihomo.android.ui.theme.LocalAppLanguage
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.LoonBg
 import com.github.mihomo.android.ui.theme.LoonTextPrimary
+import com.github.mihomo.android.ui.theme.LoonTypeScale
 import com.github.mihomo.android.ui.theme.LoonTextSecondary
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
@@ -203,7 +204,7 @@ fun QrScanScreen(
             Text(
                 text = AppStrings.get("qr_scan_hint", lang),
                 color = LoonTextSecondary,
-                fontSize = 13.sp,
+                fontSize = LoonTypeScale.callout,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 10.dp)
@@ -229,7 +230,7 @@ fun QrScanScreen(
                         Text(
                             text = AppStrings.get("qr_permission_denied", lang),
                             color = LoonTextPrimary,
-                            fontSize = 14.sp,
+                            fontSize = LoonTypeScale.subhead,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(16.dp))

@@ -32,12 +32,13 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 与 CI 保持一致，提交前建议执行：
 
 ```bash
-./gradlew testDebugUnitTest detekt lintDebug
+./gradlew testDebugUnitTest detekt lintDebug checkUiTokens
 ```
 
-- `testDebugUnitTest`：配置合成、YAML 安全、URL 校验、日志/请求仓库等纯 JVM 单测
-- `detekt`：静态分析（`config/detekt/detekt.yml`）
+- `testDebugUnitTest`：配置合成、YAML 安全、URL 校验、日志/请求仓库、颜色对比度等纯 JVM 单测
+- `detekt`：静态分析（`config/detekt/detekt.yml`），包含禁用 Material 控件/普通圆角的 `ForbiddenImport`
 - `lintDebug`：Android Lint（CI 会拦截 error 级问题）
+- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `Color(0x…)`（`UI_GUIDELINES.md` §3）
 
 ## 目录结构
 
@@ -67,6 +68,7 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 
 ## 变更记录与许可
 
+- 设计规范：[UI_GUIDELINES.md](UI_GUIDELINES.md)（iOS 视觉 + Android 交互契约，含可访问性、Tokens、自适应/本地化/动效规则）
 - 版本变更见 [CHANGELOG.md](CHANGELOG.md)
 - 许可证：[GPL-3.0](LICENSE)
 - 第三方组件与内核来源：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)

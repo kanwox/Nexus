@@ -29,6 +29,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.github.mihomo.android.data.LogEntry
 import com.github.mihomo.android.data.LogRepository
 import com.github.mihomo.android.ui.components.*
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -155,7 +157,7 @@ fun LogsScreen(
                         Text(
                             text = AppStrings.get(if (paused) "logs_resume" else "logs_pause", lang),
                             color = IosBlue,
-                            fontSize = 16.sp,
+                            fontSize = LoonTypeScale.title3,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -186,7 +188,7 @@ fun LogsScreen(
                                 Text(
                                     text = AppStrings.get(selectedFilter.labelKey, lang),
                                     color = IosBlue,
-                                    fontSize = 13.5.sp,
+                                    fontSize = LoonTypeScale.calloutLarge,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
@@ -208,7 +210,7 @@ fun LogsScreen(
                             Text(
                                 text = AppStrings.get("action_more", lang),
                                 color = IosBlue,
-                                fontSize = 16.sp,
+                                fontSize = LoonTypeScale.title3,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -259,7 +261,7 @@ fun LogsScreen(
                             Text(
                                 text = if (searchQuery.isNotBlank()) AppStrings.get("logs_no_match", lang) else AppStrings.get("logs_none", lang),
                                 color = LoonTextSecondary,
-                                fontSize = 14.sp
+                                fontSize = LoonTypeScale.subhead
                             )
                         }
                     }
@@ -304,7 +306,7 @@ fun LogsScreen(
         }
 
         val (lvlColor, lvlText) = when (entry.level.lowercase()) {
-            "error" -> Pair(RedDanger, "ERROR")
+            "error" -> Pair(LoonDangerText, "ERROR")
             "warning", "warn" -> Pair(IosOrange, "WARNING")
             "debug" -> Pair(LoonTextMuted, "DEBUG")
             else -> Pair(IosBlue, "INFO")
@@ -317,7 +319,7 @@ fun LogsScreen(
                 Text(
                     text = lvlText,
                     color = lvlColor,
-                    fontSize = 13.sp,
+                    fontSize = LoonTypeScale.callout,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -333,7 +335,7 @@ fun LogsScreen(
                 // Card 1: 发生时间
                 Text(
                     text = AppStrings.get("logs_time_label", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -348,7 +350,7 @@ fun LogsScreen(
                 ) {
                     Text(
                         text = fullTimeStr,
-                        fontSize = 14.sp,
+                        fontSize = LoonTypeScale.subhead,
                         fontWeight = FontWeight.Medium,
                         color = LoonTextPrimary
                     )
@@ -356,7 +358,7 @@ fun LogsScreen(
                         Spacer(modifier = Modifier.weight(1f))
                         Text(
                             text = AppStrings.get("logs_repeated", lang).replace("{n}", entry.count.toString()),
-                            fontSize = 12.sp,
+                            fontSize = LoonTypeScale.footnote,
                             color = LoonTextSecondary
                         )
                     }
@@ -367,7 +369,7 @@ fun LogsScreen(
                 // Card 2: 完整内容 (带一键复制)
                 Text(
                     text = AppStrings.get("logs_full_content", lang),
-                    fontSize = 12.sp,
+                    fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.SemiBold,
                     color = LoonTextSecondary
                 )
@@ -391,7 +393,7 @@ fun LogsScreen(
                     ) {
                         Text(
                             text = AppStrings.get("logs_tap_to_copy", lang),
-                            fontSize = 12.sp,
+                            fontSize = LoonTypeScale.footnote,
                             color = IosBlue
                         )
                         Icon(
@@ -404,7 +406,7 @@ fun LogsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = entry.message,
-                        fontSize = 13.5.sp,
+                        fontSize = LoonTypeScale.calloutLarge,
                         lineHeight = 19.sp,
                         color = LoonTextPrimary
                     )
@@ -505,7 +507,7 @@ private fun LogEntryCell(
     onClick: () -> Unit
 ) {
     val (lvlColor, lvlText) = when (entry.level.lowercase()) {
-        "error" -> Pair(RedDanger, "ERROR")
+        "error" -> Pair(LoonDangerText, "ERROR")
         "warning", "warn" -> Pair(IosOrange, "WARN")
         "debug" -> Pair(LoonTextMuted, "DEBUG")
         else -> Pair(IosBlue, "INFO")
@@ -526,14 +528,14 @@ private fun LogEntryCell(
             Text(
                 text = formattedTime,
                 color = LoonTextMuted,
-                fontSize = 12.sp,
+                fontSize = LoonTypeScale.footnote,
                 fontWeight = FontWeight.Normal
             )
 
             Text(
                 text = if (entry.count > 1) "$lvlText ×${entry.count}" else lvlText,
                 color = lvlColor,
-                fontSize = 12.sp,
+                fontSize = LoonTypeScale.footnote,
                 fontWeight = if (lvlColor == RedDanger) FontWeight.Bold else FontWeight.SemiBold
             )
         }
@@ -544,7 +546,7 @@ private fun LogEntryCell(
         Text(
             text = entry.message,
             color = LoonTextPrimary,
-            fontSize = 13.5.sp,
+            fontSize = LoonTypeScale.calloutLarge,
             lineHeight = 19.sp,
             maxLines = 4,
             overflow = TextOverflow.Ellipsis
