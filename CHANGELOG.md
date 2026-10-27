@@ -9,7 +9,7 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
-## [1.0.6-Alpha.1] - 2026-10-27
+## [1.0.5-Alpha.6] - 2026-10-27
 
 ### Fixed
 
@@ -109,7 +109,7 @@ The release workflow reads the section whose heading matches the `versionName` i
   with "Permission denied" (exit code 126) before the build could start.
 - **Release builds fail loudly when signing is not configured** instead of silently
   producing a debug-signed "release" APK.
-- `versionName` 1.0.6-Alpha.1 / `versionCode` 22.
+- `versionName` 1.0.5-Alpha.6 / `versionCode` 23.
 
 ## [1.0.5-Alpha.5] - 2026-10-27
 
