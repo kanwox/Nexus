@@ -9,6 +9,102 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.6-Alpha.1] - 2026-10-27
+
+### Fixed
+
+- **Plaintext-DNS interception no longer breaks the whole config**: the reject rule used
+  `DST-IP`, which is **not a rule type Mihomo implements** — the core aborts the entire
+  config with `unsupported rule type DST-IP`, so enabling "block third-party DNS" made
+  the tunnel fail to load at all. The rule now uses only types the core actually
+  supports (`AND`/`OR`/`NOT`/`NETWORK`/`DST-PORT`/`IP-CIDR`), derives the tunnel portal
+  addresses from a single shared constant instead of hardcoded literals, and covers
+  **TCP/53** in addition to UDP/53 (plain DNS over TCP previously bypassed it entirely).
+- **DNS interception is no longer silently dropped**: when a subscription's YAML cannot be
+  parsed structurally, the fallback path now still injects the reject rule instead of
+  quietly shipping a config with weaker DNS-leak protection.
+- **Base64 node-list subscriptions are rejected with a clear message** instead of being
+  written to disk and failing later with an obscure core error.
+
+### Security & reliability
+
+- **Encrypted backups are now reachable from the UI**: the AES-256-GCM implementation
+  existed but no caller ever supplied a password, so every exported backup was plaintext
+  JSON containing the subscription URL (with its token) and the LAN proxy password. Export
+  and import now support a password, encrypted files are detected on import, and a
+  plaintext export requires an explicit confirmation.
+- **Backup restore validates untrusted input**: restored profile/script URLs are checked
+  before they are stored, so a crafted backup can no longer install periodic fetch URLs;
+  a backup can also no longer re-enable LAN proxy sharing with an empty password
+  (which exposed the mixed port without any authentication).
+- **Path-traversal guard**: every file name derived from stored or restored metadata goes
+  through a single sanitiser, so a crafted id or script name can no longer write outside
+  its directory.
+- **Per-app proxy failures are no longer silent**: a package that cannot be added to the
+  allow/deny list is now logged, and a failure to exclude the app itself aborts the start
+  with a visible error instead of leaving the app's own traffic in a routing loop.
+- **Device-to-device transfer is blocked**: `data_extraction_rules.xml` and
+  `backup_rules.xml` exclude every domain, so credentials in `filesDir` and
+  SharedPreferences are no longer copied to another device by Android 12+ transfer.
+- **Superseded subscription backups are cleaned up**: the `.bak` file left behind by every
+  subscription update (holding the previous server credentials) is now removed with the
+  profile.
+
+### Stability
+
+- **Concurrent core loads are serialized**: `ClashCore.load()` now holds a mutex, so a UI
+  reload and a VPN start can no longer reload the core simultaneously while a tunnel is
+  live.
+- **Single, serialized tunnel teardown**: the native stop path runs exactly once instead
+  of twice concurrently, and the TUN file descriptor can no longer leak when the service
+  is destroyed during startup.
+- **The VPN no longer restarts itself after a manual stop**: `START_NOT_STICKY` plus a
+  persisted "user wants the tunnel" flag means a killed process no longer silently
+  re-establishes the tunnel.
+- **Physical-network detection fixed**: the core was told the tunnel's own DNS server was
+  the physical network's DNS; physical networks are now selected explicitly, and
+  `onLost`/`onCapabilitiesChanged` are handled so the tunnel recovers after a Wi-Fi to
+  cellular handover.
+- **Quick Settings tile**: a tap during `STARTING`/`STOPPING` now behaves like the in-app
+  toggle instead of doing nothing, and the tile reflects the persisted state after a
+  process restart.
+
+### Performance & UI
+
+- **Main-thread I/O removed**: seven disk/preferences reads that ran during composition
+  (profile file size, script source, local IP lookup, profile metadata writes, log export)
+  now run off the main thread.
+- **Preferences are no longer read per group during composition**: the selected-node map is
+  loaded once into the ViewModel instead of one disk read per proxy group per refresh.
+- **Proxy list virtualization**: the node list is now emitted through the lazy list with
+  stable keys instead of composing every node of an expanded group at once.
+- **UI token guard tightened**: `checkUiTokens` now also rejects raw `lineHeight`,
+  `letterSpacing`, conditional font sizes, spaced `Color( 0x…)` and the named Compose
+  colors, scans the whole source tree, and runs on every build.
+- **Accessibility**: all touch targets are at least 48 dp, icon-only buttons have content
+  descriptions, fixed card heights became minimum heights so text is not clipped at large
+  font scales, and the loading spinner honours "remove animations".
+- **Localization**: user-visible strings no longer concatenate translated fragments; the
+  string table grew to 640 keys with identical key sets across Chinese, English and
+  Russian.
+
+### Changed
+
+- **Dependencies upgraded to the latest stable releases**: Gradle 9.8.2, AGP 9.4.1,
+  Kotlin 2.4.21, Compose 1.12.1, Material3 1.4.0, lifecycle 2.11.0, core-ktx 1.19.1,
+  activity-compose 1.13.0, WorkManager 2.12.0, CameraX 1.6.2, coroutines 1.11.0,
+  kotlinx-serialization 1.10.0, **OkHttp 5.5.1** and SnakeYAML 2.7.
+- **`targetSdk` / `compileSdk` raised to 37** (was 35 / 36) — required by Compose 1.12.
+- **Gradle dependency verification enabled**: every resolved artifact is checked against a
+  pinned SHA-256, covering the JitPack-sourced dependencies as well.
+- **CI hardened**: all GitHub Actions are pinned to commit SHAs, the quality gates now run
+  on pull requests in a read-only job, the release job only runs after they pass, a
+  missing release APK fails the build instead of publishing the debug APK, and a
+  `SHA256SUMS` file is published with each artifact.
+- **Release builds fail loudly when signing is not configured** instead of silently
+  producing a debug-signed "release" APK.
+- `versionName` 1.0.6-Alpha.1 / `versionCode` 22.
+
 ## [1.0.5-Alpha.5] - 2026-10-27
 
 ### Performance & UI optimization

@@ -6,38 +6,48 @@ on:
       - main
     tags:
       - "v*"
+  # The quality gates must run on every proposed change, not only after it has
+  # already landed on main. Without this trigger a broken change is only
+  # discovered after it is merged — and the release job below would still
+  # publish an artifact for it.
+  pull_request:
+    branches:
+      - main
+  merge_group:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
-# A newer push supersedes an in-flight build of the same ref.
+# A newer push supersedes an in-flight build of the same ref. PR runs are
+# grouped separately so a push to main does not cancel an open PR check.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build Android APK
+  # The four quality gates run on every push and pull request. This job has NO
+  # write permission: it must never be able to publish anything.
+  quality:
+    name: Quality Gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           java-version: "21"
           distribution: "temurin"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
-          # AGP 9.2.1 targets build-tools 36.0.0 and compileSdk 36. platform-tools is
+          # AGP 9.4.1 targets build-tools 37.0.0 and compileSdk 37. platform-tools is
           # installed explicitly so AGP never has to reach the SDK manager at build time.
-          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+          packages: "platform-tools platforms;android-37 build-tools;37.0.0"
 
       - name: Install required Android SDK packages
         run: |
@@ -52,22 +62,19 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           # Explicit install as a safety net: AGP's own SDK download is disabled, so the
           # packages must exist before Gradle configures the project.
-          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-          "$SDKMANAGER" --list_installed | grep -E 'platform-tools|platforms;android-36|build-tools;36.0.0'
+          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;37.0.0"
+          "$SDKMANAGER" --list_installed | grep -E 'platform-tools|platforms;android-37|build-tools;37.0.0'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+        uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
 
       - name: Toolchain versions
         run: |
           java -version
           ./gradlew --version
 
-      # All three gates must stay green; they are also what CONTRIBUTING-level local
-      # checks run (`./gradlew testDebugUnitTest detekt lintDebug`).
+      # All four gates must stay green; they are also what CONTRIBUTING-level local
+      # checks run (`./gradlew testDebugUnitTest detekt lintDebug checkUiTokens`).
       - name: Static analysis (detekt)
         run: ./gradlew detekt --no-configuration-cache --stacktrace
 
@@ -80,26 +87,70 @@ jobs:
       - name: UI token guard
         run: ./gradlew checkUiTokens --no-configuration-cache --stacktrace
 
+  # Only runs after the quality gates passed, and only for a release-worthy ref.
+  release:
+    name: Build Android APK
+    needs: quality
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+
+      - name: Install required Android SDK packages
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | head -n 1)"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager not found (ANDROID_HOME=$ANDROID_HOME)" >&2
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
+
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare APK Output
         run: |
           mkdir -p build_output
-          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk build_output/Nexus-arm64-v8a-release.apk
-          elif [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk build_output/Nexus-arm64-v8a-debug.apk
-          else
-            find app/build/outputs/apk -name "*.apk" -exec cp {} build_output/ \;
+          # A missing release APK must fail the build. The previous fallback copied
+          # the DEBUG apk into the release slot, which published an unsigned-by-release
+          # artifact under a "release" name without any error.
+          if [ ! -f app/build/outputs/apk/release/app-release.apk ]; then
+            echo "::error::Release APK was not produced"
+            exit 1
           fi
+          cp app/build/outputs/apk/release/app-release.apk build_output/Nexus-arm64-v8a-release.apk
+          # Publish a checksum so a user can verify the downloaded artifact.
+          sha256sum build_output/*.apk > build_output/SHA256SUMS
           ls -lh build_output
 
       - name: Upload APK as Workflow Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Nexus-arm64-v8a-apk
-          path: build_output/*.apk
+          path: build_output/*
 
       - name: Extract App Version
         id: get_version
@@ -140,7 +191,7 @@ jobs:
       # Publishes the APK as a GitHub release for the version tag. Tags with a pre-release
       # marker (v1.0.4-Alpha.1, v1.0.1-Beta.2, v2.0.0-RC1, …) are marked as pre-releases.
       - name: Publish Automatic Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -148,6 +199,6 @@ jobs:
           body_path: build_output/release-notes.md
           draft: false
           prerelease: ${{ env.RELEASE_IS_PRERELEASE == 'true' }}
-          files: build_output/*.apk
+          files: build_output/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,12 +10,12 @@
 - **核心观测**：external-controller REST API（随机 secret、仅回环）驱动的请求记录（真实连接 id、代理链、流量计数、按应用/协议过滤、单连接关闭）、DNS 记录、内核状态页、提供者列表与手动更新
 - **节点详情**：长按查看协议类型、UDP 支持、可用状态与延迟历史
 - **实用功能**：Fake-IP DNS 增强、局域网代理共享（端口与访问密码可配置）、配置 JS 脚本复写（含模板库）、下拉快捷磁贴、脚本测试器
-- **安全隐私**：断网保护（Kill Switch）、允许应用绕过 VPN、第三方明文 DNS 拦截、订阅地址内网段校验开关、配置备份导出/导入
+- **安全隐私**：断网保护（Kill Switch）、允许应用绕过 VPN、第三方明文 DNS 拦截（UDP 与 TCP/53）、订阅地址内网段校验开关、配置备份导出/导入（支持口令加密）
 - **维护**：应用内检查并下载更新（GitHub Release）、界面与主要提示三语（简体中文 / English / Русский）
 
 ## 构建
 
-需要预装 Android SDK **Platform 36**、**Build-Tools 36.0.0** 与 **Platform-Tools**。
+需要预装 Android SDK **Platform 37**、**Build-Tools 37.0.0** 与 **Platform-Tools**。
 AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺少组件时会直接给出明确错误，
 而不是在配置阶段联网拉取 SDK 清单（CI 上曾因此出现 `IO exception while downloading manifest`）。
 
@@ -26,6 +26,17 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 # Release APK（签名配置见 app/build.gradle.kts）
 ./gradlew assembleRelease
 ```
+
+### 工具链
+
+| 组件 | 版本 |
+| :--- | :--- |
+| Gradle | 9.8.2 |
+| Android Gradle Plugin | 9.4.1 |
+| Kotlin | 2.4.21 |
+| Compose | 1.12.1（Material3 1.4.0） |
+| minSdk / targetSdk / compileSdk | 26 / 37 / 37 |
+| OkHttp | 5.5.1 |
 
 ## 质量门禁
 
@@ -38,7 +49,9 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 - `testDebugUnitTest`：配置合成、YAML 安全、URL 校验、日志/请求仓库、颜色对比度等纯 JVM 单测
 - `detekt`：静态分析（`config/detekt/detekt.yml`），包含禁用 Material 控件/普通圆角的 `ForbiddenImport`
 - `lintDebug`：Android Lint（CI 会拦截 error 级问题）
-- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `Color(0x…)`（`UI_GUIDELINES.md` §3）
+- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `lineHeight` / `letterSpacing` / `Color(0x…)` /
+  具名 Compose 颜色（`UI_GUIDELINES.md` §3）。该检查覆盖整个源码树（仅排除 `ui/theme/`），
+  并已挂到 `preBuild`，任何一次构建都会执行。
 
 ## 目录结构
 
@@ -64,7 +77,8 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 - 应用自身始终被排除在 VPN 之外（避免回环），因此订阅下载、更新检查与图标请求走物理网络；
   GitHub raw 脚本下载会优先尝试本地 mixed 端口。
 - 分应用代理选择"仅代理所选应用"时，必须至少选择一个应用，否则启动会给出明确错误。
-- 备份文件是明文 JSON，包含订阅地址（含 token）与局域网密码，请妥善保管。
+- **备份文件默认使用口令加密**（AES-256-GCM，PBKDF2-HMAC-SHA256 派生密钥）。导出时可设置口令；
+  若选择明文导出，应用会明确提示文件包含订阅地址（含 token）与局域网密码。
 
 ## 变更记录与许可
 

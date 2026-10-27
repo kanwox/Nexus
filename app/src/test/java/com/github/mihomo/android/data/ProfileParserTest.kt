@@ -1,5 +1,6 @@
 package com.github.mihomo.android.data
 
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,7 +29,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `parses standard clash yaml correctly`() {
+    fun `parses standard clash yaml correctly`() = runBlocking {
         tempFile.writeText(
             """
             proxies:
@@ -87,7 +88,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `applies savedNodes selection to active node`() {
+    fun `applies savedNodes selection to active node`() = runBlocking {
         tempFile.writeText(
             """
             proxies:
@@ -115,7 +116,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `supports include-all and exclude-filter in proxy-groups`() {
+    fun `supports include-all and exclude-filter in proxy-groups`() = runBlocking {
         tempFile.writeText(
             """
             proxies:
@@ -144,7 +145,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `auto-generates fallback group if no proxy-groups specified`() {
+    fun `auto-generates fallback group if no proxy-groups specified`() = runBlocking {
         tempFile.writeText(
             """
             proxies:
@@ -166,7 +167,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `falls back to robust line parser on corrupted yaml`() {
+    fun `falls back to robust line parser on corrupted yaml`() = runBlocking {
         // Malformed YAML with syntax error indentation that SnakeYAML cannot parse
         tempFile.writeText(
             """
@@ -189,7 +190,7 @@ class ProfileParserTest {
     }
 
     @Test
-    fun `returns empty ParsedProfile for missing or null file`() {
+    fun `returns empty ParsedProfile for missing or null file`() = runBlocking {
         val nonExistent = File("non_existent_file.yaml")
         val parsedNull = ProfileParser.parse(null)
         val parsedMissing = ProfileParser.parse(nonExistent)

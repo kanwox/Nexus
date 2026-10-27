@@ -2,8 +2,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.Nexus" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">#000000</item>
-        <item name="android:statusBarColor">#000000</item>
-        <item name="android:navigationBarColor">#000000</item>
+        <!--
+            `android:statusBarColor` and `android:navigationBarColor` are deliberately
+            absent: targeting SDK 35 means Android 15 enforces edge-to-edge and ignores
+            both attributes. The app draws behind the system bars and applies
+            `statusBarsPadding()` / `navigationBarsPadding()` in Compose instead.
+        -->
         <item name="android:windowSplashScreenBackground" tools:targetApi="31">#000000</item>
         <item name="android:windowSplashScreenAnimatedIcon" tools:targetApi="31">@drawable/ic_splash_logo</item>
         <item name="android:windowSplashScreenIconBackgroundColor" tools:targetApi="31">@android:color/transparent</item>

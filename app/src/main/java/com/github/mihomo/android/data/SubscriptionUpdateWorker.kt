@@ -34,13 +34,18 @@ class SubscriptionUpdateWorker(
             val result = ConfigManager.updateSubscription(context, profile.id, profile.name, profile.url!!)
             result.fold(
                 onSuccess = {
-                    LogRepository.addLog("info", "自动更新订阅成功: ${profile.name}")
+                    // The level is "warning" ON PURPOSE: LogRepository drops every
+                    // non-error/warning line while the screen is off, so an "info" entry
+                    // left NO trace at all of a successful background update — only the
+                    // failures survived. "warning" is the level that persists, and the
+                    // message text is phrased so it does not read like a problem.
+                    LogRepository.addLog("warning", "自动更新订阅成功: ${profile.name}")
                     if (profile.id == settings.selectedProfileId &&
                         MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
                     ) {
                         val reloaded = ClashCore.reloadActiveConfig(context)
                         if (reloaded) {
-                            LogRepository.addLog("info", "已热重载运行中配置: ${profile.name}")
+                            LogRepository.addLog("warning", "已热重载运行中配置: ${profile.name}")
                         } else {
                             LogRepository.addLog("warning", "热重载运行中配置失败: ${profile.name}")
                         }

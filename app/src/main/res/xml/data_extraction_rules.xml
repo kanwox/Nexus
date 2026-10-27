@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The app stores proxy credentials (filesDir/config.yaml with the injected
+    runtime header and the subscription payloads), the LAN sharing password and
+    the per-app proxy selection in SharedPreferences.
+
+    `android:allowBackup="false"` covers cloud backup on every API level, but on
+    Android 12+ it does NOT disable the device-to-device transfer path — that is
+    governed by `android:dataExtractionRules`. Without this file a direct
+    device-to-device transfer would carry the credentials to another device.
+
+    Every domain is therefore excluded from both cloud backup and device
+    transfer.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

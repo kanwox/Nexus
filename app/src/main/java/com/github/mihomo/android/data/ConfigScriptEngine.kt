@@ -7,7 +7,7 @@ import com.dokar.quickjs.QuickJsInterruptedException
 import com.dokar.quickjs.binding.define
 import com.dokar.quickjs.binding.function
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -19,6 +19,24 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.yaml.snakeyaml.Yaml
+
+/**
+ * Outcome of running a chain of config-rewrite scripts.
+ *
+ * [failed] lists the scripts that did not run to completion. The caller must not ship a
+ * half-rewritten config: the scripts are applied in order and each one sees the output of
+ * the previous one, so a failure in the middle leaves a config that is neither the original
+ * nor the intended result. [yaml] therefore only carries a fully applied chain; on failure
+ * the caller is expected to fall back to the original YAML.
+ */
+data class ScriptExecutionResult(
+    val yaml: String,
+    val applied: Int,
+    val failed: List<String>,
+) {
+    val hasFailures: Boolean get() = failed.isNotEmpty()
+    val total: Int get() = applied + failed.size
+}
 
 object ConfigScriptEngine {
     private const val TAG = "ConfigScriptEngine"
@@ -204,13 +222,18 @@ object ConfigScriptEngine {
     /**
      * Execute a single script in sandbox preview mode against [rawYaml] (or fallback sample config),
      * capturing console output, structural diffs (nodes/groups/rules), execution time, and output YAML.
+     *
+     * Runs on [Dispatchers.IO]: the JS engine blocks its calling thread for up to
+     * [SCRIPT_TIMEOUT_MS], and this function is called from the UI. Making it `suspend` plus
+     * hopping to IO is what actually guarantees the main thread is never blocked — before
+     * that, "not on the main thread" was only an accident of the call sites.
      */
     @Suppress("unused")
-    fun previewScript(
+    suspend fun previewScript(
         rawYaml: String,
         code: String,
         scriptName: String = "preview.js"
-    ): ScriptPreviewResult {
+    ): ScriptPreviewResult = withContext(Dispatchers.IO) {
         val startMs = System.currentTimeMillis()
         val effectiveInputYaml = rawYaml.takeIf { it.isNotBlank() } ?: SAMPLE_PREVIEW_YAML
         val yamlParser = YamlSupport.create()
@@ -220,7 +243,7 @@ object ConfigScriptEngine {
         val logs = mutableListOf<String>()
 
         if (code.isBlank()) {
-            return ScriptPreviewResult(
+            return@withContext ScriptPreviewResult(
                 success = false,
                 engineName = "None",
                 durationMs = 0L,
@@ -236,7 +259,7 @@ object ConfigScriptEngine {
             )
         }
 
-        return try {
+        return@withContext try {
             val isJs = looksLikeJavaScript(code) ||
                 code.contains("function") ||
                 code.contains("=>")
@@ -245,7 +268,7 @@ object ConfigScriptEngine {
                 if (baseMap == null) {
                     val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                     logs.add("[ERROR] 输入配置不是合法的 YAML 格式")
-                    return ScriptPreviewResult(
+                    return@withContext ScriptPreviewResult(
                         success = false,
                         engineName = "Error",
                         durationMs = elapsed,
@@ -267,7 +290,7 @@ object ConfigScriptEngine {
                     val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                     val errMsg = e.message ?: "语法或运行时错误"
                     logs.add("[ERROR] $errMsg")
-                    return ScriptPreviewResult(
+                    return@withContext ScriptPreviewResult(
                         success = false,
                         engineName = "QuickJS (ES2020)",
                         durationMs = elapsed,
@@ -316,7 +339,7 @@ object ConfigScriptEngine {
                 if (snippetMap == null) {
                     val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                     logs.add("[ERROR] 未检测到 main(config) 函数，且内容不是有效的 YAML 键值对片段")
-                    return ScriptPreviewResult(
+                    return@withContext ScriptPreviewResult(
                         success = false,
                         engineName = "Error",
                         durationMs = elapsed,
@@ -385,18 +408,32 @@ object ConfigScriptEngine {
         }
     }
 
-    fun executeScripts(
+    /**
+     * Runs the scripts bound to a profile against [rawYaml].
+     *
+     * The result carries the rewritten YAML plus the number of applied scripts and the
+     * names of the scripts that failed. The caller MUST fall back to the original YAML
+     * when [ScriptExecutionResult.hasFailures] is set: the scripts run in order and each
+     * one sees the output of the previous one, so a failure in the middle would otherwise
+     * ship a config that is neither the original nor the intended result.
+     *
+     * Runs on [Dispatchers.IO] — the JS engine blocks its calling thread for up to
+     * [SCRIPT_TIMEOUT_MS].
+     */
+    suspend fun executeScripts(
         context: Context,
         rawYaml: String,
         targetScriptIds: List<String>? = null,
         logToRepo: Boolean = true
-    ): String {
-        if (targetScriptIds.isNullOrEmpty()) return rawYaml
+    ): ScriptExecutionResult = withContext(Dispatchers.IO) {
+        if (targetScriptIds.isNullOrEmpty()) return@withContext ScriptExecutionResult(rawYaml, 0, emptyList())
         val allScripts = ScriptManager.getScripts(context)
         val scripts = allScripts.filter { targetScriptIds.contains(it.id) }
-        if (scripts.isEmpty()) return rawYaml
+        if (scripts.isEmpty()) return@withContext ScriptExecutionResult(rawYaml, 0, emptyList())
 
         var currentYaml = rawYaml
+        var applied = 0
+        val failed = mutableListOf<String>()
         val yamlParser = YamlSupport.create()
 
         for (script in scripts) {
@@ -405,6 +442,8 @@ object ConfigScriptEngine {
                 if (logToRepo) {
                     LogRepository.addLog("warning", "脚本 [${script.name}] 内容与指纹不符，已跳过执行")
                 }
+                // A script that is skipped was NOT applied, so the chain is incomplete.
+                failed += script.name
                 continue
             }
             val code = ScriptManager.readScriptCode(context, script)
@@ -456,6 +495,7 @@ object ConfigScriptEngine {
                             }
                             val normalized = normalizeYamlData(finalMap)
                             currentYaml = yamlParser.dump(normalized)
+                            applied++
                             if (logToRepo) {
                                 LogRepository.addLog("info", "JS 脚本 [${script.name}] 成功复写配置")
                             }
@@ -482,6 +522,7 @@ object ConfigScriptEngine {
                             }
                             val normalized = normalizeYamlData(mergedMap)
                             currentYaml = yamlParser.dump(normalized)
+                            applied++
                             if (logToRepo) {
                                 LogRepository.addLog("info", "已安全合并脚本 [${script.name}] YAML 片段")
                             }
@@ -493,6 +534,7 @@ object ConfigScriptEngine {
                         if (logToRepo) {
                             LogRepository.addLog("warning", "脚本 [${script.name}] 既不是 JS 也不是有效的 YAML 片段，已忽略")
                         }
+                        failed += script.name
                     }
                 } else {
                     // routeScriptKind returned null: the content is neither JS nor YAML.
@@ -500,15 +542,31 @@ object ConfigScriptEngine {
                     if (logToRepo) {
                         LogRepository.addLog("warning", "脚本 [${script.name}] 内容无法识别，已忽略")
                     }
+                    failed += script.name
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error executing script ${script.name}", e)
                 if (logToRepo) {
                     LogRepository.addLog("warning", "执行脚本 [${script.name}] 失败: ${e.message}")
                 }
+                failed += script.name
             }
         }
-        return currentYaml
+
+        if (failed.isNotEmpty()) {
+            // "warning" (not "info"): LogRepository drops every non-error/warning line while
+            // the screen is off, and a failed script chain must still leave a trace.
+            LogRepository.addLog(
+                "warning",
+                "配置脚本未全部成功：${failed.size}/${scripts.size} 个脚本失败（${failed.joinToString("、")}），本次将使用未改写的原始配置"
+            )
+        }
+
+        ScriptExecutionResult(
+            yaml = if (failed.isEmpty()) currentYaml else rawYaml,
+            applied = applied,
+            failed = failed
+        )
     }
 
     /** Overridable in tests so the infinite-loop interruption test stays fast. */
@@ -527,36 +585,43 @@ object ConfigScriptEngine {
         sink.add("[$level] ${args.joinToString(" ") { consoleArgToString(it) }}")
     }
 
-    private fun executeWithQuickJS(
+    /**
+     * Runs [code] in the QuickJS sandbox and returns the rewritten config as JSON.
+     *
+     * The QuickJS binding's `evaluate` is a *suspending* function (it dispatches the
+     * evaluation onto the engine's own dispatcher and suspends until it finishes), so no
+     * `runBlocking` is needed here. The previous `runBlocking` wrapper blocked the calling
+     * thread for the whole evaluation; the callers now dispatch to [Dispatchers.IO] first.
+     */
+    private suspend fun executeWithQuickJS(
         code: String,
         jsonStr: String,
         scriptName: String,
         logSink: MutableList<String>? = null
     ): String? {
         val logs = logSink ?: mutableListOf()
-        return runBlocking {
-            val quickJs = QuickJs.create(Dispatchers.Default)
-            try {
-                // Engine-enforced interrupt: unlike a Java thread interrupt, this stops even
-                // a native `while (true) {}` spin loop, so a runaway script can no longer
-                // leak a spinning thread and its runtime memory past the timeout.
-                quickJs.evaluationTimeoutMillis = scriptTimeoutMs
-                quickJs.memoryLimit = SCRIPT_MEMORY_LIMIT_BYTES
-                quickJs.define("console") {
-                    function("log") { args -> pushConsoleLog(logs, "LOG", args) }
-                    function("info") { args -> pushConsoleLog(logs, "INFO", args) }
-                    function("warn") { args -> pushConsoleLog(logs, "WARN", args) }
-                    function("error") { args -> pushConsoleLog(logs, "ERROR", args) }
-                }
-                quickJs.evaluate<Unit>("var module = { exports: {} }; var exports = module.exports;")
-                // Any? instead of Unit: a script whose last statement produces a value
-                // (e.g. `module.exports = ...`) has a non-undefined completion value, and
-                // the engine has no converter for it to Unit — evaluating as Unit would
-                // throw and silently disable every such script.
-                quickJs.evaluate<Any?>(code)
+        val quickJs = QuickJs.create(Dispatchers.Default)
+        return try {
+            // Engine-enforced interrupt: unlike a Java thread interrupt, this stops even
+            // a native `while (true) {}` spin loop, so a runaway script can no longer
+            // leak a spinning thread and its runtime memory past the timeout.
+            quickJs.evaluationTimeoutMillis = scriptTimeoutMs
+            quickJs.memoryLimit = SCRIPT_MEMORY_LIMIT_BYTES
+            quickJs.define("console") {
+                function("log") { args -> pushConsoleLog(logs, "LOG", args) }
+                function("info") { args -> pushConsoleLog(logs, "INFO", args) }
+                function("warn") { args -> pushConsoleLog(logs, "WARN", args) }
+                function("error") { args -> pushConsoleLog(logs, "ERROR", args) }
+            }
+            quickJs.evaluate<Unit>("var module = { exports: {} }; var exports = module.exports;")
+            // Any? instead of Unit: a script whose last statement produces a value
+            // (e.g. `module.exports = ...`) has a non-undefined completion value, and
+            // the engine has no converter for it to Unit — evaluating as Unit would
+            // throw and silently disable every such script.
+            quickJs.evaluate<Any?>(code)
 
-                val escapedJson = jsonToJsStringLiteral(jsonStr)
-                val runnerCode = """
+            val escapedJson = jsonToJsStringLiteral(jsonStr)
+            val runnerCode = """
                     var __promiseDropped = false;
                     (function() {
                         var __input = JSON.parse($escapedJson);
@@ -590,23 +655,21 @@ object ConfigScriptEngine {
                         return JSON.stringify(__res);
                     })();
                 """.trimIndent()
-                val res = quickJs.evaluate<String>(runnerCode)
-                val promiseDropped = runCatching {
-                    quickJs.evaluate<String>("__promiseDropped === true ? '1' : '0'") == "1"
-                }.getOrDefault(false)
-                if (promiseDropped) {
-                    Log.w(TAG, "Script $scriptName returned a Promise; async main() is not supported and the rewrite was discarded")
-                    logSink?.add("[WARN] main() 返回了 Promise（异步脚本不支持），本次改写未生效")
-                }
-                res
-            } catch (e: QuickJsInterruptedException) {
-                throw RuntimeException("脚本执行超时（超过 ${scriptTimeoutMs / 1000}s）")
-            } finally {
-                runCatching { quickJs.close() }
+            val res = quickJs.evaluate<String>(runnerCode)
+            val promiseDropped = runCatching {
+                quickJs.evaluate<String>("__promiseDropped === true ? '1' : '0'") == "1"
+            }.getOrDefault(false)
+            if (promiseDropped) {
+                Log.w(TAG, "Script $scriptName returned a Promise; async main() is not supported and the rewrite was discarded")
+                logSink?.add("[WARN] main() 返回了 Promise（异步脚本不支持），本次改写未生效")
             }
+            res
+        } catch (e: QuickJsInterruptedException) {
+            throw RuntimeException("脚本执行超时（超过 ${scriptTimeoutMs / 1000}s）")
+        } finally {
+            runCatching { quickJs.close() }
         }
     }
-
     internal fun normalizeYamlData(data: Any?): Any? {
         return when (data) {
             is Map<*, *> -> {

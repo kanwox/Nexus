@@ -231,8 +231,9 @@ fun ScriptsScreen(
         scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
     }
 
-    fun refresh() {
-        scripts = ScriptManager.getScripts(context)
+    // Reads the script index (SharedPreferences + JSON) off the main thread.
+    suspend fun refresh() {
+        scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
         onScriptsChanged()
     }
 
@@ -336,19 +337,19 @@ fun ScriptsScreen(
             if (targetState != null) {
                 (slideInHorizontally(
                     initialOffsetX = { fullWidth -> fullWidth },
-                    animationSpec = tween(260, easing = FastOutSlowInEasing)
-                ) + fadeIn(tween(180))) togetherWith (slideOutHorizontally(
+                    animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)
+                ) + fadeIn(tween(LoonMotion.normalMs))) togetherWith (slideOutHorizontally(
                     targetOffsetX = { fullWidth -> -fullWidth / 4 },
-                    animationSpec = tween(240, easing = FastOutSlowInEasing)
-                ) + fadeOut(tween(150)))
+                    animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                ) + fadeOut(tween(LoonMotion.fastMs)))
             } else {
                 (slideInHorizontally(
                     initialOffsetX = { fullWidth -> -fullWidth / 4 },
-                    animationSpec = tween(240, easing = FastOutSlowInEasing)
-                ) + fadeIn(tween(180))) togetherWith (slideOutHorizontally(
+                    animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                ) + fadeIn(tween(LoonMotion.normalMs))) togetherWith (slideOutHorizontally(
                     targetOffsetX = { fullWidth -> fullWidth },
-                    animationSpec = tween(250, easing = FastOutSlowInEasing)
-                ) + fadeOut(tween(150)))
+                    animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                ) + fadeOut(tween(LoonMotion.fastMs)))
             }
         },
         label = "scripts_page_transition"
@@ -360,8 +361,8 @@ fun ScriptsScreen(
                 templateCode = activeEditor.templateCode,
                 onBack = { editorTarget = null },
                 onSaved = {
-                    refresh()
                     editorTarget = null
+                    scope.launch { refresh() }
                 }
             )
         } else {
@@ -810,10 +811,16 @@ fun ScriptsScreen(
             dismissText = AppStrings.get("cancel", lang),
             isDestructive = true,
             onConfirm = {
-                ScriptManager.deleteScript(context, target.id)
-                refresh()
                 deleteConfirmScript = null
                 CupertinoToast.show(AppStrings.get("scripts_deleted_toast", lang))
+                // Deleting rewrites the script index and removes the file: keep it off the
+                // main thread (UI-PERF-03).
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        ScriptManager.deleteScript(context, target.id)
+                    }
+                    refresh()
+                }
             },
             onDismiss = { deleteConfirmScript = null },
             onDismissRequest = { deleteConfirmScript = null }
@@ -850,24 +857,29 @@ private fun ScriptEditorScreen(
     var showNameDialog by remember { mutableStateOf(false) }
     var tempNameInput by remember { mutableStateOf("") }
 
-    val initialCode = remember(existingScript, templateCode) {
-        if (existingScript != null) {
-            ScriptManager.readScriptCode(context, existingScript)
+    // The script body is read from disk. `File.readText()` is blocking I/O and must not run in
+    // the composition body (UI-PERF-03), so it is loaded off the main thread first.
+    var loadedCode by remember(existingScript, templateCode) { mutableStateOf<String?>(null) }
+    LaunchedEffect(existingScript, templateCode) {
+        val code = if (existingScript != null) {
+            withContext(Dispatchers.IO) { ScriptManager.readScriptCode(context, existingScript) }
         } else {
             templateCode ?: DEFAULT_NEW_SCRIPT_CODE
         }
+        loadedCode = code
     }
 
-    val initialValue = remember(existingScript, templateCode) {
-        TextFieldValue(text = initialCode, selection = TextRange.Zero)
+    // The editor only becomes editable once the code is available.
+    val initialValue = remember(existingScript, templateCode, loadedCode) {
+        TextFieldValue(text = loadedCode.orEmpty(), selection = TextRange.Zero)
     }
 
-    var textFieldValue by remember(existingScript, templateCode) {
+    var textFieldValue by remember(existingScript, templateCode, loadedCode) {
         mutableStateOf(initialValue)
     }
 
-    val undoStack = remember(existingScript, templateCode) { mutableStateListOf(initialValue) }
-    var undoIndex by remember(existingScript, templateCode) { mutableIntStateOf(0) }
+    val undoStack = remember(existingScript, templateCode, loadedCode) { mutableStateListOf(initialValue) }
+    var undoIndex by remember(existingScript, templateCode, loadedCode) { mutableIntStateOf(0) }
 
     fun updateCode(newValue: TextFieldValue) {
         val oldText = textFieldValue.text
@@ -1004,7 +1016,7 @@ private fun ScriptEditorScreen(
                     text = lineNumbersText,
                     fontFamily = FontFamily.Monospace,
                     fontSize = LoonTypeScale.callout,
-                    lineHeight = 20.sp,
+                    lineHeight = LoonLineHeight.subheadLarge,
                     color = LoonTextMuted,
                     textAlign = TextAlign.End
                 )
@@ -1034,7 +1046,7 @@ private fun ScriptEditorScreen(
                     textStyle = LocalTextStyle.current.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = LoonTypeScale.callout,
-                        lineHeight = 20.sp,
+                        lineHeight = LoonLineHeight.subheadLarge,
                         color = LoonTextPrimary
                     ),
                     modifier = Modifier
@@ -1065,7 +1077,7 @@ private fun ScriptEditorScreen(
                                     text = AppStrings.get("scripts_editor_hint", lang),
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = LoonTypeScale.callout,
-                                    lineHeight = 20.sp,
+                                    lineHeight = LoonLineHeight.subheadLarge,
                                     color = LoonTextMuted
                                 )
                             }

@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import com.github.mihomo.android.i18n.AppStrings
 
 private const val TAG = "ProxiesViewModel"
@@ -64,13 +65,38 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     /** Blank until a group is chosen; persisted selection is not stored across processes. */
     var selectedGroupName by mutableStateOf("")
 
-    val delayCache = mutableStateMapOf<String, Int>()
+    /**
+     * Persisted node selection per group. Loaded off the main thread (SharedPreferences is a
+     * disk-backed store) so the composition never has to read it directly.
+     */
+    var selectedNodes by mutableStateOf(emptyMap<String, String>())
+        private set
+
+    /**
+     * Authoritative delay cache. The speed-test workers mutate it from several threads, so
+     * the authoritative copy is a plain [ConcurrentHashMap] guarded by [delayCacheLock];
+     * [delayCache] is the snapshot published to the UI. A [SnapshotStateMap] must never be
+     * read from a background thread, so the workers only touch [delayCacheStore].
+     */
+    private val delayCacheStore = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private val delayCacheLock = Any()
+
+    /** UI-facing snapshot of [delayCacheStore]; republished on the main thread. */
+    val delayCache = mutableStateMapOf<String, Int>()
 
     private fun recordDelay(key: String, delay: Int) {
         synchronized(delayCacheLock) {
-            delayCache[key] = delay
+            delayCacheStore[key] = delay
         }
+    }
+
+    /** Reads a delay without touching snapshot state (safe from any thread). */
+    private fun readDelay(key: String): Int? = delayCacheStore[key]
+
+    /** Publishes the current delays to the UI. Must be called on the main thread. */
+    private fun publishDelayCache() {
+        delayCache.clear()
+        delayCache.putAll(delayCacheStore)
     }
 
     // Whole-set replacement behind a lock: concurrent speed-test workers mutate it, and
@@ -135,13 +161,16 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             // newer parse. Check explicitly before publishing.
             currentCoroutineContext().ensureActive()
             parsedProfile = parsed
+            // Publish the persisted selection map so the UI never has to read
+            // SharedPreferences from the composition (see MainAppScreen's derived state).
+            selectedNodes = savedMap
             proxyGroups = parsed.groupNames
             if (selectedGroupName.isBlank() || !parsed.groupNames.contains(selectedGroupName)) {
                 selectedGroupName = parsed.groupNames.firstOrNull() ?: ""
             }
             if (selectedGroupName.isNotBlank()) {
                 val grp = parsed.groups[selectedGroupName]
-                val savedNode = settings.getSelectedNode(selectedGroupName)
+                val savedNode = savedMap[selectedGroupName]
                 val effectiveNow = if (savedNode != null && grp?.proxies?.any { it.name == savedNode } == true) {
                     savedNode
                 } else {
@@ -150,7 +179,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                 currentGroupData = grp?.copy(now = effectiveNow)
             }
             val mainGrp = parsed.groups[mainProxyGroupName]
-            val savedMainNode = settings.getSelectedNode(mainProxyGroupName)
+            val savedMainNode = savedMap[mainProxyGroupName]
             val effectiveMainNow = if (savedMainNode != null && mainGrp?.proxies?.any { it.name == savedMainNode } == true) {
                 savedMainNode
             } else {
@@ -166,6 +195,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun selectProxy(group: String, proxy: Proxy, dispatchToCore: Boolean) {
         settings.setSelectedNode(group, proxy.name)
+        // Keep the in-memory selection map in sync so the UI never reads SharedPreferences.
+        selectedNodes = selectedNodes + (group to proxy.name)
         if (group == mainProxyGroupName) {
             activeNodeName = proxy.name
         }
@@ -198,12 +229,15 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectGroup(gName: String, coreRunning: Boolean) {
         selectedGroupName = gName
-        val savedNode = settings.getSelectedNode(gName)
         if (coreRunning) {
             viewModelScope.launch(Dispatchers.IO) {
-                currentGroupData = ClashCore.queryGroup(gName)
+                val data = ClashCore.queryGroup(gName)
+                withContext(Dispatchers.Main) { currentGroupData = data }
             }
         } else {
+            // The persisted selection is already in memory; never read SharedPreferences
+            // from the composition or from the main thread.
+            val savedNode = selectedNodes[gName]
             val gData = parsedProfile.groups[gName]
             val effectiveNow = if (savedNode != null && gData?.proxies?.any { it.name == savedNode } == true) {
                 savedNode
@@ -228,7 +262,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     if (gData.hidden == true) continue
                     groups.add(gName)
                     val mergedProxies = gData.proxies.map { p ->
-                        val cachedDelay = delayCache[p.name] ?: delayCache["$gName:${p.name}"]
+                        val cachedDelay = readDelay(p.name) ?: readDelay("$gName:${p.name}")
                         if (cachedDelay != null) {
                             p.copy(delay = cachedDelay)
                         } else if (p.delay >= 65535 || p.delay <= 0) {
@@ -255,6 +289,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                         activeNodeName = mainCur.now
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Throwable) {
             }
         }
@@ -304,7 +340,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
                 suspend fun resolveSubGroupDelay(subG: String, visited: Set<String> = emptySet()): Int = coroutineScope {
                     if (subG in visited || visited.size > 4) {
-                        return@coroutineScope delayCache[subG] ?: -1
+                        return@coroutineScope readDelay(subG) ?: -1
                     }
                     val deferred = subGroupBatchCache.getOrPut(subG) {
                         async(Dispatchers.IO) {
@@ -349,7 +385,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                             val rawBestDelay = when {
                                 nestedBestDelay in 1..65534 -> nestedBestDelay
                                 (subDelays[subBestName] ?: -1) in 1..65534 -> subDelays[subBestName]!!
-                                (delayCache[subBestName] ?: -1) in 1..65534 -> delayCache[subBestName]!!
+                                (readDelay(subBestName) ?: -1) in 1..65534 -> readDelay(subBestName)!!
                                 (subGroupData?.proxies?.find { it.name == subBestName }?.delay ?: -1) in 1..65534 ->
                                     subGroupData!!.proxies.find { it.name == subBestName }!!.delay
                                 else -> -1
@@ -455,7 +491,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                         if (!isSubGroup && delay in 1..65534) {
                                             recordDelay(name, delay)
                                             recordDelay("$g:$name", delay)
-                                        } else if (isSubGroup && delay in 1..65534 && (delayCache[name] ?: -1) !in 1..65534) {
+                                        } else if (isSubGroup && delay in 1..65534 && (readDelay(name) ?: -1) !in 1..65534) {
                                             recordDelay(name, delay)
                                             recordDelay("$g:$name", delay)
                                         }
@@ -463,12 +499,12 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
                                     val finalGroup = ClashCore.queryGroup(g)
                                     val bestNodeName = finalGroup?.now ?: grp?.now ?: ""
-                                    val rawBest = delayCache["$g:$bestNodeName"]
-                                        ?: delayCache[bestNodeName]
+                                    val rawBest = readDelay("$g:$bestNodeName")
+                                        ?: readDelay(bestNodeName)
                                         ?: finalGroup?.proxies?.find { it.name == bestNodeName }?.delay
                                         ?: -1
                                     val minValid = allNodeNames.mapNotNull { name ->
-                                        (delayCache["$g:$name"] ?: delayCache[name] ?: groupDelays[name])?.takeIf { it in 1..65534 }
+                                        (readDelay("$g:$name") ?: readDelay(name) ?: groupDelays[name])?.takeIf { it in 1..65534 }
                                     }.minOrNull()
                                     val finalGroupDelay = when {
                                         rawBest in 1..65534 -> rawBest
@@ -492,7 +528,12 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }.awaitAll()
+                    // The workers wrote into the thread-safe store; publish the snapshot to
+                    // the UI on the main thread so the list shows the new delays.
+                    withContext(Dispatchers.Main) { publishDelayCache() }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Throwable) {
                 if (groupName.isNotBlank()) {
                     mutateTestingLocked { current ->
@@ -514,12 +555,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     runSpeedTestForGroup(nodeName, isAutoTest = false).join()
-                    val resolved = delayCache[nodeName]
+                    val resolved = readDelay(nodeName)
                     if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
                         recordDelay("$groupName:$nodeName", resolved)
                     }
                 } finally {
                     removeTesting(scopedKey)
+                    withContext(Dispatchers.Main) { publishDelayCache() }
                 }
             }
             return
@@ -548,10 +590,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     recordDelay(nodeName, singleDelay)
                     recordDelay(targetScopedKey, singleDelay)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 Log.e(TAG, "Speed test failed for node $nodeName: ${e.message}", e)
             } finally {
                 removeTesting(targetScopedKey)
+                withContext(Dispatchers.Main) { publishDelayCache() }
             }
         }
     }

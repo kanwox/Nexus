@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Surface
@@ -94,7 +95,7 @@ private fun OverrideTextArea(
                     text = placeholder,
                     color = LoonTextMuted,
                     fontSize = LoonTypeScale.callout,
-                    lineHeight = 19.sp
+                    lineHeight = LoonLineHeight.calloutLarge
                 )
             }
             BasicTextField(
@@ -103,7 +104,7 @@ private fun OverrideTextArea(
                 textStyle = LocalTextStyle.current.copy(
                     color = LoonTextPrimary,
                     fontSize = LoonTypeScale.callout,
-                    lineHeight = 19.sp
+                    lineHeight = LoonLineHeight.calloutLarge
                 ),
                 cursorBrush = SolidColor(IosBlue),
                 modifier = Modifier.fillMaxWidth()
@@ -159,10 +160,14 @@ fun ProfileOverrideScreen(
                                 hostsEntries = parseHostEntries(hostsText),
                                 dnsServersOverride = parseOverrideLines(dnsText)
                             )
-                            ConfigManager.updateProfile(context, updated)
-                            ProfileParser.clearCache()
                             onProfileUpdated(updated)
+                            CupertinoToast.show(AppStrings.get("override_saved", lang))
+                            onBack()
+                            // The profile store is rewritten as a whole: keep the write and
+                            // the core reload off the main thread (UI-PERF-03).
                             scope.launch(Dispatchers.IO) {
+                                ConfigManager.updateProfile(context, updated)
+                                ProfileParser.clearCache()
                                 val settings = SettingsManager(context)
                                 val profiles = ConfigManager.getProfiles(context)
                                 val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
@@ -170,8 +175,6 @@ fun ProfileOverrideScreen(
                                     ClashCore.reloadActiveConfig(context)
                                 }
                             }
-                            CupertinoToast.show(AppStrings.get("override_saved", lang))
-                            onBack()
                         }
                         .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
@@ -223,7 +226,7 @@ fun ProfileOverrideScreen(
                     CupertinoCell(
                         title = AppStrings.current("override_rules_section"),
                         subtitle = overrideSubtitle(parseOverrideLines(rulesText).size, AppStrings.current("override_rules_desc")),
-                        icon = Icons.Default.Rule,
+                        icon = Icons.AutoMirrored.Filled.Rule,
                         iconBg = IosBlue,
                         showChevron = true,
                         onClick = { editingOverride = "rules" }
@@ -354,7 +357,7 @@ fun ProfileOverrideScreen(
                     text = sheetDesc,
                     color = LoonTextSecondary,
                     fontSize = LoonTypeScale.footnote,
-                    lineHeight = 16.sp
+                    lineHeight = LoonLineHeight.footnote
                 )
                 Spacer(modifier = Modifier.height(12.dp))
             }

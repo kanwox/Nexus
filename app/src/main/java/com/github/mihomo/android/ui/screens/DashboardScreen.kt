@@ -128,34 +128,48 @@ fun DashboardScreen(
 
     val lang = LocalAppLanguage.current
 
+    // The illustration lambdas are hoisted into their own `remember` so the
+    // `@Composable () -> Unit` identity stays stable: re-allocating them on every proxy
+    // selection made every shortcut card recompose.
+    val nodesIcon: @Composable () -> Unit = remember { { NodesIllustration() } }
+    val profilesIcon: @Composable () -> Unit = remember { { ProfilesIllustration() } }
+    val requestLogsIcon: @Composable () -> Unit = remember { { RequestLogsIllustration() } }
+    val dnsIcon: @Composable () -> Unit = remember { { DnsIllustration() } }
+    val rulesIcon: @Composable () -> Unit = remember { { RulesIllustration() } }
+    val routingIcon: @Composable () -> Unit = remember { { AppRoutingIllustration() } }
+    val pluginsIcon: @Composable () -> Unit = remember { { PluginsIllustration() } }
+    val networkShareIcon: @Composable () -> Unit = remember { { NetworkShareIllustration() } }
+
     // All shortcut item definitions available across entire DashboardScreen (cached to eliminate recomposition lag)
     val allShortcutMap = remember(
         lang, activeProfileName, activeNodeName, totalNodes, totalRules,
-        coreVersion, isRunning
+        coreVersion, isRunning, mixedPort,
+        nodesIcon, profilesIcon, requestLogsIcon, dnsIcon, rulesIcon, routingIcon,
+        pluginsIcon, networkShareIcon
     ) {
         mapOf(
-            "nodes" to ShortcutDef("nodes", AppStrings.get("shortcut_nodes", lang), activeNodeName.ifBlank { "$totalNodes" }, { NodesIllustration() }) {
+            "nodes" to ShortcutDef("nodes", AppStrings.get("shortcut_nodes", lang), activeNodeName.ifBlank { "$totalNodes" }, nodesIcon) {
                 showQuickNodeSelector = true
             },
-            "profiles" to ShortcutDef("profiles", AppStrings.get("shortcut_profiles", lang), activeProfileName, { ProfilesIllustration() }) {
+            "profiles" to ShortcutDef("profiles", AppStrings.get("shortcut_profiles", lang), activeProfileName, profilesIcon) {
                 onNavigateToProfiles()
             },
-            "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) AppStrings.get("subtitle_live_monitoring", lang) else AppStrings.get("subtitle_disabled", lang), { RequestLogsIllustration() }) {
+            "request_logs" to ShortcutDef("request_logs", AppStrings.get("shortcut_requests", lang), if (isRunning) AppStrings.get("subtitle_live_monitoring", lang) else AppStrings.get("subtitle_disabled", lang), requestLogsIcon) {
                 onNavigateToRequests()
             },
-            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) AppStrings.get("subtitle_live_resolving", lang) else AppStrings.get("subtitle_tap_to_view", lang), { DnsIllustration() }) {
+            "dns" to ShortcutDef("dns", AppStrings.get("shortcut_dns", lang), if (isRunning) AppStrings.get("subtitle_live_resolving", lang) else AppStrings.get("subtitle_tap_to_view", lang), dnsIcon) {
                 onNavigateToDns()
             },
-            "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "0", { RulesIllustration() }) {
+            "rules" to ShortcutDef("rules", AppStrings.get("shortcut_rules", lang), if (totalRules > 0) "$totalRules" else "0", rulesIcon) {
                 onNavigateToRules()
             },
-            "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), AppStrings.get("subtitle_rules_blacklist", lang), { AppRoutingIllustration() }) {
+            "routing" to ShortcutDef("routing", AppStrings.get("shortcut_routing", lang), AppStrings.get("subtitle_rules_blacklist", lang), routingIcon) {
                 onNavigateToAppRouting()
             },
-            "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (coreVersion.isNotBlank()) "v${coreVersion.take(8)}" else "Nexus Core", { PluginsIllustration() }) {
+            "plugins" to ShortcutDef("plugins", AppStrings.get("shortcut_plugins", lang), if (coreVersion.isNotBlank()) "v${coreVersion.take(8)}" else "Nexus Core", pluginsIcon) {
                 onNavigateToCore()
             },
-            "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:$mixedPort", { NetworkShareIllustration() }) {
+            "network_share" to ShortcutDef("network_share", AppStrings.get("shortcut_network_share", lang), "127.0.0.1:$mixedPort", networkShareIcon) {
                 onNavigateToNetworkShare()
             }
         )
@@ -163,6 +177,12 @@ fun DashboardScreen(
 
     val displayedShortcuts = remember(localOrder, visibleShortcuts, allShortcutMap, lang) {
         localOrder.mapNotNull { allShortcutMap[it] }.filter { visibleShortcuts.contains(it.id) }
+    }
+
+    // O(1) slot lookup: the drag handler used to scan the list for every item on every
+    // drag frame (O(n^2)).
+    val shortcutIndexById = remember(displayedShortcuts) {
+        displayedShortcuts.mapIndexed { index, item -> item.id to index }.toMap()
     }
 
     val isDarkTheme = LocalLoonColors.current.isDark
@@ -323,7 +343,7 @@ fun DashboardScreen(
                     Box(modifier = gridBoxModifier) {
                         displayedShortcuts.forEach { item ->
                             key(item.id) {
-                                val origSlotIndex = displayedShortcuts.indexOfFirst { it.id == item.id }
+                                val origSlotIndex = shortcutIndexById[item.id] ?: 0
                                 val isBeingDragged = draggedId == item.id
 
                                 // Compute visual slot index
@@ -356,12 +376,12 @@ fun DashboardScreen(
 
                                 val animatedX by animateFloatAsState(
                                     targetValue = targetSlotX,
-                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                                    animationSpec = tween(durationMillis = LoonMotion.normalMs, easing = FastOutSlowInEasing),
                                     label = "animX_${item.id}"
                                 )
                                 val animatedY by animateFloatAsState(
                                     targetValue = targetSlotY,
-                                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+                                    animationSpec = tween(durationMillis = LoonMotion.normalMs, easing = FastOutSlowInEasing),
                                     label = "animY_${item.id}"
                                 )
 
@@ -900,20 +920,25 @@ fun DashboardScreenPreview() {
         Proxy(name = "Tokyo 02", type = "VMess", delay = 112),
         Proxy(name = "Singapore 03", type = "Trojan", delay = 85)
     )
+    // The preview traffic state must be remembered: creating a MutableState during
+    // composition produces a new instance on every recomposition.
+    val previewTraffic = remember {
+        androidx.compose.runtime.mutableStateOf(
+            VpnState(
+                status = VpnState.Status.RUNNING,
+                upSpeed = "128 KB/s",
+                downSpeed = "2.4 MB/s",
+                totalUp = "1.2 GB",
+                totalDown = "18.5 GB"
+            )
+        )
+    }
     MihomoTheme {
         DashboardScreen(
             vpnStatus = VpnState.Status.RUNNING,
             vpnError = null,
             coreVersion = "v1.18.0-test",
-            vpnTraffic = androidx.compose.runtime.mutableStateOf(
-                VpnState(
-                    status = VpnState.Status.RUNNING,
-                    upSpeed = "128 KB/s",
-                    downSpeed = "2.4 MB/s",
-                    totalUp = "1.2 GB",
-                    totalDown = "18.5 GB"
-                )
-            ),
+            vpnTraffic = previewTraffic,
             currentMode = TunnelMode.RULE,
             activeProfileName = "Premium Auto Sub",
             mainGroupName = "PROXY",

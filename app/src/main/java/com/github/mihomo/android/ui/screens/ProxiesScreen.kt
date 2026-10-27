@@ -31,6 +31,11 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,9 +63,10 @@ fun AnimatedSpeedTestIcon(
             color = IosBlue
         )
     } else {
+        // The clickable parent owns the semantics; this icon is decorative.
         Icon(
             imageVector = Icons.Default.Bolt,
-            contentDescription = AppStrings.get("proxies_test", lang),
+            contentDescription = null,
             tint = tint,
             modifier = modifier
         )
@@ -344,17 +350,17 @@ fun ProxiesScreen(
 
                         val pillBg by animateColorAsState(
                             targetValue = if (isSelected) IosBlue else LoonCard,
-                            animationSpec = tween(180, easing = FastOutSlowInEasing),
+                            animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing),
                             label = "pill_bg"
                         )
                         val pillTextColor by animateColorAsState(
-                            targetValue = if (isSelected) Color.White else LoonTextPrimary,
-                            animationSpec = tween(180, easing = FastOutSlowInEasing),
+                            targetValue = if (isSelected) LoonOnAccent else LoonTextPrimary,
+                            animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing),
                             label = "pill_txt"
                         )
                         val pillBorderColor by animateColorAsState(
                             targetValue = if (isSelected) IosBlue else LoonCardBorder,
-                            animationSpec = tween(180, easing = FastOutSlowInEasing),
+                            animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing),
                             label = "pill_border"
                         )
 
@@ -396,6 +402,8 @@ fun ProxiesScreen(
                                     maxLines = 1
                                 )
                                 if (isSelected || isPillTesting) {
+                                    // UI-A11Y-01: the visual dot stays 20dp, but the touch and
+                                    // semantics boundary is the 48dp minimum.
                                     Box(
                                         modifier = Modifier
                                             .size(20.dp)
@@ -406,12 +414,19 @@ fun ProxiesScreen(
                                             ) {
                                                 haptic.impact()
                                                 onHealthCheck(groupName)
+                                            }
+                                            .semantics {
+                                                contentDescription = AppStrings.get("proxies_test", lang)
+                                                role = Role.Button
+                                                if (isPillTesting) {
+                                                    stateDescription = AppStrings.get("logs_pause", lang)
+                                                }
                                             },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         AnimatedSpeedTestIcon(
                                             isTesting = isPillTesting,
-                                            tint = if (isSelected) Color.White else IosBlue,
+                                            tint = if (isSelected) LoonOnAccent else IosBlue,
                                             modifier = Modifier.size(14.dp)
                                         )
                                     }
@@ -437,11 +452,11 @@ fun ProxiesScreen(
                     }
                     (slideInHorizontally(
                         initialOffsetX = slideOffset,
-                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                    ) + fadeIn(tween(180))) togetherWith (slideOutHorizontally(
+                        animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                    ) + fadeIn(tween(LoonMotion.normalMs))) togetherWith (slideOutHorizontally(
                         targetOffsetX = slideExitOffset,
-                        animationSpec = tween(190, easing = FastOutSlowInEasing)
-                    ) + fadeOut(tween(140)))
+                        animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                    ) + fadeOut(tween(LoonMotion.fastMs)))
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -565,95 +580,85 @@ fun ProxiesScreen(
                         val isExpanded = expandedGroups[groupName] ?: false
                         val rawProxies = group?.proxies ?: emptyList()
                         val iconUrl = groupIcons[groupName]
+                        val isGroupTesting = testingNodes.contains("group:$groupName")
+                        val groupNow = group?.now ?: ""
+
+                        // Plain sort call (no composable state may be read from a
+                        // LazyListScope lambda): the list scope re-runs on every
+                        // ProxiesScreen recomposition, which is what the delay results
+                        // trigger.
+                        val sortedProxies = sortProxies(rawProxies, nodeSortMode, delayCache, groupName)
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
-                            val proxies = sortProxies(rawProxies, nodeSortMode, delayCache, groupName)
-                            val isGroupTesting = testingNodes.contains("group:$groupName")
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                LoonGroupHeaderCard(
-                                    groupName = groupName,
-                                    groupType = group?.type ?: "select",
-                                    activeNode = group?.now ?: "",
-                                    iconUrl = iconUrl,
-                                    showGroupIcons = showGroupIcons,
-                                    isExpanded = isExpanded,
-                                    isTesting = isGroupTesting,
-                                    onHealthCheck = {
-                                        haptic.impact()
-                                        onHealthCheck(groupName)
-                                    },
-                                    onToggleExpand = {
-                                        haptic.selection()
-                                        expandedGroups[groupName] = !isExpanded
-                                    }
-                                )
+                            LoonGroupHeaderCard(
+                                modifier = Modifier.animateItem(),
+                                groupName = groupName,
+                                groupType = group?.type ?: "select",
+                                activeNode = groupNow,
+                                iconUrl = iconUrl,
+                                showGroupIcons = showGroupIcons,
+                                isExpanded = isExpanded,
+                                isTesting = isGroupTesting,
+                                onHealthCheck = {
+                                    haptic.impact()
+                                    onHealthCheck(groupName)
+                                },
+                                onToggleExpand = {
+                                    haptic.selection()
+                                    expandedGroups[groupName] = !isExpanded
+                                }
+                            )
+                        }
 
-                                AnimatedVisibility(
-                                    visible = isExpanded && proxies.isNotEmpty(),
-                                    enter = expandVertically(
-                                        expandFrom = Alignment.Top,
-                                        animationSpec = spring(
-                                            stiffness = Spring.StiffnessMediumLow,
-                                            dampingRatio = 0.85f
-                                        )
-                                    ) + fadeIn(animationSpec = tween(180)),
-                                    exit = shrinkVertically(
-                                        shrinkTowards = Alignment.Top,
-                                        animationSpec = spring(
-                                            stiffness = Spring.StiffnessMediumLow,
-                                            dampingRatio = 0.88f
-                                        )
-                                    ) + fadeOut(animationSpec = tween(130)),
-                                    modifier = Modifier.clipToBounds()
+                        // The node cards are emitted as their own lazy rows instead of being
+                        // nested in a plain Column: expanding a group with hundreds of nodes
+                        // must not compose every card at once (UI-PERF-04).
+                        if (isExpanded && rawProxies.isNotEmpty()) {
+                            val chunkedRows = sortedProxies.chunked(cols)
+                            itemsIndexed(
+                                items = chunkedRows,
+                                // Identity must not depend on the row index: under DELAY sorting
+                                // the order shifts as results arrive.
+                                key = { _, row -> "${groupName}_grid_${cols}_${row.first().name}" },
+                                contentType = { _, _ -> "group_node_row" }
+                            ) { rowIndex, rowProxies ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .animateItem()
+                                        .padding(top = if (rowIndex == 0) 6.dp else 0.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    val groupNow = group?.now
-                                    val chunkedRows = remember(proxies, cols) {
-                                        proxies.chunked(cols)
+                                    for (proxy in rowProxies) {
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
+                                            val effectiveDelay = delayCache["$groupName:${proxy.name}"]
+                                                ?: delayCache[proxy.name]
+                                                ?: proxy.delay
+                                            LoonProxyItemCard(
+                                                proxy = proxy,
+                                                delay = effectiveDelay,
+                                                isSelected = proxy.name == groupNow,
+                                                columns = cols,
+                                                isTesting = isItemTesting,
+                                                onClick = {
+                                                    haptic.selection()
+                                                    onSelectProxy(groupName, proxy)
+                                                },
+                                                onTestSingleNode = {
+                                                    haptic.lightTick()
+                                                    onTestSingleNode(groupName, proxy.name)
+                                                },
+                                                onLongPress = {
+                                                    nodeDetailTarget = groupName to proxy.name
+                                                }
+                                            )
+                                        }
                                     }
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(top = 6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(7.dp)
-                                    ) {
-                                        for (rowProxies in chunkedRows) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                for (proxy in rowProxies) {
-                                                    Box(modifier = Modifier.weight(1f)) {
-                                                        val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
-                                                        val effectiveDelay = delayCache["$groupName:${proxy.name}"]
-                                                            ?: delayCache[proxy.name]
-                                                            ?: proxy.delay
-                                                        LoonProxyItemCard(
-                                                            proxy = proxy,
-                                                            delay = effectiveDelay,
-                                                            isSelected = proxy.name == groupNow,
-                                                            columns = cols,
-                                                            isTesting = isItemTesting,
-                                                            onClick = {
-                                                                haptic.selection()
-                                                                onSelectProxy(groupName, proxy)
-                                                            },
-                                                            onTestSingleNode = {
-                                                                haptic.lightTick()
-                                                                onTestSingleNode(groupName, proxy.name)
-                                                            },
-                                                            onLongPress = {
-                                                                nodeDetailTarget = groupName to proxy.name
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                                val remainder = cols - rowProxies.size
-                                                if (remainder > 0) {
-                                                    repeat(remainder) {
-                                                        Spacer(modifier = Modifier.weight(1f))
-                                                    }
-                                                }
-                                            }
+                                    val remainder = cols - rowProxies.size
+                                    if (remainder > 0) {
+                                        repeat(remainder) {
+                                            Spacer(modifier = Modifier.weight(1f))
                                         }
                                     }
                                 }
@@ -765,8 +770,15 @@ private fun NodeDetailSheet(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(text = label, color = color, fontSize = LoonTypeScale.footnote, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
-                                        .format(java.util.Date(timeMs)),
+                                    // The locale comes from LocalConfiguration, which is
+                                    // observable — Locale.getDefault() would not
+                                    // recompose when the system locale changes.
+                                    text = java.time.format.DateTimeFormatter
+                                        .ofPattern(
+                                            "HH:mm",
+                                            androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
+                                        )
+                                        .format(java.time.Instant.ofEpochMilli(timeMs)),
                                     color = LoonTextSecondary,
                                     fontSize = LoonTypeScale.micro
                                 )
@@ -834,7 +846,7 @@ private fun DetailActionButton(
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = label,
-                color = if (emphasized) Color.White else IosBlue,
+                color = if (emphasized) LoonOnAccent else IosBlue,
                 fontSize = LoonTypeScale.title3,
                 fontWeight = FontWeight.SemiBold
             )
@@ -857,7 +869,7 @@ private fun IosEmptyProxiesPlaceholder(message: String) {
             text = message,
             color = LoonTextSecondary,
             fontSize = LoonTypeScale.subhead,
-            lineHeight = 20.sp,
+            lineHeight = LoonLineHeight.subheadLarge,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp)
         )
@@ -879,7 +891,8 @@ private fun LoonGroupHeaderCard(
     isExpanded: Boolean,
     isTesting: Boolean = false,
     onHealthCheck: () -> Unit,
-    onToggleExpand: () -> Unit
+    onToggleExpand: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val lang = LocalAppLanguage.current
     val currentOnHealthCheck by rememberUpdatedState(onHealthCheck)
@@ -887,19 +900,19 @@ private fun LoonGroupHeaderCard(
     val chevronRotation by animateFloatAsState(
         targetValue = if (isExpanded) 90f else 0f,
         animationSpec = spring(
-            dampingRatio = 0.78f,
-            stiffness = Spring.StiffnessMedium
+            dampingRatio = LoonMotion.chevronDampingRatio,
+            stiffness = LoonMotion.chevronStiffness
         ),
         label = "group_chevron_rot"
     )
     val borderColor by animateColorAsState(
         targetValue = if (isExpanded) IosBlue.copy(alpha = 0.35f) else LoonCardBorder,
-        animationSpec = tween(180),
+        animationSpec = tween(LoonMotion.normalMs),
         label = "group_border_color"
     )
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(0.5.dp, borderColor, RoundedCornerShape(12.dp))
@@ -964,7 +977,7 @@ private fun LoonGroupHeaderCard(
                 AnimatedContent(
                     targetState = isExpanded || isTesting,
                     transitionSpec = {
-                        fadeIn(tween(150)) togetherWith fadeOut(tween(120))
+                        fadeIn(tween(LoonMotion.normalMs)) togetherWith fadeOut(tween(LoonMotion.fastMs))
                     },
                     label = "group_right_slot"
                 ) { showSpeedTest ->
@@ -978,6 +991,10 @@ private fun LoonGroupHeaderCard(
                                     indication = null
                                 ) {
                                     currentOnHealthCheck()
+                                }
+                                .semantics {
+                                    contentDescription = AppStrings.get("proxies_test", lang)
+                                    role = Role.Button
                                 },
                             contentAlignment = Alignment.Center
                         ) {
@@ -1046,8 +1063,9 @@ private fun LoonProxyItemCard(
         modifier = Modifier
             .fillMaxWidth()
             .then(
+                // UI-A11Y-07: a fixed height clips the text at 1.3x/2.0x font scale.
                 if (isSingleCol) Modifier.defaultMinSize(minHeight = 52.dp)
-                else Modifier.height(if (isCompact3Col) 58.dp else 62.dp)
+                else Modifier.heightIn(min = if (isCompact3Col) 58.dp else 62.dp)
             )
             .clip(cardShape)
             .border(
@@ -1115,7 +1133,7 @@ private fun LoonProxyItemCard(
                 Text(
                     text = proxy.name,
                     color = titleColor,
-                    fontSize = if (isCompact3Col) 11.5.sp else 13.sp,
+                    fontSize = if (isCompact3Col) LoonTypeScale.captionLarge else LoonTypeScale.callout,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1130,7 +1148,7 @@ private fun LoonProxyItemCard(
                     Text(
                         text = proxy.type.uppercase(),
                         color = LoonTextSecondary,
-                        fontSize = if (isCompact3Col) 9.5.sp else 10.5.sp,
+                        fontSize = if (isCompact3Col) LoonTypeScale.microSmall else LoonTypeScale.microLarge,
                         fontWeight = FontWeight.Normal,
                         maxLines = 1
                     )
@@ -1157,6 +1175,7 @@ private fun CupertinoLatencyText(
     compact: Boolean,
     onClick: () -> Unit
 ) {
+    val lang = LocalAppLanguage.current
     val isValidDelay = delay in 1..65534
     val delayColor = when {
         isValidDelay && delay <= 250 -> LoonSuccessText
@@ -1173,7 +1192,14 @@ private fun CupertinoLatencyText(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
-            ) { onClick() },
+            ) { onClick() }
+            // UI-A11Y-01: the visual chip keeps its size, but the touch target is the 48dp
+            // accessibility minimum.
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .semantics {
+                contentDescription = AppStrings.get("proxies_test", lang)
+                role = Role.Button
+            },
         contentAlignment = Alignment.CenterEnd
     ) {
         if (isTesting) {
@@ -1183,9 +1209,13 @@ private fun CupertinoLatencyText(
             )
         } else if (isValidDelay) {
             Text(
-                text = if (compact) "${delay}ms" else "$delay ms",
+                text = if (compact) {
+                    AppStrings.get("proxies_latency_ms_compact", lang).replace("{ms}", delay.toString())
+                } else {
+                    AppStrings.get("proxies_latency_ms", lang).replace("{ms}", delay.toString())
+                },
                 color = delayColor,
-                fontSize = if (compact) 10.sp else 11.5.sp,
+                fontSize = if (compact) LoonTypeScale.micro else LoonTypeScale.captionLarge,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )

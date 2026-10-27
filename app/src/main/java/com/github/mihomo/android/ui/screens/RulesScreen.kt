@@ -16,9 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -54,7 +52,7 @@ fun RulesScreen(
 ) {
     val lang = LocalAppLanguage.current
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
+    val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
 
     var searchQuery by remember { mutableStateOf("") }
@@ -197,7 +195,7 @@ fun RulesScreen(
                             color = LoonWarningText,
                             fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.Medium,
-                            lineHeight = 18.sp
+                            lineHeight = LoonLineHeight.callout,
                         )
                     }
                 }
@@ -326,7 +324,7 @@ fun RulesScreen(
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
-                            clipboardManager.setText(AnnotatedString(rawRuleText))
+                            copyToClipboard(rawRuleText)
                             CupertinoToast.show(AppStrings.get("rules_syntax_copied", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -366,22 +364,22 @@ fun RulesScreen(
                         .background(LoonBg)
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("rules_field_type", lang),
                         value = "${rule.type} (${getRuleTypeDescription(rule.type, lang)})"
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("rules_field_payload", lang),
                         value = rule.payload.ifBlank { AppStrings.get("rules_match_all", lang) },
                         showCopy = rule.payload.isNotBlank(),
                         onCopy = {
-                            clipboardManager.setText(AnnotatedString(rule.payload))
+                            copyToClipboard(rule.payload)
                             CupertinoToast.show(AppStrings.get("rules_payload_copied", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("rules_field_target", lang),
                         value = rule.target,
                         valueColor = when {
@@ -391,12 +389,12 @@ fun RulesScreen(
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("rules_field_dns", lang),
                         value = if (rule.noResolve) AppStrings.get("rules_no_resolve", lang) else AppStrings.get("rules_standard_resolve", lang)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("rules_field_order", lang),
                         value = AppStrings.get("rules_order_value", lang).replace("{n}", (indexed.index + 1).toString())
                     )
@@ -413,7 +411,13 @@ fun RulesScreen(
             message = AppStrings.get("rules_filter_message", lang).replace("{a}", filteredRules.size.toString()).replace("{b}", indexedRules.size.toString()),
             actions = RuleFilter.entries.map { filter ->
                 CupertinoActionSheetItem(
-                    text = if (filter == selectedFilter) AppStrings.get(filter.labelKey, lang) + "  ✓" else AppStrings.get(filter.labelKey, lang),
+                    text = if (filter == selectedFilter) {
+                        // The check mark is part of the string table, not appended to it.
+                        AppStrings.get("filter_selected_mark", lang)
+                            .replace("{label}", AppStrings.get(filter.labelKey, lang))
+                    } else {
+                        AppStrings.get(filter.labelKey, lang)
+                    },
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -457,7 +461,7 @@ fun RulesScreen(
                             text = AppStrings.get("rules_test_no_match", lang),
                             color = LoonTextSecondary,
                             fontSize = LoonTypeScale.callout,
-                            lineHeight = 18.sp
+                            lineHeight = LoonLineHeight.callout,
                         )
                     } else {
                         val matched = testerMatch
@@ -475,17 +479,17 @@ fun RulesScreen(
                                 .background(LoonBg)
                                 .padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
-                            DetailRow(
+                            CupertinoDetailRow(
                                 label = AppStrings.get("rules_field_type", lang),
                                 value = "${matched.type} (${getRuleTypeDescription(matched.type, lang)})"
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            DetailRow(
+                            CupertinoDetailRow(
                                 label = AppStrings.get("rules_field_payload", lang),
                                 value = matched.payload.ifBlank { AppStrings.get("rules_match_all", lang) }
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            DetailRow(
+                            CupertinoDetailRow(
                                 label = AppStrings.get("rules_field_target", lang),
                                 value = matched.target,
                                 valueColor = when {
@@ -598,59 +602,6 @@ private fun RuleCell(
                     text = "no-resolve",
                     color = LoonTextMuted,
                     fontSize = LoonTypeScale.footnote
-                )
-            }
-        }
-    }
-}
-
-/**
- * Clean detail row for the iOS Inspector sheet.
- */
-@Composable
-private fun DetailRow(
-    label: String,
-    value: String,
-    valueColor: androidx.compose.ui.graphics.Color = LoonTextPrimary,
-    showCopy: Boolean = false,
-    onCopy: (() -> Unit)? = null
-) {
-    val lang = LocalAppLanguage.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            fontSize = LoonTypeScale.callout,
-            color = LoonTextSecondary
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .padding(start = 12.dp)
-                .weight(1f, fill = false)
-        ) {
-            Text(
-                text = value,
-                fontSize = LoonTypeScale.calloutLarge,
-                fontWeight = FontWeight.Medium,
-                color = valueColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            if (showCopy && (onCopy != null)) {
-                Spacer(modifier = Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = AppStrings.get("copy_desc", lang),
-                    tint = IosBlue,
-                    modifier = Modifier
-                        .size(15.dp)
-                        .clickable(onClick = onCopy)
                 )
             }
         }

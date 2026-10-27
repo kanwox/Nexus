@@ -42,7 +42,14 @@ object ProfileParser {
         parsedCache.clear()
     }
 
-    fun parse(file: File?, savedNodes: Map<String, String> = emptyMap(), context: Context? = null): ParsedProfile {
+    /**
+     * Parses a profile file into the node/group/rule model the UI renders.
+     *
+     * `suspend` because the config-rewrite scripts run inside this function and the JS
+     * engine blocks its calling thread for up to the script timeout. The caller must be
+     * able to suspend (the engine additionally hops to IO itself).
+     */
+    suspend fun parse(file: File?, savedNodes: Map<String, String> = emptyMap(), context: Context? = null): ParsedProfile {
         if ((file == null) || !file.exists()) {
             return ParsedProfile()
         }
@@ -75,7 +82,7 @@ object ProfileParser {
         var scriptRewriteFailed = false
         if (context != null) {
             if (resolvedScriptIds.isNotEmpty()) {
-                content = runCatching {
+                val scriptResult = runCatching {
                     ConfigScriptEngine.executeScripts(
                         context = context,
                         rawYaml = content,
@@ -88,7 +95,22 @@ object ProfileParser {
                     // after the script starts working again.
                     scriptRewriteFailed = true
                     Log.w(TAG, "ConfigScriptEngine execution in ProfileParser failed: ${it.message}")
-                    content
+                    null
+                }
+                if (scriptResult != null) {
+                    if (scriptResult.hasFailures) {
+                        // A partially applied script chain must not be cached: the engine
+                        // already returns the ORIGINAL yaml in that case, and caching it
+                        // would keep serving an un-rewritten profile until the script set
+                        // changes.
+                        scriptRewriteFailed = true
+                        Log.w(
+                            TAG,
+                            "Config scripts partially failed in ProfileParser " +
+                                "(${scriptResult.failed.size}/${scriptResult.total}); not caching the result"
+                        )
+                    }
+                    content = scriptResult.yaml
                 }
             }
         }

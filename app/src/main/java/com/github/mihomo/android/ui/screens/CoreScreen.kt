@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -56,6 +57,7 @@ import com.github.mihomo.android.ui.theme.IosOrange
 import com.github.mihomo.android.ui.theme.LoonCard
 import com.github.mihomo.android.ui.theme.LoonCardBorder
 import com.github.mihomo.android.ui.theme.LoonInfoText
+import com.github.mihomo.android.ui.theme.LoonSizes
 import com.github.mihomo.android.ui.theme.LoonTextPrimary
 import com.github.mihomo.android.ui.theme.LoonTypeScale
 import com.github.mihomo.android.ui.theme.LoonTextSecondary
@@ -410,7 +412,10 @@ private fun ProviderRow(
                     color = LoonInfoText,
                     fontSize = LoonTypeScale.body,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clickable(onClick = onUpdate)
+                    modifier = Modifier
+                        .clickable(onClick = onUpdate)
+                        // UI-A11Y-01: the label keeps its size, the target is 48dp.
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                 )
             }
         }

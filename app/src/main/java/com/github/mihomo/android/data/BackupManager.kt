@@ -62,6 +62,19 @@ data class BackupData(
 )
 
 /**
+ * Outcome of a restore: how many items were imported and which ones failed.
+ *
+ * The failures are plain, user-facing strings so the UI can show them directly; the
+ * technical detail stays in logcat.
+ */
+data class BackupImportResult(
+    val imported: Int = 0,
+    val failures: List<String> = emptyList(),
+) {
+    val hasFailures: Boolean get() = failures.isNotEmpty()
+}
+
+/**
  * Exports/imports profiles, scripts and app settings as a single JSON document.
  * Import rebuilds everything through the regular public APIs ([ConfigManager],
  * [ScriptManager], [SettingsManager]) so caches, content hashes and metadata stores stay
@@ -77,6 +90,13 @@ object BackupManager {
     private const val PBKDF2_ITERATIONS = 65_536
     private const val KEY_LENGTH_BITS = 256
     private const val GCM_TAG_LENGTH_BITS = 128
+
+    /**
+     * Backup document versions this build can restore. An unknown version is rejected
+     * with a clear message instead of being parsed field-by-field, which would silently
+     * drop whatever the newer format added.
+     */
+    private val SUPPORTED_VERSIONS = setOf(1)
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -140,6 +160,61 @@ object BackupManager {
         return true
     }
 
+    /**
+     * Decides whether a URL from a backup may be restored.
+     *
+     * A backup is untrusted input: the URL is restored into a profile that
+     * [SubscriptionUpdateWorker] then fetches periodically, so an unvalidated URL turns
+     * the restore into a remote-code-fetch primitive. The URL is therefore checked with
+     * the same guard the app uses for manually entered URLs.
+     *
+     * Returns the URL when it is acceptable, or `null` when it must be dropped.
+     */
+    internal fun sanitizeRestoredUrl(url: String?, allowPrivateHosts: Boolean): String? {
+        val candidate = url?.trim().orEmpty()
+        if (candidate.isEmpty()) return null
+        return if (runCatching { requireSecureRemoteUrl(candidate, allowPrivateHosts) }.isSuccess) {
+            candidate
+        } else {
+            Log.w(TAG, "Rejected unsafe URL during restore: ${redactUrl(candidate)}")
+            null
+        }
+    }
+
+    /**
+     * Decides whether LAN sharing may be enabled by a restore.
+     *
+     * "LAN sharing on + empty password" produces a config without an `authentication`
+     * block, which opens the mixed port to the whole LAN completely unauthenticated. When
+     * the backup asks for LAN sharing but carries no usable password, LAN sharing stays
+     * OFF.
+     *
+     * @param backupLanPassword the password stored in the backup (may be null/blank)
+     * @param currentPassword the password already configured on this device
+     */
+    internal fun decideLanRestore(
+        wantsLan: Boolean,
+        backupLanPassword: String?,
+        currentPassword: String
+    ): LanRestoreDecision {
+        if (!wantsLan) return LanRestoreDecision(allowLan = false, password = backupLanPassword?.trim())
+        val effective = backupLanPassword?.trim()?.takeIf { it.isNotEmpty() }
+            ?: currentPassword.trim().takeIf { it.isNotEmpty() }
+        return if (effective.isNullOrEmpty()) {
+            LanRestoreDecision(allowLan = false, password = null, rejected = true)
+        } else {
+            LanRestoreDecision(allowLan = true, password = effective)
+        }
+    }
+
+    /** The outcome of [decideLanRestore]. */
+    internal data class LanRestoreDecision(
+        val allowLan: Boolean,
+        val password: String?,
+        /** True when LAN sharing was requested but refused for lack of a password. */
+        val rejected: Boolean = false,
+    )
+
     /** Bounded read: a malformed/huge backup must fail cleanly instead of OOMing the process. */
     private fun readBounded(input: InputStream, tooLargeMessage: String): ByteArray {
         val out = java.io.ByteArrayOutputStream()
@@ -157,7 +232,12 @@ object BackupManager {
 
     /**
      * Writes a full backup to [output] (the stream is closed here).
-     * If [password] is provided, the payload is encrypted with AES-256-GCM.
+     *
+     * If [password] is provided (and not blank), the payload is encrypted with
+     * AES-256-GCM (PBKDF2-HMAC-SHA256, 65536 iterations) and the file starts with the
+     * `NEXUS_ENC_V1` magic header. A BLANK password is treated as "no password" and
+     * produces a PLAINTEXT document.
+     *
      * Profiles keep [ConfigManager.getProfiles] order; scripts carry their full code so the
      * restore does not need the network.
      */
@@ -195,7 +275,11 @@ object BackupManager {
                 enabled = script.enabled,
                 updatedAt = script.updatedAt,
                 contentHash = script.contentHash,
-                code = if (codeFile.exists()) runCatching { codeFile.readText() }.getOrDefault("") else ""
+                code = if (codeFile != null && codeFile.exists()) {
+                    runCatching { codeFile.readText() }.getOrDefault("")
+                } else {
+                    ""
+                }
             )
         }
 
@@ -221,8 +305,21 @@ object BackupManager {
     }
 
     /**
+     * Writes a **PLAINTEXT** backup to [output] (the stream is closed here).
+     *
+     * The resulting JSON contains the subscription URLs (including their access tokens)
+     * and the LAN proxy password in clear text, so it must only be used when the user
+     * explicitly opts out of encryption. Prefer [exportBackup] with a password.
+     */
+    fun exportBackup(context: Context, output: OutputStream): Result<Unit> =
+        exportBackup(context, output, password = null)
+
+    /**
      * Restores a backup from [input] (the stream is closed here) and returns the number of
      * successfully imported items (profiles + scripts).
+     *
+     * [password] is required for an encrypted backup; use [isEncrypted] on the raw bytes to
+     * find out whether a password is needed before calling this.
      *
      * Scripts are rebuilt first because [ScriptManager.saveScript] always mints a fresh id,
      * so profile script bindings are remapped old-id -> new-id; profiles are then created
@@ -233,22 +330,57 @@ object BackupManager {
         input: InputStream,
         tooLargeMessage: String = "Backup file is too large",
         password: String? = null
-    ): Result<Int> = runCatching {
+    ): Result<Int> = importBackupDetailed(context, input, tooLargeMessage, password).map { it.imported }
+
+    /**
+     * Restores a backup and reports WHICH items failed, so the UI can tell the user what
+     * did not make it in instead of only showing a count.
+     *
+     * A backup is untrusted input: it is a file the user picked, and it may have been
+     * crafted. Two things are therefore validated before anything is restored:
+     *  - every restored URL is checked with [requireSecureRemoteUrl]; a URL that fails is
+     *    DROPPED (and the profile's auto-update is disabled with it) instead of being
+     *    restored, because [SubscriptionUpdateWorker] would otherwise fetch it periodically;
+     *  - "LAN sharing on + empty password" is rejected, because that combination opens the
+     *    mixed port on the LAN completely unauthenticated.
+     */
+    fun importBackupDetailed(
+        context: Context,
+        input: InputStream,
+        tooLargeMessage: String = "Backup file is too large",
+        password: String? = null
+    ): Result<BackupImportResult> = runCatching {
         val rawBytes = input.use { stream -> readBounded(stream, tooLargeMessage) }
         val text = decrypt(rawBytes, password)
         val data = json.decodeFromString<BackupData>(text)
+        if (data.version !in SUPPORTED_VERSIONS) {
+            error("不支持的备份版本：${data.version}（支持 ${SUPPORTED_VERSIONS.joinToString(", ")}）")
+        }
+
+        val settings = SettingsManager(context)
+        val allowPrivateHosts = settings.allowPrivateSubscriptionHosts
         var imported = 0
+        val failures = mutableListOf<String>()
 
         // Scripts first: collect the id remapping for the profile bindings below.
         val scriptIdMap = mutableMapOf<String, String>()
         for (script in data.scripts) {
             runCatching {
                 if (script.code.isBlank()) return@runCatching
+                // A restored script URL is untrusted: an attacker could otherwise make the
+                // app fetch an arbitrary address on the next "update script" run.
+                val safeUrl = script.url.takeIf { it.isNotBlank() }
+                    ?.let { candidate ->
+                        sanitizeRestoredUrl(candidate, allowPrivateHosts) ?: run {
+                            failures += "脚本「${script.name}」的远程地址不安全，已忽略该地址"
+                            null
+                        }
+                    } ?: ""
                 val rebuilt = ScriptManager.saveScript(
                     context = context,
                     existingId = null,
                     name = script.name,
-                    url = script.url,
+                    url = safeUrl,
                     pattern = script.pattern,
                     type = script.type,
                     code = script.code,
@@ -256,18 +388,31 @@ object BackupManager {
                 )
                 scriptIdMap[script.id] = rebuilt.id
                 imported++
-            }.onFailure { Log.w(TAG, "Failed to restore script ${script.name}", it) }
+            }.onFailure {
+                Log.w(TAG, "Failed to restore script ${script.name}", it)
+                failures += "脚本「${script.name}」恢复失败：${it.message ?: it.javaClass.simpleName}"
+            }
         }
 
         for (profile in data.profiles) {
             runCatching {
                 if (profile.content.isBlank()) return@runCatching
+                // The subscription URL is restored untrusted. A URL that fails validation is
+                // dropped and auto-update is disabled with it: the worker would otherwise
+                // fetch an attacker-chosen address every 30 minutes.
+                val restoredUrl = profile.url?.takeIf { it.isNotBlank() }?.let { candidate ->
+                    sanitizeRestoredUrl(candidate, allowPrivateHosts) ?: run {
+                        failures += "订阅「${profile.name}」的地址不安全，已忽略该地址并关闭自动更新"
+                        null
+                    }
+                }
                 val created = ConfigManager.saveLocalProfile(context, profile.name, profile.content)
                 val updated = created.copy(
-                    url = profile.url?.takeIf { it.isNotBlank() },
+                    url = restoredUrl,
                     scriptEnabled = profile.scriptEnabled,
                     scriptIds = profile.scriptIds.mapNotNull { scriptIdMap[it] },
-                    autoUpdate = profile.autoUpdate,
+                    // Without a URL there is nothing to update, so auto-update stays off.
+                    autoUpdate = profile.autoUpdate && restoredUrl != null,
                     autoUpdateInterval = profile.autoUpdateInterval,
                     prependRules = profile.prependRules,
                     hostsEntries = profile.hostsEntries,
@@ -275,20 +420,51 @@ object BackupManager {
                 )
                 ConfigManager.updateProfile(context, updated)
                 imported++
-            }.onFailure { Log.w(TAG, "Failed to restore profile ${profile.name}", it) }
+            }.onFailure {
+                Log.w(TAG, "Failed to restore profile ${profile.name}", it)
+                failures += "订阅「${profile.name}」恢复失败：${it.message ?: it.javaClass.simpleName}"
+            }
         }
 
-        runCatching { restoreSettings(SettingsManager(context), data.settings) }
-            .onFailure { Log.w(TAG, "Failed to restore settings", it) }
+        runCatching { restoreSettings(settings, data.settings) }
+            .onFailure {
+                Log.w(TAG, "Failed to restore settings", it)
+                failures += "设置恢复失败：${it.message ?: it.javaClass.simpleName}"
+            }
 
         // The profile listing cache must be dropped or the restored profiles stay invisible.
         ConfigManager.invalidateProfilesCache()
-        imported
+        BackupImportResult(imported = imported, failures = failures)
     }
 
-    private fun scriptCodeFile(context: Context, scriptFile: String): File {
-        return context.filesDir.resolve("scripts").resolve(scriptFile)
+    /**
+     * Resolves a script's code file inside the scripts directory.
+     *
+     * `scriptFile` comes from deserialized JSON (a restored backup or a tampered
+     * SharedPreferences), so it is resolved through [SafeFileName.resolveChild]: a value
+     * like `../../databases/x` must never escape the scripts directory.
+     */
+    private fun scriptCodeFile(context: Context, scriptFile: String): File? {
+        val dir = context.filesDir.resolve("scripts")
+        return SafeFileName.resolveChild(dir, scriptFile)
     }
+
+    /**
+     * The canonical list of backed-up settings keys.
+     *
+     * Both [buildSettingsSnapshot] and [restoreSettings] work from this list, so the two
+     * can never drift apart (a key that is written but never read, or vice versa, used
+     * to silently drop settings on restore).
+     */
+    internal val SETTINGS_SNAPSHOT_KEYS: List<String> = listOf(
+        "tunnelMode", "tunStack", "perAppProxyMode", "selectedPackages", "bootOnStartup",
+        "allowLan", "fakeIpEnabled", "ipv6Enabled", "allowLanPassword", "dnsIpv6Enabled",
+        "dnsNameservers", "dnsFallbackServers", "mixedPort", "tunMtu", "killSwitchEnabled",
+        "allowBypassEnabled", "allowPrivateSubscriptionHosts", "blockThirdPartyDns",
+        "proxiesViewMode", "visibleShortcuts", "shortcutOrder", "scriptingEnabled",
+        "showGroupIcons", "nodeColumns", "nodeSortMode", "logLevel", "themeMode",
+        "appLanguage", "appFont"
+    )
 
     /** Explicit snapshot of every backed-up [SettingsManager] key, plus per-group node picks. */
     private fun buildSettingsSnapshot(settings: SettingsManager): Map<String, String> {
@@ -339,10 +515,27 @@ object BackupManager {
             settings.selectedPackages = it.split(',').filter { pkg -> pkg.isNotBlank() }.toSet()
         }
         map["bootOnStartup"]?.let { settings.bootOnStartup = it == "true" }
-        map["allowLan"]?.let { settings.allowLan = it == "true" }
+        // The password MUST be restored before the switch is decided: `allow-lan: true`
+        // without a password produces a config without an `authentication` block, which
+        // opens the mixed port to the whole LAN completely unauthenticated. Restoring the
+        // two independently (as it happened before) allowed a crafted backup to do
+        // exactly that.
+        val decision = decideLanRestore(
+            wantsLan = map["allowLan"] == "true",
+            backupLanPassword = map["allowLanPassword"],
+            currentPassword = settings.allowLanPassword
+        )
+        if (decision.rejected) {
+            Log.w(TAG, "Backup requested LAN sharing without a password; keeping LAN sharing disabled")
+            LogRepository.addLog(
+                "warning",
+                "备份中启用了局域网共享但没有访问密码，已保持局域网共享关闭（否则混合端口会在局域网上完全无鉴权开放）"
+            )
+        }
+        decision.password?.let { settings.allowLanPassword = it }
+        settings.allowLan = decision.allowLan
         map["fakeIpEnabled"]?.let { settings.fakeIpEnabled = it == "true" }
         map["ipv6Enabled"]?.let { settings.ipv6Enabled = it == "true" }
-        map["allowLanPassword"]?.let { settings.allowLanPassword = it }
         map["dnsIpv6Enabled"]?.let { settings.dnsIpv6Enabled = it == "true" }
         map["dnsNameservers"]?.let { settings.dnsNameservers = it }
         map["dnsFallbackServers"]?.let { settings.dnsFallbackServers = it }

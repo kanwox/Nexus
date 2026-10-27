@@ -46,6 +46,19 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("boot_on_startup", false)
         set(value) = prefs.edit { putBoolean("boot_on_startup", value) }
 
+    /**
+     * Whether the user currently wants the tunnel to be running.
+     *
+     * This is the authoritative "intent" flag that survives a process death: the VPN
+     * service's in-memory state is lost when the process is killed, so the tile and the
+     * service's null-intent restart path have to consult a persisted value instead.
+     * It is set when the tunnel reaches RUNNING and cleared on an explicit stop
+     * (closeTunnel) or when the VPN permission is revoked (onRevoke).
+     */
+    var vpnIntentActive: Boolean
+        get() = prefs.getBoolean("vpn_intent_active", false)
+        set(value) = prefs.edit { putBoolean("vpn_intent_active", value) }
+
     /** Exposes the mixed port to the local network (LAN sharing). */
     var allowLan: Boolean
         get() = prefs.getBoolean("allow_lan", false)

@@ -16,9 +16,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -32,7 +31,9 @@ import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.*
 
 private enum class LogFilter(val labelKey: String) {
@@ -45,13 +46,13 @@ private enum class LogFilter(val labelKey: String) {
 /** One log line for copy/export, including the collapse count when a message repeated. */
 private fun formatLogLine(
     log: LogEntry,
-    timeFormat: SimpleDateFormat,
-    fullTimeFormat: SimpleDateFormat,
+    timeFormat: DateTimeFormatter,
+    fullTimeFormat: DateTimeFormatter,
     fullTimestamp: Boolean = false
 ): String {
     val format = if (fullTimestamp) fullTimeFormat else timeFormat
     val repeat = if (log.count > 1) " (×${log.count})" else ""
-    return "[${format.format(Date(log.timestamp))}] [${log.level.uppercase()}] ${log.message}$repeat"
+    return "[${format.format(Instant.ofEpochMilli(log.timestamp))}] [${log.level.uppercase()}] ${log.message}$repeat"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,7 +61,7 @@ fun LogsScreen(
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
-    val clipboardManager = LocalClipboardManager.current
+    val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
     val liveLogs by LogRepository.logsFlow.collectAsStateWithLifecycle()
 
@@ -77,8 +78,16 @@ fun LogsScreen(
     var showClearConfirm by remember { mutableStateOf(false) }
     var activeDetailLog by remember { mutableStateOf<LogEntry?>(null) }
 
-    val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
-    val fullTimeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()) }
+    // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
+    // The locale comes from LocalConfiguration, which is observable — reading
+    // Locale.getDefault() directly would not recompose when the system locale changes.
+    val locale = LocalConfiguration.current.locales[0]
+    val timeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("HH:mm:ss.SSS", locale).withZone(ZoneId.systemDefault())
+    }
+    val fullTimeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS", locale).withZone(ZoneId.systemDefault())
+    }
 
     // Export to file via SAF: the user picks the destination, so no storage permission
     // or FileProvider is needed.
@@ -282,7 +291,7 @@ fun LogsScreen(
                     dividerStartIndent = 16.dp
                 ) { _, entry ->
                     val formattedTime = remember(entry.timestamp) {
-                        timeFormat.format(Date(entry.timestamp))
+                        timeFormat.format(Instant.ofEpochMilli(entry.timestamp))
                     }
 
                     LogEntryCell(
@@ -302,7 +311,7 @@ fun LogsScreen(
     if (activeDetailLog != null) {
         val entry = activeDetailLog!!
         val fullTimeStr = remember(entry.timestamp) {
-            fullTimeFormat.format(Date(entry.timestamp))
+            fullTimeFormat.format(Instant.ofEpochMilli(entry.timestamp))
         }
 
         val (lvlColor, lvlText) = when (entry.level.lowercase()) {
@@ -381,7 +390,7 @@ fun LogsScreen(
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
-                            clipboardManager.setText(AnnotatedString(entry.message))
+                            copyToClipboard(entry.message)
                             CupertinoToast.show(AppStrings.get("logs_content_copied", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp)
@@ -407,7 +416,7 @@ fun LogsScreen(
                     Text(
                         text = entry.message,
                         fontSize = LoonTypeScale.calloutLarge,
-                        lineHeight = 19.sp,
+                        lineHeight = LoonLineHeight.calloutLarge,
                         color = LoonTextPrimary
                     )
                 }
@@ -430,7 +439,7 @@ fun LogsScreen(
                         val exportText = filteredLogs.joinToString("\n") { log ->
                             formatLogLine(log, timeFormat, fullTimeFormat)
                         }
-                        clipboardManager.setText(AnnotatedString(exportText))
+                        copyToClipboard(exportText)
                         CupertinoToast.show(AppStrings.get("logs_copied_count", lang).replace("{n}", filteredLogs.size.toString()))
                     }
                 ),
@@ -440,7 +449,12 @@ fun LogsScreen(
                         haptic.lightTick()
                         showActionSheet = false
                         pendingExportLogs = filteredLogs
-                        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                        // A file name must be locale-neutral, so the timestamp is formatted
+                        // with Locale.ROOT rather than the user's locale.
+                        val stamp = DateTimeFormatter
+                            .ofPattern("yyyyMMdd-HHmmss", java.util.Locale.ROOT)
+                            .withZone(ZoneId.systemDefault())
+                            .format(Instant.now())
                         exportLauncher.launch("nexus-logs-$stamp.txt")
                     }
                 ),
@@ -466,7 +480,13 @@ fun LogsScreen(
             message = AppStrings.get("logs_filter_message", lang).replace("{a}", filteredLogs.size.toString()).replace("{b}", logs.size.toString()),
             actions = LogFilter.entries.map { filter ->
                 CupertinoActionSheetItem(
-                    text = if (filter == selectedFilter) AppStrings.get(filter.labelKey, lang) + "  ✓" else AppStrings.get(filter.labelKey, lang),
+                    text = if (filter == selectedFilter) {
+                        // The check mark is part of the string table, not appended to it.
+                        AppStrings.get("filter_selected_mark", lang)
+                            .replace("{label}", AppStrings.get(filter.labelKey, lang))
+                    } else {
+                        AppStrings.get(filter.labelKey, lang)
+                    },
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -547,7 +567,7 @@ private fun LogEntryCell(
             text = entry.message,
             color = LoonTextPrimary,
             fontSize = LoonTypeScale.calloutLarge,
-            lineHeight = 19.sp,
+            lineHeight = LoonLineHeight.calloutLarge,
             maxLines = 4,
             overflow = TextOverflow.Ellipsis
         )

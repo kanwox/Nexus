@@ -302,7 +302,9 @@ private fun DnsServerRow(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(CircleShape)
-                    .clickable(onClick = onDelete),
+                    .clickable(onClick = onDelete)
+                    // UI-A11Y-01: keep the 34dp visual, widen the touch target to 48dp.
+                    .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(

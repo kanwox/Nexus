@@ -132,4 +132,15 @@ val RedDanger = IosRed
 val GreenSuccess = IosGreen
 val YellowWarning = IosOrange
 
+/**
+ * Foreground colour for saturated accent surfaces: filled buttons, traffic cards and the
+ * switch thumb. UI_GUIDELINES.md §3.1 keeps the Apple system blue + white label combination
+ * as the single documented exception; every other accent surface must use this token instead
+ * of a raw `Color.White` so the checkUiTokens guard can stay strict.
+ */
+val LoonOnAccent: Color = Color(0xFFFFFFFF)
+
+/** Neutral scrim used to separate overlapping illustration layers. */
+val LoonOverlayScrim: Color = Color(0x14000000)
+
 

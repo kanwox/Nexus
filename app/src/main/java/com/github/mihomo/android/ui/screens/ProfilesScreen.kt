@@ -47,10 +47,13 @@ import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val DAY_MS = 86_400_000L
 private const val EXPIRE_WARN_DAYS = 7L
@@ -58,7 +61,13 @@ private const val DRAG_LIFT_SCALE = 1.03f
 private const val DRAG_SHADOW_ELEVATION = 24f
 private const val LIST_ITEM_SPACING_DP = 10
 
-private val expireDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+// java.time formatters are immutable and thread-safe, unlike SimpleDateFormat, and the
+// date is user-visible so it follows the device locale instead of a fixed US format.
+// The formatter is built per call rather than cached in a static field: a cached
+// Locale would keep the locale that was active at class-load time and would not
+// follow a locale change made while the app is running.
+private fun expireDateFormat(): DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.getDefault()).withZone(ZoneId.systemDefault())
 
 private fun formatRelativeTime(timestamp: Long, lang: String): String {
     if (timestamp <= 0L) return AppStrings.get("time_never_updated", lang)
@@ -131,6 +140,10 @@ fun ProfilesScreen(
 
     var deletingProfile by remember { mutableStateOf<ProfileItem?>(null) }
 
+    // On-disk size per profile. `File.length()` is a stat() syscall and must not run in the
+    // composition body (UI-PERF-03), so it is resolved off the main thread and cached here.
+    var profileFileSizes by remember { mutableStateOf(emptyMap<String, Long>()) }
+
     // Auto-update editor sheet draft state.
     var autoUpdateProfile by remember { mutableStateOf<ProfileItem?>(null) }
     var draftAutoUpdate by remember { mutableStateOf(false) }
@@ -152,6 +165,14 @@ fun ProfilesScreen(
         }
     }
 
+    // Resolve the on-disk sizes off the main thread whenever the profile list changes.
+    LaunchedEffect(profiles) {
+        val sizes = withContext(Dispatchers.IO) {
+            localProfiles.associate { it.id to it.file.length() }
+        }
+        profileFileSizes = sizes
+    }
+
     val closeAddDialog: () -> Unit = {
         showAddDialog = false
         if (addDialogFromPrefill) {
@@ -164,13 +185,18 @@ fun ProfilesScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            val result = ConfigManager.importProfileFromUri(context, uri)
-            if (result.isSuccess) {
-                val imported = result.getOrThrow()
-                onUpdateProfile(imported)
-                CupertinoToast.show(AppStrings.get("imported_toast", lang).replace("{name}", imported.name))
-            } else {
-                CupertinoToast.show(AppStrings.get("import_failed", lang).replace("{msg}", result.exceptionOrNull()?.message ?: ""), isDestructive = true)
+            // The SAF import reads the whole document: it must not run on the main thread.
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    ConfigManager.importProfileFromUri(context, uri)
+                }
+                if (result.isSuccess) {
+                    val imported = result.getOrThrow()
+                    onUpdateProfile(imported)
+                    CupertinoToast.show(AppStrings.get("imported_toast", lang).replace("{name}", imported.name))
+                } else {
+                    CupertinoToast.show(AppStrings.get("import_failed", lang).replace("{msg}", result.exceptionOrNull()?.message ?: ""), isDestructive = true)
+                }
             }
         }
     }
@@ -198,7 +224,7 @@ fun ProfilesScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = null,
+                        contentDescription = AppStrings.get("action_add", lang),
                         tint = IosBlue,
                         modifier = Modifier.size(24.dp)
                     )
@@ -267,13 +293,15 @@ fun ProfilesScreen(
                         }
                     }
 
-                    val infoText = remember(profile, lang) {
+                    val infoText = remember(profile, lang, profileFileSizes) {
                         if (profile.totalBytes > 0L) {
                             val used = formatTraffic(profile.uploadBytes + profile.downloadBytes)
                             val total = formatTraffic(profile.totalBytes)
                             "$used / $total"
                         } else {
-                            formatFileSize(profile.file.length())
+                            // The on-disk size is read off the main thread (see the
+                            // profileFileSizes loader); an unknown size falls back to "0 B".
+                            formatFileSize(profileFileSizes[profile.id] ?: 0L)
                         }
                     }
                     val timeText = remember(profile, lang) { formatRelativeTime(profile.lastUpdated, lang) }
@@ -292,7 +320,7 @@ fun ProfilesScreen(
                                 AppStrings.current("profile_expire_days_left").replace("{days}", daysLeft.toString())
                             } else {
                                 AppStrings.current("profile_expire_at")
-                                    .replace("{date}", expireDateFormat.format(Date(expireMillis)))
+                                    .replace("{date}", expireDateFormat().format(Instant.ofEpochMilli(expireMillis)))
                             }
                             expireColor = if (daysLeft <= EXPIRE_WARN_DAYS) LoonWarningText else LoonTextSecondary
                         }
@@ -476,7 +504,7 @@ fun ProfilesScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MoreHoriz,
-                                    contentDescription = null,
+                                    contentDescription = AppStrings.get("action_more", lang),
                                     tint = LoonTextSecondary.copy(alpha = 0.8f),
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -658,9 +686,15 @@ fun ProfilesScreen(
                                 autoUpdate = draftAutoUpdate,
                                 autoUpdateInterval = interval
                             )
-                            ConfigManager.updateProfile(context, updated)
                             autoUpdateProfile = null
                             onUpdateProfile(updated)
+                            // The profile store is rewritten as a whole: keep it off the
+                            // main thread (UI-PERF-03).
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    ConfigManager.updateProfile(context, updated)
+                                }
+                            }
                         }
                         .padding(horizontal = 8.dp),
                     contentAlignment = Alignment.Center
@@ -711,7 +745,7 @@ fun ProfilesScreen(
                 text = AppStrings.current("profile_auto_update_desc"),
                 color = LoonTextSecondary,
                 fontSize = LoonTypeScale.footnote,
-                lineHeight = 16.sp,
+                lineHeight = LoonLineHeight.footnote,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 30.dp, vertical = 10.dp)
@@ -732,8 +766,13 @@ fun ProfilesScreen(
                 val finalUrl = if (isSub) editUrl.trim() else target.url
                 val updated = target.copy(name = finalName, url = finalUrl)
                 editingProfile = null
-                ConfigManager.updateProfile(context, updated)
                 onUpdateProfile(updated)
+                // The profile store is rewritten as a whole: keep it off the main thread.
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        ConfigManager.updateProfile(context, updated)
+                    }
+                }
             },
             onDismiss = { editingProfile = null },
             onDismissRequest = { editingProfile = null }

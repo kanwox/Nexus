@@ -21,12 +21,17 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.github.kr328.clash.core.util.*
+import com.github.mihomo.android.MihomoApplication
 import com.github.mihomo.android.R
 import com.github.mihomo.android.core.ClashCore
+import com.github.mihomo.android.core.TunConfig
+import com.github.mihomo.android.core.parseHostPort
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.PerAppProxyMode
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.ui.MainActivity
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
@@ -41,7 +46,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import com.github.mihomo.android.i18n.AppStrings
+import kotlin.time.Duration.Companion.milliseconds
 
 data class VpnState(
     val status: Status = Status.STOPPED,
@@ -68,6 +75,9 @@ class MihomoVpnService : VpnService() {
         const val ACTION_RESTART = "com.github.mihomo.android.service.RESTART"
         private const val NOTIFICATION_CHANNEL_ID = "mihomo_vpn_service"
         private const val NOTIFICATION_ID = 1001
+
+        /** Upper bound for waiting on an in-flight native teardown. */
+        private const val TEARDOWN_WAIT_MS = 15_000L
 
         private val _vpnState = MutableStateFlow(VpnState())
         val vpnState = _vpnState.asStateFlow()
@@ -105,17 +115,85 @@ class MihomoVpnService : VpnService() {
             runCatching { context.startService(intent) }
                 .onFailure { Log.w(TAG, "Failed to deliver stop command to VPN service", it) }
         }
+
+        /**
+         * Restores the tunnel when the persisted intent says it should be running.
+         *
+         * The in-memory state is process-local: after a process kill the quick-settings
+         * tile (and the service's own state) reset to STOPPED even though the user never
+         * asked for the tunnel to stop. The persisted flag is the authoritative answer in
+         * that case, so whoever notices the discrepancy asks the service to bring the
+         * tunnel back up.
+         */
+        fun resumeIfIntentActive(context: Context) {
+            val active = runCatching { SettingsManager(context).vpnIntentActive }.getOrDefault(false)
+            if (!active) return
+            Log.i(TAG, "Resuming the tunnel: the persisted intent says it should be running")
+            start(context)
+        }
     }
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // The scope performs blocking JNI calls (core init, config load, TUN teardown) and
+    // binder calls (Builder.establish(), ParcelFileDescriptor.close()), so it must run on
+    // the IO dispatcher: Dispatchers.Default has only a small CPU-bound pool and a
+    // blocking binder round-trip there can starve it.
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var trafficMonitorJob: Job? = null
+
+    // Written on the main thread and read from the service scope, so it must be volatile.
+    @Volatile
     private var startJob: Job? = null
+
+    @Volatile
     private var vpnInterface: ParcelFileDescriptor? = null
 
-    // Set when a start/restart request arrives while a stop is still tearing the tunnel down;
-    // closeTunnel picks it up and launches a fresh start once STOPPED is reached.
+    /**
+     * Set when a start/restart request arrives while a stop is still tearing the tunnel down;
+     * closeTunnel picks it up and launches a fresh start once STOPPED is reached.
+     */
     @Volatile
     private var pendingStartAfterStop = false
+
+    /**
+     * Guards the native teardown so it runs exactly once per tunnel.
+     *
+     * `closeTunnel()` and `onDestroy()` could both reach `ClashCore.stopTun()`, which is a
+     * blocking JNI call into the Go core — two concurrent entries there are a data race
+     * inside the core. The compare-and-set makes the second caller collapse into the first
+     * one instead of starting a competing teardown.
+     *
+     * The guard is per tunnel: it is reset by [resetTeardownGuard] when a NEW tunnel is
+     * started. Without that reset the second start of the VPN in the same process would
+     * skip the teardown entirely and leak the TUN file descriptor.
+     */
+    @Volatile
+    private var teardownStarted = false
+
+    /** Serializes the compare-and-set on [teardownStarted]. */
+    private val teardownLock = Any()
+
+    /**
+     * Completes when the (single) teardown routine has finished.
+     *
+     * Replaced for every new tunnel together with [teardownStarted], because a completed
+     * deferred would make the next teardown wait for a signal that never comes again.
+     */
+    @Volatile
+    private var teardownDone = CompletableDeferred<Unit>()
+
+    /**
+     * Re-arms the teardown guard for a new tunnel.
+     *
+     * Must be called before the tunnel is established again. The previous teardown has
+     * finished by then (the start path only runs when the state is STOPPED, i.e. after
+     * closeTunnel completed), so clearing the flag cannot race a running teardown.
+     */
+    private fun resetTeardownGuard() {
+        synchronized(teardownLock) {
+            teardownStarted = false
+            teardownDone = CompletableDeferred()
+        }
+    }
 
     @Volatile
     private var isScreenInteractive: Boolean = true
@@ -151,12 +229,14 @@ class MihomoVpnService : VpnService() {
                     isScreenInteractive = false
                     com.github.mihomo.android.data.LogRepository.isScreenOff = true
                     trafficMonitorJob?.cancel()
-                    ClashCore.setSuspended(true)
+                    // nativeSuspend is a blocking JNI call and the receiver runs on the
+                    // main thread, so it must not be executed inline.
+                    serviceScope.launch { ClashCore.setSuspended(true) }
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenInteractive = true
                     com.github.mihomo.android.data.LogRepository.isScreenOff = false
-                    ClashCore.setSuspended(false)
+                    serviceScope.launch { ClashCore.setSuspended(false) }
                     if (_vpnState.value.status == VpnState.Status.RUNNING) {
                         startTrafficMonitor()
                     }
@@ -174,10 +254,32 @@ class MihomoVpnService : VpnService() {
             handlePhysicalNetworkChanged(network)
         }
 
+        /**
+         * The physical network went away (e.g. Wi-Fi dropped while moving out of range).
+         *
+         * Without this the core never learned about the handover and, with the kill switch
+         * enabled, the device stayed dark until the core's own timeout expired.
+         */
+        override fun onLost(network: Network) {
+            Log.i(TAG, "Physical network lost: $network")
+            handlePhysicalNetworkChanged(network)
+        }
+
+        /**
+         * The network's capabilities changed — typically a Wi-Fi → cellular handover or a
+         * validated → captive-portal transition. The DNS servers of the new transport have
+         * to reach the core, otherwise it keeps resolving through the old network.
+         */
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            handlePhysicalNetworkChanged(network)
+        }
+
         private fun handlePhysicalNetworkChanged(network: Network) {
             if (_vpnState.value.status != VpnState.Status.RUNNING) return
             val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
+            // The tunnel's own interface is not a physical network; telling the core about
+            // it would report the tunnel's own DNS as the physical one.
             if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
             ClashCore.notifyNetworkChanged(this@MihomoVpnService)
         }
@@ -241,14 +343,24 @@ class MihomoVpnService : VpnService() {
             ACTION_START -> startVpn()
             ACTION_STOP -> stopVpn()
             ACTION_RESTART -> restartVpn()
-            // START_STICKY restart after the process was killed: no intent is delivered. The
-            // system still expects startForeground() promptly, then the tunnel is rebuilt.
+            // A null intent means the system restarted the service after the process was
+            // killed. Rebuilding the tunnel unconditionally would resurrect a tunnel the
+            // user had deliberately stopped, so only continue when the persisted intent
+            // flag says the tunnel was supposed to be running.
             else -> {
+                val settings = SettingsManager(this)
+                if (!settings.vpnIntentActive) {
+                    Log.i(TAG, "Restarted without an intent while the tunnel is not wanted; stopping")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 startForegroundServiceNotification(getString(R.string.notification_restoring))
                 startVpn()
             }
         }
-        return START_STICKY
+        // START_NOT_STICKY: the tunnel must not be resurrected by the system after a process
+        // kill unless the persisted intent flag asks for it (handled in the branch above).
+        return START_NOT_STICKY
     }
 
     private fun restartVpn() {
@@ -289,9 +401,26 @@ class MihomoVpnService : VpnService() {
             startedAtMs = 0L
         )
         startForegroundServiceNotification(AppStrings.get("notification_starting_core", appLanguage))
+        // A new tunnel is about to be established: re-arm the teardown guard, otherwise
+        // the guard from the previous tunnel would make the next teardown a no-op and
+        // leak the TUN file descriptor.
+        resetTeardownGuard()
 
         startJob = serviceScope.launch {
             try {
+                // 0. Refuse to start on a debuggable emulator.
+                // The Go core cannot run under ARM translation (SIGILL inside libclash), and
+                // MihomoApplication deliberately skips the native init in that case. The
+                // service used to call ClashCore.init() unconditionally, which re-entered
+                // the very load that crashes and took the process down. Fail with a clear
+                // message instead so the UI can explain what happened.
+                if (MihomoApplication.isDebuggable() && MihomoApplication.isEmulator()) {
+                    error(
+                        "The native core cannot run on a debuggable emulator " +
+                            "(ARM translation is unsupported). Install a release build on a real device."
+                    )
+                }
+
                 // 1. Initialize native core
                 ClashCore.init(this@MihomoVpnService)
                 val coreVer = ClashCore.getCoreVersion()
@@ -353,22 +482,31 @@ class MihomoVpnService : VpnService() {
                 val builder = Builder().apply {
                     setSession("Nexus")
                     setMtu(settings.tunMtu)
-                    addAddress("172.19.0.1", 30)
+                    // The address plan lives in TunConfig: the same constants are handed to
+                    // the native core (ClashCore.startTun) and build the plaintext-DNS
+                    // reject rule, so they cannot drift apart.
+                    addAddress(TunConfig.IPV4_ADDRESS, TunConfig.IPV4_PREFIX)
                     addRoute("0.0.0.0", 0)
                     addRoute("198.18.0.0", 16) // Explicit route for Fake-IP range!
-                    addDnsServer("172.19.0.2")
+                    addDnsServer(TunConfig.IPV4_PORTAL)
 
                     // Kill switch: while the service holds the interface, apps are blocked
                     // from network access whenever the tunnel is not fully connected, so a
                     // stalled reconnect cannot leak the real IP.
+                    // setBlocking() only exists from API 29 — on API 26-28 the kill switch
+                    // silently has no effect at all.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && settings.killSwitchEnabled) {
                         runCatching { setBlocking(true) }
                             .onFailure { Log.w(TAG, "setBlocking (kill switch) failed", it) }
                     }
-                    // Lets LAN-only apps (casting, printers) bind around the tunnel when the
-                    // user accepts the tradeoff.
+                    // allowBypass() lets an app bind its sockets to a NON-VPN network (so a
+                    // LAN-only feature such as casting or a printer can still reach the
+                    // local network). It is NOT a split-tunnel escape hatch for LAN
+                    // destinations: the 0.0.0.0/0 route above still captures all RFC1918
+                    // traffic, so LAN destinations keep going through the tunnel.
                     if (settings.allowBypassEnabled) {
                         runCatching { allowBypass() }
+                            .onFailure { Log.w(TAG, "allowBypass failed", it) }
                     }
 
                     // Route IPv6 only when the user enabled it: the injected config sets the
@@ -376,9 +514,9 @@ class MihomoVpnService : VpnService() {
                     // IPv6 traffic on the physical network instead of failing inside the TUN.
                     if (settings.ipv6Enabled) {
                         runCatching {
-                            addAddress("fdfe:dcba:9876::1", 126)
+                            addAddress(TunConfig.IPV6_ADDRESS, TunConfig.IPV6_PREFIX)
                             addRoute("::", 0)
-                            addDnsServer("fdfe:dcba:9876::2")
+                            addDnsServer(TunConfig.IPV6_PORTAL)
                             ipv6TunActive = true
                         }.onFailure {
                             Log.w(TAG, "IPv6 TUN setup failed; running the tunnel IPv4-only", it)
@@ -393,37 +531,44 @@ class MihomoVpnService : VpnService() {
                             // silent "no allowed apps -> route everything" fallback here.
                             packages.filter { it != packageName }.forEach { pkg ->
                                 runCatching { addAllowedApplication(pkg) }
+                                    .onFailure { Log.w(TAG, "addAllowedApplication($pkg) failed", it) }
                             }
                         }
                         PerAppProxyMode.BLACKLIST -> {
                             packages.forEach { pkg ->
                                 runCatching { addDisallowedApplication(pkg) }
+                                    .onFailure { Log.w(TAG, "addDisallowedApplication($pkg) failed", it) }
                             }
-                            runCatching { addDisallowedApplication(packageName) }
+                            excludeSelfFromTunnel(this)
                         }
                         PerAppProxyMode.DISABLED -> {
-                            runCatching { addDisallowedApplication(packageName) }
+                            excludeSelfFromTunnel(this)
                         }
                     }
                 }
 
                 val pfd = builder.establish()
                     ?: error(AppStrings.get("vpn_error_establish_tun", appLanguage))
+                // Assign the descriptor to the field BEFORE checking for cancellation.
+                // The old order (check first, assign later) left a window in which a
+                // cancellation could arrive between the two statements: the TUN fd was
+                // then never handed to the core and never closed, leaking the interface.
+                vpnInterface = pfd
                 if (!isActive) {
-                    // vpnInterface is not assigned yet, so this is the only place that can
-                    // release the freshly established fd before the cancellation aborts us.
+                    // The cancellation arrived right after establish(): close the fd we
+                    // just took ownership of and let the cancellation abort the start.
                     runCatching { pfd.close() }
+                    vpnInterface = null
                     currentCoroutineContext().ensureActive()
                 }
-                vpnInterface = pfd
 
                 // 5. Hand over fd to Mihomo core
                 val fd = pfd.detachFd()
                 // The IPv6 gateway/portal/DNS entries are only handed to the core when the
                 // corresponding address was actually assigned to the TUN above.
-                val gatewayStr = if (ipv6TunActive) "172.19.0.1/30,fdfe:dcba:9876::1/126" else "172.19.0.1/30"
-                val portalStr = if (ipv6TunActive) "172.19.0.2,fdfe:dcba:9876::2" else "172.19.0.2"
-                val dnsStr = if (ipv6TunActive) "172.19.0.2,fdfe:dcba:9876::2" else "172.19.0.2"
+                val gatewayStr = if (ipv6TunActive) TunConfig.GATEWAY else TunConfig.GATEWAY_IPV4
+                val portalStr = if (ipv6TunActive) TunConfig.PORTAL else TunConfig.PORTAL_IPV4
+                val dnsStr = if (ipv6TunActive) TunConfig.DNS else TunConfig.DNS_IPV4
                 try {
                     ClashCore.startTun(
                         fd = fd,
@@ -445,6 +590,9 @@ class MihomoVpnService : VpnService() {
                     error = null,
                     startedAtMs = System.currentTimeMillis()
                 )
+                // The tunnel is live now: persist the intent so a process death (and the
+                // quick-settings tile) still knows the user wants the tunnel running.
+                settings.vpnIntentActive = true
 
                 // Structured connection tracking via the external-controller API.
                 com.github.mihomo.android.data.RequestRepository.startPolling(
@@ -488,25 +636,41 @@ class MihomoVpnService : VpnService() {
 
     private var lastNotificationUpdateTimeMs: Long = 0L
 
+    /**
+     * Excludes this app from the tunnel it just established.
+     *
+     * If the self-exclusion fails the app's OWN traffic goes through the tunnel, so its
+     * requests to the external controller on 127.0.0.1 are routed into the tunnel as well
+     * and can never come back — the app then looks like it is offline. That failure must
+     * therefore abort the start with a visible error instead of silently leaving a
+     * half-working tunnel behind.
+     */
+    private fun excludeSelfFromTunnel(builder: Builder) {
+        try {
+            builder.addDisallowedApplication(packageName)
+        } catch (e: Throwable) {
+            Log.e(TAG, "addDisallowedApplication($packageName) failed; aborting the start", e)
+            throw IllegalStateException(
+                "Failed to exclude the app itself from the tunnel ($packageName): " +
+                    (e.message ?: e.javaClass.simpleName),
+                e
+            )
+        }
+    }
+
     /** Connection-owner lookup for RequestRepository (API 29+ only, returns 0 below). */
     private fun queryConnectionOwnerUid(protocol: Int, source: String, target: String): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
         val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return 0
         return runCatching {
-            val srcAddr = parseEndpoint(source)
-            val dstAddr = parseEndpoint(target)
+            // Shared parser: see parseHostPort in TunConfig.kt. It handles bracketed IPv6
+            // literals and rejects endpoints without a numeric port.
+            val srcAddr = parseHostPort(source)
+            val dstAddr = parseHostPort(target)
             if (srcAddr != null && dstAddr != null) {
                 cm.getConnectionOwnerUid(protocol, srcAddr, dstAddr)
             } else 0
         }.getOrDefault(0)
-    }
-
-    private fun parseEndpoint(endpoint: String): java.net.InetSocketAddress? {
-        val lastColon = endpoint.lastIndexOf(':')
-        if (lastColon <= 0 || lastColon == endpoint.lastIndex) return null
-        val host = endpoint.substring(0, lastColon).removeSurrounding("[", "]")
-        val port = endpoint.substring(lastColon + 1).toIntOrNull() ?: return null
-        return java.net.InetSocketAddress(host, port)
     }
 
     private fun startTrafficMonitor() {
@@ -573,18 +737,79 @@ class MihomoVpnService : VpnService() {
             serviceScope.launch { closeTunnel() }
         }
     }
-
-    private fun closeTunnel() {
+    /**
+     * The single native teardown routine.
+     *
+     * `ClashCore.stopTun()` is a blocking JNI call into the Go core; two concurrent
+     * entries there are a data race inside the core. The compare-and-set on
+     * [teardownStarted] makes every later caller collapse into the one that is already
+     * running instead of starting a competing teardown, and [teardownDone] lets a caller
+     * wait for the teardown that is actually in flight.
+     *
+     * @return true when this call performed the teardown, false when another call was
+     *         already doing it.
+     */
+    private fun performTeardown(): Boolean {
+        val owns = synchronized(teardownLock) {
+            if (teardownStarted) {
+                false
+            } else {
+                teardownStarted = true
+                true
+            }
+        }
+        if (!owns) {
+            // Another caller is already tearing the tunnel down; that caller owns the
+            // native call. The caller waits for teardownDone instead.
+            return false
+        }
+        // Capture the deferred instance: resetTeardownGuard() replaces the field when a
+        // new tunnel starts, and this teardown must complete the instance it belongs to.
+        val done = teardownDone
         try {
             com.github.mihomo.android.data.RequestRepository.stopPolling()
             ClashCore.stopTun()
-            vpnInterface?.close()
+            val pfd = vpnInterface
             vpnInterface = null
+            runCatching { pfd?.close() }
         } catch (e: Throwable) {
             Log.w(TAG, "Error closing VPN", e)
         } finally {
+            done.complete(Unit)
+        }
+        return true
+    }
+
+    /**
+     * Waits for the (single) teardown to finish.
+     *
+     * When this call did not own the teardown, the native call is still running in the
+     * other thread — the state must only be reported as STOPPED once it is really gone.
+     */
+    private suspend fun awaitTeardown() {
+        // Capture the instance once: resetTeardownGuard() may replace the field while we
+        // wait, and awaiting a fresh (never-completing) deferred would stall the teardown.
+        val done = teardownDone
+        if (done.isCompleted) return
+        withTimeoutOrNull(TEARDOWN_WAIT_MS.milliseconds) { done.await() }
+            ?: Log.w(TAG, "Timed out waiting for the VPN teardown to finish")
+    }
+
+    private suspend fun closeTunnel() {
+        // The native teardown must not be interrupted half-way. Coroutine cancellation
+        // only takes effect at a suspension point, but the state update below still has to
+        // run; NonCancellable makes that guarantee explicit instead of accidental.
+        withContext(NonCancellable) {
+            performTeardown()
+            awaitTeardown()
             val restartAfterStop = pendingStartAfterStop
             pendingStartAfterStop = false
+            if (!restartAfterStop) {
+                // The user asked for the tunnel to go away: clear the persisted intent so a
+                // process restart (and the quick-settings tile) does not bring it back.
+                // A restart keeps the flag — the tunnel is coming right back up.
+                runCatching { SettingsManager(this@MihomoVpnService).vpnIntentActive = false }
+            }
             _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
             if (restartAfterStop) {
                 startVpn()
@@ -647,7 +872,6 @@ class MihomoVpnService : VpnService() {
         super.onDestroy()
         // The service can be destroyed without ACTION_STOP (process death, low memory), so the
         // native tunnel and the shared state are cleaned up here as well.
-        com.github.mihomo.android.data.RequestRepository.stopPolling()
         unregisterScreenStateReceiver()
         unregisterPhysicalNetworkCallback()
         // The screen-state receiver lives only as long as this service. Without this reset a
@@ -656,25 +880,43 @@ class MihomoVpnService : VpnService() {
         // clearing them, so an actually-off screen keeps its battery-saving gate.
         val interactive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
         com.github.mihomo.android.data.LogRepository.isScreenOff = !interactive
-        ClashCore.setSuspended(!interactive)
         trafficMonitorJob?.cancel()
-        startJob?.cancel()
-        serviceScope.cancel()
-        val pfd = vpnInterface
-        vpnInterface = null
+
+        // Cancel the start job so it cannot establish a TUN behind our back. It is JOINED
+        // on the teardown thread below (not here): the main thread must not block on a
+        // job that may be inside a blocking JNI call.
+        val job = startJob
+        startJob = null
+        job?.cancel()
+
         // nativeStopTun is a blocking JNI call that can stall for a while with many live
-        // connections; keep it off the main thread. A daemon thread is enough: on process
-        // death the kernel closes the fds anyway. An overlap with an in-flight closeTunnel
-        // is tolerated — the normal stop path already runs stopTun twice (closeTunnel, then
-        // onDestroy), and ParcelFileDescriptor.close is idempotent.
-        Thread {
-            runCatching { ClashCore.stopTun() }
-            runCatching { pfd?.close() }
+        // connections, so it must not run on the main thread. It goes through the SAME
+        // guarded routine as closeTunnel(): performTeardown() performs the teardown at
+        // most once, so this can never race a concurrent closeTunnel() into a second
+        // concurrent native call.
+        val teardownThread = Thread {
+            // Join the cancelled start job first: it assigns `vpnInterface` right after
+            // establishing the TUN, so the teardown must not read that field before the
+            // job is done (otherwise the interface would leak).
+            if (job != null) {
+                runCatching {
+                    kotlinx.coroutines.runBlocking { job.join() }
+                }.onFailure { Log.w(TAG, "Failed to join the start job during teardown", it) }
+            }
+            // setSuspended is a blocking JNI call as well, so it stays off the main thread.
+            runCatching { ClashCore.setSuspended(!interactive) }
+            performTeardown()
         }.apply {
             name = "mihomo-vpn-teardown"
             isDaemon = true
-            start()
         }
+        teardownThread.start()
+
+        // The scope is cancelled only after the start job has been cancelled, so a
+        // closeTunnel() coroutine that is already inside stopTun() cannot be cancelled
+        // half-way through the native teardown (closeTunnel runs in NonCancellable).
+        serviceScope.cancel()
+
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         if (_vpnState.value.status != VpnState.Status.STOPPED) {
             _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
@@ -682,6 +924,8 @@ class MihomoVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // The VPN permission was revoked: the user no longer wants the tunnel.
+        runCatching { SettingsManager(this).vpnIntentActive = false }
         stopVpn()
         super.onRevoke()
     }

@@ -136,6 +136,44 @@ object LoonMotion {
     const val pressScale = 0.982f
     const val pressScaleStrong = 0.97f
     const val dragLiftScale = 1.03f
+
+    /** One full revolution of the Cupertino activity indicator. */
+    const val spinnerCycleMs = 800
+
+    /** Spring used to settle the interactive edge-swipe gesture back to its resting place. */
+    const val edgeSettleDampingRatio = 0.82f
+    const val edgeSettleStiffness = 500f
+
+    /** Spring used by the switch thumb. */
+    const val thumbDampingRatio = 0.78f
+    const val thumbStiffness = 650f
+
+    /** Spring used by the segmented-control thumb (softer, longer travel). */
+    const val segmentedDampingRatio = 0.84f
+    const val segmentedStiffness = 380f
+
+    /** Spring used by the bottom-nav selection scale. */
+    const val navDampingRatio = 0.7f
+    const val navStiffness = 400f
+
+    /**
+     * Spring used by the press feedback ([iosPressable]): a short, slightly bouncy pop that
+     * settles before the finger lifts.
+     */
+    const val pressDampingRatio = 0.6f
+    const val pressStiffness = 500f
+
+    /** Spring used by the toast pill entry (drops in from the top). */
+    const val toastDampingRatio = 0.82f
+    const val toastStiffness = 500f
+
+    /** Spring used by the accordion expand/collapse of a proxy group. */
+    const val accordionDampingRatio = 0.85f
+    const val accordionStiffness = 300f
+
+    /** Spring used by the group-header chevron rotation. */
+    const val chevronDampingRatio = 0.78f
+    const val chevronStiffness = 300f
 }
 
 /**
@@ -143,7 +181,9 @@ object LoonMotion {
  * that still need a one-off size do not hardcode `sp` literals.
  */
 object LoonTypeScale {
+    val microSmall = 9.5.sp
     val micro = 10.sp
+    val microLarge = 10.5.sp
     val caption = 11.sp
     val captionLarge = 11.5.sp
     val footnote = 12.sp
@@ -158,6 +198,27 @@ object LoonTypeScale {
     val title2 = 17.sp
     val title1 = 22.sp
     val largeTitle = 32.sp
+}
+
+/**
+ * Line-height scale. Screens must not write raw `lineHeight = NN.sp` literals; pairing a
+ * font size with its matching line height keeps the vertical rhythm consistent.
+ */
+object LoonLineHeight {
+    val micro = 12.sp
+    val caption = 14.sp
+    val captionLarge = 15.sp
+    val footnote = 16.sp
+    val footnoteLarge = 17.sp
+    val callout = 18.sp
+    val calloutLarge = 19.sp
+    val subhead = 19.sp
+    val subheadLarge = 20.sp
+    val body = 20.sp
+    val bodyLarge = 21.sp
+    val title3 = 22.sp
+    val title2 = 22.sp
+    val title1 = 28.sp
 }
 
 /** Shadow/glow values shared by the illustration and component layers. */

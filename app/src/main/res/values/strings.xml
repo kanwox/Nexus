@@ -1,11 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    NOTE: all user-visible application strings live in
+    `app/src/main/java/com/github/mihomo/android/i18n/AppStrings.kt` (a Kotlin string
+    table with zh / en / ru maps). The strings below are only the handful that the
+    Android framework itself needs (app label, notification channel name/description,
+    the notification actions). Adding a new UI string here will NOT make it appear —
+    add it to AppStrings.kt instead.
+-->
 <resources>
     <string name="app_name">Nexus</string>
-    <string name="vpn_running">Nexus 代理已连接</string>
-    <string name="vpn_stopped">Nexus 代理已断开</string>
-    <string name="vpn_starting">正在启动代理服务…</string>
     <string name="notification_restoring">正在恢复代理服务…</string>
     <string name="action_stop">断开连接</string>
-    <string name="action_start">开启连接</string>
     <string name="notification_channel_name">Nexus 状态与流量通知</string>
     <string name="notification_channel_desc">显示实时代理状态与网络上下行速率</string>
 </resources>

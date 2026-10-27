@@ -2,10 +2,12 @@ package com.github.mihomo.android.core
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import com.github.kr328.clash.core.bridge.Bridge
+import com.github.kr328.clash.core.bridge.ClashException
 import com.github.kr328.clash.core.bridge.LogcatInterface
 import com.github.kr328.clash.core.bridge.TunInterface
 import com.github.kr328.clash.core.model.ProxyGroup
@@ -13,11 +15,17 @@ import com.github.kr328.clash.core.model.ProxySort
 import com.github.kr328.clash.core.model.Traffic
 import com.github.kr328.clash.core.model.TunnelState
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.milliseconds
@@ -25,13 +33,24 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
 
 object ClashCore {
     private const val TAG = "ClashCore"
     private const val LOAD_TIMEOUT_MS = 20_000L
     private const val HEALTH_CHECK_TIMEOUT_MS = 8_000L
+    private const val ASSETS_READY_TIMEOUT_MS = 120_000L
+
+    /**
+     * Serializes config loads.
+     *
+     * `load()` is reachable from three independent sources (the UI's reload path, the
+     * subscription worker and the VPN service's start path). Two overlapping
+     * `Bridge.nativeLoad` calls rebuild the Go core's config state concurrently and the
+     * second `CompletableDeferred` can be completed by the *first* load's native callback,
+     * which leaves the core and the caller disagreeing about which config is live.
+     */
+    private val loadLock = Mutex()
 
     private val activeGroupChecks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
@@ -53,8 +72,24 @@ object ClashCore {
     fun notifyNetworkChanged(context: Context) {
         runCatching {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            val activeNet = cm?.activeNetwork
-            val linkProps = cm?.getLinkProperties(activeNet)
+            if (cm == null) {
+                Log.w(TAG, "No ConnectivityManager; keeping the previous DNS configuration")
+                return@runCatching
+            }
+            // While the tunnel is up, `activeNetwork` IS the VPN interface, so asking it for
+            // the DNS servers would tell the core that "the physical DNS server" is the
+            // tunnel's own portal address (172.19.0.2) — a self-reference that breaks
+            // resolution. Enumerate the physical networks instead and pick the first one
+            // that is not a VPN transport.
+            @Suppress("DEPRECATION")
+            val physical = cm.allNetworks.firstOrNull { net ->
+                val caps = runCatching { cm.getNetworkCapabilities(net) }.getOrNull()
+                caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
+            // Fall back to the active network when no physical one could be identified
+            // (e.g. a device that only exposes the VPN transport).
+            val linkProps = cm.getLinkProperties(physical ?: cm.activeNetwork)
             // Both A and AAAA records are reported: on IPv6-only networks dropping the v6
             // servers used to force a fallback to hardcoded resolvers that may be unreachable.
             val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
@@ -74,15 +109,23 @@ object ClashCore {
     @Synchronized
     fun init(context: Context) {
         if (initialized) return
+        // Bridge.init() loads the native libraries and runs nativeInit; either can throw
+        // (e.g. libclash.so is missing on an unsupported ABI). The flag is only set once
+        // every risky step succeeded, so a later call can retry instead of silently
+        // operating against a core that never came up.
         Bridge.init(context)
-        initialized = true
         runCatching {
             Bridge.nativeSubscribeLogcat(object : LogcatInterface {
                 override fun received(jsonPayload: String) {
                     com.github.mihomo.android.data.LogRepository.addRawLogcat(jsonPayload)
                 }
             })
+        }.onFailure {
+            // Losing the logcat stream is not fatal — the core still works — but it must not
+            // leave the core in a half-initialized state.
+            Log.w(TAG, "Failed to subscribe to the native logcat stream", it)
         }
+        initialized = true
         notifyNetworkChanged(context)
         Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
     }
@@ -133,21 +176,56 @@ object ClashCore {
         }
     }
 
-    suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            // The geo databases are extracted off the main thread at init; the core reads them
-            // while parsing the config, so wait for the extraction to finish first.
-            Bridge.assetsReady()
-            val deferred = CompletableDeferred<Unit>()
-            val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
-            Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
-            Bridge.nativeLoad(deferred, configDir)
-            withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
-            isCoreLoaded = true
-            if (profileId != null) {
-                loadedProfileId = profileId
+    suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = loadLock.withLock {
+        withContext(Dispatchers.IO) {
+            try {
+                // The geo databases are extracted off the main thread at init; the core reads them
+                // while parsing the config, so wait for the extraction to finish first.
+                // The timeout guards against the extraction thread never running (it would
+                // otherwise hang this call forever, holding the load lock).
+                try {
+                    withTimeout(ASSETS_READY_TIMEOUT_MS.milliseconds) { Bridge.assetsReady() }
+                } catch (e: TimeoutCancellationException) {
+                    throw ClashException(
+                        "Timed out waiting for the geo database assets to be extracted",
+                        e
+                    )
+                } catch (e: ClashException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw ClashException("Failed to prepare the geo database assets", e)
+                }
+                val deferred = CompletableDeferred<Unit>()
+                val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
+                Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
+                try {
+                    Bridge.nativeLoad(deferred, configDir)
+                } catch (e: Throwable) {
+                    throw ClashException("Failed to load the configuration from $configDir", e)
+                }
+                try {
+                    withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
+                } catch (e: TimeoutCancellationException) {
+                    throw ClashException("Timed out loading the configuration from $configDir", e)
+                } catch (e: ClashException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw ClashException("Failed to load the configuration from $configDir", e)
+                }
+                isCoreLoaded = true
+                if (profileId != null) {
+                    loadedProfileId = profileId
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                // A cancelled coroutine must NOT be reported as an ordinary failure: the
+                // caller (e.g. a stop request during the start path) relies on the
+                // cancellation propagating instead of being turned into a Result.
+                // ensureActive() rethrows it when the job really was cancelled, and
+                // returns normally for every other exception (a timeout, for example).
+                currentCoroutineContext().ensureActive()
+                Result.failure(e)
             }
-            Unit
         }
     }
 
@@ -161,9 +239,11 @@ object ClashCore {
     fun startTun(
         fd: Int,
         stack: String = "mixed",
-        gateway: String = "172.19.0.1/30,fdfe:dcba:9876::1/126",
-        portal: String = "172.19.0.2,fdfe:dcba:9876::2",
-        dns: String = "172.19.0.2,fdfe:dcba:9876::2",
+        // Defaults come from TunConfig so the address plan handed to the core can never
+        // drift away from the one the VPN service assigns to the interface.
+        gateway: String = TunConfig.GATEWAY,
+        portal: String = TunConfig.PORTAL,
+        dns: String = TunConfig.DNS,
         vpnService: VpnService
     ) {
         Log.i(TAG, "Starting TUN with fd=$fd, stack=$stack")
@@ -179,8 +259,9 @@ object ClashCore {
             override fun querySocketUid(protocol: Int, source: String, target: String): Int {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && cm != null) {
                     try {
-                        val srcAddr = parseSocketAddress(source)
-                        val dstAddr = parseSocketAddress(target)
+                        // Shared parser: see parseHostPort in TunConfig.kt.
+                        val srcAddr = parseHostPort(source)
+                        val dstAddr = parseHostPort(target)
                         if (srcAddr != null && dstAddr != null) {
                             return cm.getConnectionOwnerUid(protocol, srcAddr, dstAddr)
                         }
@@ -190,14 +271,6 @@ object ClashCore {
                 return 0
             }
         })
-    }
-
-    private fun parseSocketAddress(endpoint: String): InetSocketAddress? {
-        val lastColon = endpoint.lastIndexOf(':')
-        if (lastColon <= 0 || lastColon == endpoint.lastIndex) return null
-        val hostPart = endpoint.substring(0, lastColon).removeSurrounding("[", "]")
-        val port = endpoint.substring(lastColon + 1).toIntOrNull() ?: return null
-        return InetSocketAddress(hostPart, port)
     }
 
     fun stopTun() {
@@ -252,12 +325,42 @@ object ClashCore {
                 CompletableDeferred<Unit>().also { deferred ->
                     runCatching {
                         Bridge.nativeHealthCheck(deferred, groupName)
-                    }.onFailure {
-                        deferred.complete(Unit)
+                    }.onFailure { error ->
+                        // The native call failed outright, so no callback will ever complete
+                        // this deferred: release the waiters with a failure instead of
+                        // leaving them blocked until their own timeout.
+                        completeSafely(
+                            deferred,
+                            ClashException("Failed to start the health check for group '$groupName'", error)
+                        )
                     }
                 }
             }
         }!!
+    }
+
+    /**
+     * Completes a deferred that native code also holds a reference to.
+     *
+     * The native side completes the deferred from a JNI callback thread. If the deferred
+     * was already completed (or cancelled) in the meantime, the completion must not be
+     * allowed to blow up on the *native* thread, which would take the whole process down.
+     * Swallowing it here makes a late/duplicate completion a no-op, which is exactly the
+     * semantics we need: the deferred must never be cancelled while native code still
+     * holds it, only dropped from the map.
+     *
+     * @param error the failure to report, or null to complete normally.
+     */
+    private fun completeSafely(deferred: CompletableDeferred<Unit>, error: Throwable? = null) {
+        try {
+            if (error != null) {
+                deferred.completeExceptionally(error)
+            } else {
+                deferred.complete(Unit)
+            }
+        } catch (_: IllegalStateException) {
+            // Already completed or cancelled: nothing left to do.
+        }
     }
 
     suspend fun healthCheckGroupNative(
@@ -295,12 +398,15 @@ object ClashCore {
         } catch (_: Throwable) {
         } finally {
             pollJob?.cancel()
-            activeGroupChecks.remove(name, deferred)
-            // The deferred is normally completed by the native callback; if the health check
-            // timed out instead, drop the map entry here so a later check can start fresh
-            // instead of waiting on a check nobody will ever complete.
-            if (!deferred.isCompleted) {
-                deferred.cancel()
+            // Only drop the map entry once the check has actually finished. Removing it
+            // unconditionally meant that a waiter which timed out first dropped the entry
+            // while the native check was still running, so the next caller started a
+            // SECOND concurrent native health check on the same group.
+            //
+            // The deferred is deliberately NOT cancelled: native code still holds it and
+            // will complete it later. Cancelling it would make that late completion throw
+            // on the JNI thread (see completeSafely).
+            if (deferred.isCompleted) {
                 activeGroupChecks.remove(name, deferred)
             }
         }

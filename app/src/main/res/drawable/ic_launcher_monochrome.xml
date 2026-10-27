@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Monochrome (themed) variant of the launcher icon for Android 13+.
+
+    The launcher replaces every fill with a single tint colour, so this drawable
+    must be a flat silhouette: only the berry body, the two leaves and the calyx
+    are kept, and the decorative gradients, shadows and highlights are dropped.
+    All shapes use the same colour so the tinted result stays legible.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Left Leaf (Companion Leaf) -->
+    <path
+        android:pathData="M52.2,43.5 C49.3,38.6 43.2,36.0 36.8,36.0 C39.0,41.3 46.2,45.1 52.2,43.5 Z"
+        android:fillColor="#000000" />
+
+    <!-- Right Leaf (Main Sweeping Leaf) -->
+    <path
+        android:pathData="M54.2,43.2 C55.7,36.4 64.0,30.7 75.4,30.0 C72.4,37.2 62.6,43.6 54.2,43.2 Z"
+        android:fillColor="#000000" />
+
+    <!-- Blueberry Body -->
+    <path
+        android:pathData="M54.0,42.5 C64.0,42.0 74.5,47.0 74.5,58.0 C74.5,68.0 65.5,75.0 54.0,75.0 C42.5,75.0 33.5,68.0 33.5,58.0 C33.5,47.0 44.0,42.0 54.0,42.5 Z"
+        android:fillColor="#000000" />
+</vector>

@@ -34,6 +34,16 @@ object LogRepository {
     private const val DIAGNOSTIC_FILE = "diagnostic.log"
     private const val DIAGNOSTIC_MAX_BYTES = 256 * 1024
 
+    // How often the diagnostic file is checked for the size cap. Rewriting the file is
+    // O(size), so it must not happen on every single warning.
+    private const val TRIM_CHECK_INTERVAL = 64
+
+    /** The open append-only writer for the diagnostic file (created on first use). */
+    private var diagnosticWriterInstance: java.io.Writer? = null
+
+    /** Number of appends since the last size check. */
+    private var diagnosticAppends = 0
+
     private val nextId = AtomicLong(1)
     private val logList = ArrayDeque<LogEntry>(MAX_LOGS)
     private val _logsFlow = MutableStateFlow<List<LogEntry>>(emptyList())
@@ -126,19 +136,67 @@ object LogRepository {
         publisher.publishNow()
     }
 
-    /** Appends a diagnostic line to the bounded on-disk log; never throws. */
+    /**
+     * Appends a diagnostic line to the bounded on-disk log; never throws.
+     *
+     * The writer is kept open in APPEND mode: the previous implementation opened and
+     * closed the file for EVERY warning/error and rewrote the whole 256 KB file whenever
+     * the cap was exceeded. Both are far too expensive on the JNI logcat thread.
+     *
+     * Trimming is therefore done rarely — at most once every [TRIM_CHECK_INTERVAL]
+     * appends — and only when the file actually exceeds the cap.
+     */
     @Synchronized
     private fun persistDiagnostic(level: String, message: String) {
         runCatching {
-            val file = File(Global.application.filesDir, DIAGNOSTIC_FILE)
+            val writer = diagnosticWriter()
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(Date())
-            file.appendText("[$stamp] [$level] $message\n")
-            if (file.length() > DIAGNOSTIC_MAX_BYTES) {
-                // Keep only the newer half, starting at a line boundary.
-                val text = file.readText()
-                val keepFrom = text.indexOf('\n', text.length / 2).let { if (it == -1) 0 else it + 1 }
-                file.writeText(text.substring(keepFrom))
+            writer.write("[$stamp] [$level] $message\n")
+            writer.flush()
+
+            diagnosticAppends++
+            if (diagnosticAppends >= TRIM_CHECK_INTERVAL) {
+                diagnosticAppends = 0
+                trimDiagnosticFile()
             }
+        }
+    }
+
+    /** The lazily opened append-only writer for the diagnostic file. */
+    private fun diagnosticWriter(): java.io.Writer {
+        diagnosticWriterInstance?.let { return it }
+        val file = File(Global.application.filesDir, DIAGNOSTIC_FILE)
+        file.parentFile?.mkdirs()
+        val writer = java.io.OutputStreamWriter(
+            java.io.FileOutputStream(file, true),
+            Charsets.UTF_8
+        )
+        diagnosticWriterInstance = writer
+        return writer
+    }
+
+    /**
+     * Keeps only the newer half of the diagnostic file, starting at a line boundary.
+     *
+     * The writer is closed first so the file is fully flushed before it is rewritten.
+     */
+    @Synchronized
+    private fun trimDiagnosticFile() {
+        runCatching {
+            diagnosticWriterInstance?.let {
+                it.flush()
+                it.close()
+            }
+            diagnosticWriterInstance = null
+
+            val file = File(Global.application.filesDir, DIAGNOSTIC_FILE)
+            if (!file.exists() || file.length() <= DIAGNOSTIC_MAX_BYTES) return@runCatching
+            val text = file.readText()
+            val keepFrom = text.indexOf('\n', text.length / 2).let { if (it == -1) 0 else it + 1 }
+            file.writeText(text.substring(keepFrom))
+        }.onFailure {
+            // The writer is closed at this point; drop it so the next append re-opens it.
+            diagnosticWriterInstance = null
         }
     }
 }

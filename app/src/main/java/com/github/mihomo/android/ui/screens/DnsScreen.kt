@@ -15,9 +15,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -29,7 +28,9 @@ import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.*
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -39,7 +40,7 @@ fun DnsScreen(
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
-    val clipboardManager = LocalClipboardManager.current
+    val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
     val records by DnsRepository.recordsFlow.collectAsStateWithLifecycle()
 
@@ -47,7 +48,13 @@ fun DnsScreen(
     var showClearActionSheet by remember { mutableStateOf(false) }
     var activeDetailRecord by remember { mutableStateOf<DnsRecord?>(null) }
 
-    val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
+    // The locale comes from LocalConfiguration, which is observable — reading
+    // Locale.getDefault() directly would not recompose when the system locale changes.
+    val locale = LocalConfiguration.current.locales[0]
+    val timeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    }
 
     val filteredRecords = remember(records, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -180,7 +187,7 @@ fun DnsScreen(
                     dividerStartIndent = 16.dp
                 ) { _, record ->
                     val formattedTime = remember(record.timestamp) {
-                        timeFormat.format(Date(record.timestamp))
+                        timeFormat.format(Instant.ofEpochMilli(record.timestamp))
                     }
 
                     DnsRecordCell(
@@ -199,7 +206,7 @@ fun DnsScreen(
     // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRecord != null) {
         val rec = activeDetailRecord!!
-        val formattedTime = remember(rec.timestamp) { timeFormat.format(Date(rec.timestamp)) }
+        val formattedTime = remember(rec.timestamp) { timeFormat.format(Instant.ofEpochMilli(rec.timestamp)) }
 
         CupertinoModalBottomSheet(
             onDismissRequest = { activeDetailRecord = null },
@@ -228,7 +235,7 @@ fun DnsScreen(
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
-                            clipboardManager.setText(AnnotatedString(rec.domain))
+                            copyToClipboard(rec.domain)
                             CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -267,7 +274,7 @@ fun DnsScreen(
                         .background(LoonBg)
                         .iosPressable {
                             haptic.lightTick()
-                            clipboardManager.setText(AnnotatedString(rec.ip))
+                            copyToClipboard(rec.ip)
                             CupertinoToast.show(AppStrings.get("dns_copied_ip", lang))
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp),

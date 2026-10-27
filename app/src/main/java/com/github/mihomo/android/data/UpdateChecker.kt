@@ -104,7 +104,7 @@ object UpdateChecker {
                 .build()
             return runCatching {
                 client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) response.body?.string() else null
+                    if (response.isSuccessful) response.body.string() else null
                 }
             }.getOrNull()
         }

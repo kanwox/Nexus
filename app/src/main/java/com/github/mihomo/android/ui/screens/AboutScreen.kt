@@ -83,7 +83,8 @@ private suspend fun downloadUpdateApk(context: Context, asset: UpdateChecker.Rel
 
             response.use { resp ->
                 if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                val body = resp.body ?: error("Empty response body")
+                // okhttp 5 always has a body on a response.
+                val body = resp.body
                 if (body.contentLength() > MAX_UPDATE_APK_BYTES) {
                     error(AppStrings.get("update_apk_too_large", SettingsManager(context).appLanguage))
                 }
@@ -109,9 +110,9 @@ private suspend fun downloadUpdateApk(context: Context, asset: UpdateChecker.Rel
 
 /** Fires the package installer for [apk], routing through the unknown-sources gate first. */
 private fun installUpdateApk(context: Context, apk: File, lang: String) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-        !context.packageManager.canRequestPackageInstalls()
-    ) {
+    // minSdk is 26, so the unknown-sources gate is always present on every supported
+    // device (no SDK_INT check needed).
+    if (!context.packageManager.canRequestPackageInstalls()) {
         runCatching {
             context.startActivity(
                 Intent(
@@ -451,7 +452,7 @@ fun AboutScreen(
                                             text = info.releaseNotes.take(300),
                                             color = LoonTextSecondary,
                                             fontSize = LoonTypeScale.footnote,
-                                            lineHeight = 16.sp,
+                                            lineHeight = LoonLineHeight.footnote,
                                             modifier = Modifier.padding(10.dp)
                                         )
                                     }

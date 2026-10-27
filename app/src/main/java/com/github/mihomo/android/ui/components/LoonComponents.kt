@@ -42,6 +42,9 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,7 +67,9 @@ fun LoonTrafficCard(
 
     Surface(
         modifier = modifier
-            .height(82.dp)
+            // UI-A11Y-07: heightIn instead of a fixed height so the speed string is not
+            // clipped at 1.3x/2.0x font scale.
+            .heightIn(min = 82.dp)
             .shadow(
                 elevation = 6.dp,
                 shape = RoundedCornerShape(18.dp),
@@ -87,14 +92,14 @@ fun LoonTrafficCard(
             ) {
                 Text(
                     text = title,
-                    color = Color.White.copy(alpha = 0.88f),
+                    color = LoonOnAccent.copy(alpha = 0.88f),
                     fontSize = LoonTypeScale.footnote,
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = if (speed.isBlank()) "--" else speed,
-                    color = Color.White,
+                    color = LoonOnAccent,
                     fontSize = LoonTypeScale.bodyLarge,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
@@ -256,13 +261,13 @@ private fun IosTrafficArrow(
         val fillBrush = Brush.verticalGradient(
             colors = if (isUpload) {
                 listOf(
-                    Color.White.copy(alpha = 0.78f),
-                    Color.White.copy(alpha = 0.45f)
+                    LoonOnAccent.copy(alpha = 0.78f),
+                    LoonOnAccent.copy(alpha = 0.45f)
                 )
             } else {
                 listOf(
-                    Color.White.copy(alpha = 0.45f),
-                    Color.White.copy(alpha = 0.78f)
+                    LoonOnAccent.copy(alpha = 0.45f),
+                    LoonOnAccent.copy(alpha = 0.78f)
                 )
             },
             startY = 0f,
@@ -274,13 +279,13 @@ private fun IosTrafficArrow(
         val strokeBrush = Brush.verticalGradient(
             colors = if (isUpload) {
                 listOf(
-                    Color.White.copy(alpha = 0.95f),
-                    Color.White.copy(alpha = 0.65f)
+                    LoonOnAccent.copy(alpha = 0.95f),
+                    LoonOnAccent.copy(alpha = 0.65f)
                 )
             } else {
                 listOf(
-                    Color.White.copy(alpha = 0.65f),
-                    Color.White.copy(alpha = 0.95f)
+                    LoonOnAccent.copy(alpha = 0.65f),
+                    LoonOnAccent.copy(alpha = 0.95f)
                 )
             },
             startY = 0f,
@@ -311,7 +316,9 @@ fun LoonShortcutCard(
     val haptic = rememberIosHaptic()
     Surface(
         modifier = modifier
-            .height(118.dp)
+            // UI-A11Y-07: heightIn instead of a fixed height so the text is not clipped at
+            // 1.3x/2.0x font scale.
+            .heightIn(min = 118.dp)
             .shadow(1.5.dp, RoundedCornerShape(18.dp), spotColor = LoonExtraColors.shadowHairline)
             .clip(RoundedCornerShape(18.dp))
             .border(
@@ -390,6 +397,7 @@ fun LoonShortcutCard(
 
             // Red minus/remove button badge at top-right in edit mode
             if (isEditing && onDelete != null) {
+                val deleteLabel = AppStrings.get("profile_delete", LocalAppLanguage.current)
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -397,12 +405,18 @@ fun LoonShortcutCard(
                         .size(22.dp)
                         .clip(CircleShape)
                         .background(IosRed)
-                        .clickable { onDelete() },
+                        .clickable { onDelete() }
+                        // UI-A11Y-01 + UI-A11Y-04: the badge is a labelled, 48dp-target button.
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+                        .semantics {
+                            contentDescription = deleteLabel
+                            role = Role.Button
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "\u2212",
-                        color = Color.White,
+                        color = LoonOnAccent,
                         fontSize = LoonTypeScale.body,
                         fontWeight = FontWeight.ExtraBold
                     )
@@ -439,21 +453,21 @@ fun RequestLogsIllustration() {
             // Three white data lines on document body (1:1 identical to original Loon image)
             // Top line: shorter and bolder
             drawRoundRect(
-                color = Color.White,
+                color = LoonOnAccent,
                 topLeft = Offset(w * 0.28f, h * 0.32f),
                 size = Size(w * 0.24f, h * 0.055f),
                 cornerRadius = CornerRadius(2.dp.toPx())
             )
             // Middle line: longer
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.95f),
+                color = LoonOnAccent.copy(alpha = 0.95f),
                 topLeft = Offset(w * 0.28f, h * 0.45f),
                 size = Size(w * 0.44f, h * 0.055f),
                 cornerRadius = CornerRadius(2.dp.toPx())
             )
             // Bottom line: medium length
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.95f),
+                color = LoonOnAccent.copy(alpha = 0.95f),
                 topLeft = Offset(w * 0.28f, h * 0.58f),
                 size = Size(w * 0.32f, h * 0.055f),
                 cornerRadius = CornerRadius(2.dp.toPx())
@@ -483,7 +497,7 @@ fun ProfilesIllustration() {
 
             // Subtle drop shadow under front card for depth separation
             drawRoundRect(
-                color = Color.Black.copy(alpha = 0.08f),
+                color = LoonOverlayScrim,
                 topLeft = Offset(w * 0.12f, h * 0.30f + 1.dp.toPx()),
                 size = Size(cardW, cardH),
                 cornerRadius = cornerRadius
@@ -504,13 +518,13 @@ fun ProfilesIllustration() {
 
             // White lines on front card
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.9f),
+                color = LoonOnAccent.copy(alpha = 0.9f),
                 topLeft = Offset(w * 0.20f, h * 0.45f),
                 size = Size(w * 0.38f, h * 0.07f),
                 cornerRadius = CornerRadius(2.dp.toPx())
             )
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.6f),
+                color = LoonOnAccent.copy(alpha = 0.6f),
                 topLeft = Offset(w * 0.20f, h * 0.59f),
                 size = Size(w * 0.28f, h * 0.07f),
                 cornerRadius = CornerRadius(2.dp.toPx())
@@ -548,11 +562,11 @@ fun RulesIllustration() {
             val n1 = Offset(w * 0.36f, h * 0.32f)
             val n2 = Offset(w * 0.60f, h * 0.26f)
             val n3 = Offset(w * 0.58f, h * 0.38f)
-            drawLine(Color.White, n1, n2, strokeWidth = 2.dp.toPx())
-            drawLine(Color.White, n1, n3, strokeWidth = 2.dp.toPx())
-            drawCircle(Color.White, radius = 3.dp.toPx(), center = n1)
-            drawCircle(Color.White, radius = 2.5.dp.toPx(), center = n2)
-            drawCircle(Color.White, radius = 2.5.dp.toPx(), center = n3)
+            drawLine(LoonOnAccent, n1, n2, strokeWidth = 2.dp.toPx())
+            drawLine(LoonOnAccent, n1, n3, strokeWidth = 2.dp.toPx())
+            drawCircle(LoonOnAccent, radius = 3.dp.toPx(), center = n1)
+            drawCircle(LoonOnAccent, radius = 2.5.dp.toPx(), center = n2)
+            drawCircle(LoonOnAccent, radius = 2.5.dp.toPx(), center = n3)
         }
     }
 }
@@ -619,7 +633,7 @@ fun NodesIllustration() {
             )
             // Top Blade LED indicator (clean white dot on the left)
             drawCircle(
-                color = Color.White,
+                color = LoonOnAccent,
                 radius = 3.6.dp.toPx(),
                 center = Offset(bladeLeft + bladeHeight * 0.58f, topBladeY + bladeHeight * 0.50f)
             )
@@ -634,7 +648,7 @@ fun NodesIllustration() {
             )
             // Bottom Blade LED indicator (clean white dot on the left)
             drawCircle(
-                color = Color.White,
+                color = LoonOnAccent,
                 radius = 3.6.dp.toPx(),
                 center = Offset(bladeLeft + bladeHeight * 0.58f, bottomBladeY + bladeHeight * 0.50f)
             )
@@ -700,14 +714,14 @@ fun DnsIllustration() {
                 cornerRadius = CornerRadius(6.dp.toPx())
             )
             // Three server slots
-            val slotColor = Color.White.copy(alpha = 0.85f)
+            val slotColor = LoonOnAccent.copy(alpha = 0.85f)
             drawRoundRect(color = slotColor, topLeft = Offset(w * 0.26f, h * 0.31f), size = Size(w * 0.14f, h * 0.08f), cornerRadius = CornerRadius(2.dp.toPx()))
             drawRoundRect(color = slotColor, topLeft = Offset(w * 0.26f, h * 0.46f), size = Size(w * 0.14f, h * 0.08f), cornerRadius = CornerRadius(2.dp.toPx()))
             drawRoundRect(color = slotColor, topLeft = Offset(w * 0.26f, h * 0.61f), size = Size(w * 0.14f, h * 0.08f), cornerRadius = CornerRadius(2.dp.toPx()))
             // Right-side label lines
-            drawRoundRect(color = Color.White.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.33f), size = Size(w * 0.28f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
-            drawRoundRect(color = Color.White.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.48f), size = Size(w * 0.20f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
-            drawRoundRect(color = Color.White.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.63f), size = Size(w * 0.24f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
+            drawRoundRect(color = LoonOnAccent.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.33f), size = Size(w * 0.28f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
+            drawRoundRect(color = LoonOnAccent.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.48f), size = Size(w * 0.20f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
+            drawRoundRect(color = LoonOnAccent.copy(alpha = 0.7f), topLeft = Offset(w * 0.46f, h * 0.63f), size = Size(w * 0.24f, h * 0.06f), cornerRadius = CornerRadius(2.dp.toPx()))
         }
     }
 }
@@ -739,7 +753,7 @@ fun AppRoutingIllustration() {
             val strokePlus = 2.5.dp.toPx()
             // Horizontal bar of plus
             drawLine(
-                color = Color.White,
+                color = LoonOnAccent,
                 start = Offset(cx1 - armPlus, cy1),
                 end = Offset(cx1 + armPlus, cy1),
                 strokeWidth = strokePlus,
@@ -747,7 +761,7 @@ fun AppRoutingIllustration() {
             )
             // Vertical bar of plus
             drawLine(
-                color = Color.White,
+                color = LoonOnAccent,
                 start = Offset(cx1, cy1 - armPlus),
                 end = Offset(cx1, cy1 + armPlus),
                 strokeWidth = strokePlus,
@@ -761,7 +775,7 @@ fun AppRoutingIllustration() {
             val strokeMinus = 2.0.dp.toPx()
             // Horizontal bar of minus
             drawLine(
-                color = Color.White.copy(alpha = 0.95f),
+                color = LoonOnAccent.copy(alpha = 0.95f),
                 start = Offset(cx2 - armMinus, cy2),
                 end = Offset(cx2 + armMinus, cy2),
                 strokeWidth = strokeMinus,
@@ -883,7 +897,7 @@ private fun BottomNavItem(
     val reduceMotion = LocalReduceMotion.current
     val tint by animateColorAsState(
         targetValue = if (isSelected) IosBlue else IosGray,
-        animationSpec = if (reduceMotion) snap() else tween(durationMillis = 200),
+        animationSpec = if (reduceMotion) snap() else tween(durationMillis = LoonMotion.normalMs),
         label = "nav_tint"
     )
     val scale by animateFloatAsState(
@@ -891,7 +905,7 @@ private fun BottomNavItem(
         animationSpec = if (reduceMotion) {
             snap()
         } else {
-            spring(dampingRatio = 0.7f, stiffness = 400f)
+            spring(dampingRatio = LoonMotion.navDampingRatio, stiffness = LoonMotion.navStiffness)
         },
         label = "nav_scale"
     )
@@ -1003,8 +1017,8 @@ fun rememberBounceOverscrollConnection(
                         initialValue = startValue,
                         targetValue = 0f,
                         animationSpec = spring(
-                            dampingRatio = 0.82f,
-                            stiffness = Spring.StiffnessMediumLow
+                            dampingRatio = LoonMotion.accordionDampingRatio,
+                            stiffness = LoonMotion.accordionStiffness
                         )
                     ) { value, _ ->
                         overscrollOffset.floatValue = value

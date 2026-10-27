@@ -16,9 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,7 +44,7 @@ fun NetworkShareScreen(
 ) {
     val lang = LocalAppLanguage.current
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
+    val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
 
     // Local draft: the parent must only see (and reload the core for) a committed value.
@@ -197,7 +195,7 @@ fun NetworkShareScreen(
                                 },
                                 color = if (isRunning) IosGreen.copy(alpha = 0.85f) else IosOrange.copy(alpha = 0.85f),
                                 fontSize = LoonTypeScale.footnote,
-                                lineHeight = 16.sp
+                                lineHeight = LoonLineHeight.footnote,
                             )
                         }
                     }
@@ -216,7 +214,7 @@ fun NetworkShareScreen(
                             onCopy = if (localIp != null) {
                                 {
                                     haptic.lightTick()
-                                    clipboardManager.setText(AnnotatedString(localIp))
+                                    copyToClipboard(localIp)
                                     CupertinoToast.show(AppStrings.get("share_copied_ip", lang).replace("{v}", localIp))
                                 }
                             } else null
@@ -229,7 +227,7 @@ fun NetworkShareScreen(
                             value = "$proxyPort",
                             onCopy = {
                                 haptic.lightTick()
-                                clipboardManager.setText(AnnotatedString("$proxyPort"))
+                                copyToClipboard("$proxyPort")
                                 CupertinoToast.show(AppStrings.get("share_copied_port", lang).replace("{v}", proxyPort.toString()))
                             }
                         )
@@ -241,7 +239,7 @@ fun NetworkShareScreen(
                             value = fullProxyAddress,
                             onCopy = {
                                 haptic.lightTick()
-                                clipboardManager.setText(AnnotatedString(fullProxyAddress))
+                                copyToClipboard(fullProxyAddress)
                                 CupertinoToast.show(AppStrings.get("share_copied_address", lang).replace("{v}", fullProxyAddress))
                             }
                         )
@@ -296,7 +294,7 @@ fun NetworkShareScreen(
                             isCommand = true,
                             onCopy = {
                                 haptic.lightTick()
-                                clipboardManager.setText(AnnotatedString(curlCmd))
+                                copyToClipboard(curlCmd)
                                 CupertinoToast.show(AppStrings.get("share_copied_command", lang))
                             }
                         )
@@ -410,7 +408,7 @@ private fun GuideRow(
             text = steps,
             fontSize = LoonTypeScale.footnoteLarge,
             color = if (isCommand) IosBlue else LoonTextSecondary,
-            lineHeight = 17.sp
+            lineHeight = LoonLineHeight.footnoteLarge,
         )
     }
 }

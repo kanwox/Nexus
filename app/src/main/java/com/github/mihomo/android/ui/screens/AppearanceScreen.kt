@@ -118,7 +118,9 @@ fun AppearanceScreen(
                             currentFont = fontOption
                             settingsManager.appFont = fontOption
                             onAppFontChanged(fontOption)
-                            CupertinoToast.show("${AppStrings.get("font_updated", lang)}: $label")
+                            CupertinoToast.show(
+                                AppStrings.get("font_updated", lang).replace("{font}", label)
+                            )
                         }
                     )
                     if (index < fonts.size - 1) {
@@ -128,8 +130,10 @@ fun AppearanceScreen(
             }
 
             // Section 3: 界面语言 (System / Chinese / English / Russian)
+            // The language names are endonyms (not translated); only the "follow system"
+            // entry is localized (UI-I18N-01).
             val languages = listOf(
-                "SYSTEM" to "Follow System",
+                "SYSTEM" to AppStrings.get("language_follow_system", lang),
                 "zh" to "简体中文",
                 "en" to "English",
                 "ru" to "Русский"

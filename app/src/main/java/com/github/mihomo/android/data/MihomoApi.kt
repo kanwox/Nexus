@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -76,10 +77,24 @@ object MihomoApi {
 
     private val jsonBody = "application/json; charset=utf-8".toMediaType()
 
-    private fun requestBuilder(path: String): Request.Builder {
+    /**
+     * Builds a request against the controller.
+     *
+     * The path is given as a list of SEGMENTS, not as a pre-formatted string: a node or
+     * provider name may contain a "/", and string concatenation would then split it into
+     * two path segments and address a completely different endpoint. [HttpUrl.Builder] +
+     * [addPathSegment] percent-encodes each segment exactly once, so the encoding is
+     * applied by the same code that builds the URL.
+     */
+    private fun requestBuilder(vararg segments: String): Request.Builder {
         if (!ApiController.isReady) error("external-controller is not configured")
+        val urlBuilder = HttpUrl.Builder()
+            .scheme("http")
+            .host("127.0.0.1")
+            .port(ApiController.port)
+        segments.forEach { urlBuilder.addPathSegment(it) }
         return Request.Builder()
-            .url("http://127.0.0.1:${ApiController.port}$path")
+            .url(urlBuilder.build())
             .header("Authorization", "Bearer ${ApiController.secret}")
     }
 
@@ -89,12 +104,12 @@ object MihomoApi {
      * handler, so an endpoint must never throw — an unguarded error() here crashed the app
      * when the core status screen was opened before the first VPN start.
      */
-    private fun getJson(path: String): JsonObject? {
+    private fun getJson(vararg segments: String): JsonObject? {
         if (!ApiController.isReady) return null
         return runCatching {
-            client.newCall(requestBuilder(path).build()).execute().use { response ->
+            client.newCall(requestBuilder(*segments).build()).execute().use { response ->
                 if (!response.isSuccessful) return@use null
-                val text = response.body?.string() ?: return@use null
+                val text = response.body.string()
                 json.parseToJsonElement(text) as? JsonObject
             }
         }.getOrNull()
@@ -144,49 +159,46 @@ object MihomoApi {
     // ---- Endpoints -------------------------------------------------------------------
 
     fun version(): String? {
-        val obj = getJson("/version") ?: return null
+        val obj = getJson("version") ?: return null
         return runCatching { obj["version"]?.jsonPrimitive?.content }.getOrNull()
     }
 
     /** Full proxy snapshot: groups and proxies keyed by name. */
-    fun proxies(): JsonObject? = getJson("/proxies")
+    fun proxies(): JsonObject? = getJson("proxies")
 
     fun proxyDetail(name: String): ApiProxy? {
-        val encoded = encodePathSegment(name)
-        val obj = getJson("/proxies/$encoded") ?: return null
+        val obj = getJson("proxies", name) ?: return null
         return parseProxy(obj)
     }
 
     fun selectProxy(group: String, name: String): Boolean {
-        val encoded = encodePathSegment(group)
         val body = buildJsonObject { put("name", name) }.toString().toRequestBody(jsonBody)
         return runCatching {
-            client.newCall(requestBuilder("/proxies/$encoded").put(body).build()).execute().use { it.isSuccessful }
+            client.newCall(requestBuilder("proxies", group).put(body).build()).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
 
     fun connections(): ConnectionsSnapshot? {
-        val obj = getJson("/connections") ?: return null
+        val obj = getJson("connections") ?: return null
         return parseConnections(obj)
     }
 
     fun closeConnection(id: String): Boolean {
-        val encoded = encodePathSegment(id)
         return runCatching {
-            client.newCall(requestBuilder("/connections/$encoded").delete().build()).execute().use { it.isSuccessful }
+            client.newCall(requestBuilder("connections", id).delete().build()).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
 
     fun closeAllConnections(): Boolean {
         return runCatching {
-            client.newCall(requestBuilder("/connections").delete().build()).execute().use { it.isSuccessful }
+            client.newCall(requestBuilder("connections").delete().build()).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
 
     fun patchConfigs(body: JsonObject): Boolean {
         return runCatching {
             client.newCall(
-                requestBuilder("/configs").patch(body.toString().toRequestBody(jsonBody)).build()
+                requestBuilder("configs").patch(body.toString().toRequestBody(jsonBody)).build()
             ).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
@@ -194,28 +206,27 @@ object MihomoApi {
     fun patchMode(mode: String): Boolean = patchConfigs(buildJsonObject { put("mode", mode) })
 
     fun memoryInuse(): Long? {
-        val obj = getJson("/memory") ?: return null
+        val obj = getJson("memory") ?: return null
         return runCatching { obj["inuse"]?.jsonPrimitive?.longOrNull }.getOrNull()
     }
 
     fun proxyProviders(): List<ApiProvider> {
-        val obj = getJson("/providers/proxies") ?: return emptyList()
+        val obj = getJson("providers", "proxies") ?: return emptyList()
         return parseProviders(obj) { provider -> provider["proxies"]?.jsonArray?.size ?: 0 }
     }
 
     fun updateProxyProvider(name: String): Boolean = updateProvider("proxies", name)
 
     fun ruleProviders(): List<ApiProvider> {
-        val obj = getJson("/providers/rules") ?: return emptyList()
+        val obj = getJson("providers", "rules") ?: return emptyList()
         return parseProviders(obj) { provider -> provider["ruleCount"]?.jsonPrimitive?.longOrNull?.toInt() ?: 0 }
     }
 
     fun updateRuleProvider(name: String): Boolean = updateProvider("rules", name)
 
     private fun updateProvider(kind: String, name: String): Boolean {
-        val encoded = encodePathSegment(name)
         return runCatching {
-            client.newCall(requestBuilder("/providers/$kind/$encoded").put(byteArrayOf().toRequestBody(jsonBody)).build())
+            client.newCall(requestBuilder("providers", kind, name).put(byteArrayOf().toRequestBody(jsonBody)).build())
                 .execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }

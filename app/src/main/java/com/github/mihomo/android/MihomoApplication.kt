@@ -10,12 +10,38 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.system.exitProcess
 
 class MihomoApplication : Application() {
     companion object {
         lateinit var instance: MihomoApplication
             private set
         const val CRASH_FILE_NAME = "last_crash.txt"
+
+        /**
+         * True when this build runs on an emulator.
+         *
+         * The Go core cannot run under ARM translation (SIGILL inside libclash), so a
+         * debuggable build on an emulator must never load the native libraries. The check
+         * lives here (rather than being private to onCreate) because the VPN service has to
+         * honour it too: the service re-entered the native init path even though the
+         * application had deliberately skipped it.
+         */
+        fun isEmulator(): Boolean =
+            Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
+                Build.MODEL.contains("Emulator", ignoreCase = true) ||
+                Build.MODEL.contains("sdk_gphone", ignoreCase = true) ||
+                Build.PRODUCT.contains("sdk_gphone", ignoreCase = true) ||
+                Build.HARDWARE.contains("ranchu", ignoreCase = true) ||
+                Build.HARDWARE.contains("goldfish", ignoreCase = true)
+
+        /** True when the installed build is marked debuggable. */
+        fun isDebuggable(): Boolean {
+            // The application instance is not assigned until onCreate() runs, so the
+            // lateinit check must not be a plain null check (it would throw instead).
+            if (!::instance.isInitialized) return false
+            return (instance.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        }
     }
 
     override fun onCreate() {
@@ -73,26 +99,29 @@ class MihomoApplication : Application() {
     }
 
     private fun isEmulator(): Boolean =
-        Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-            Build.MODEL.contains("Emulator", ignoreCase = true) ||
-            Build.MODEL.contains("sdk_gphone", ignoreCase = true) ||
-            Build.PRODUCT.contains("sdk_gphone", ignoreCase = true) ||
-            Build.HARDWARE.contains("ranchu", ignoreCase = true) ||
-            Build.HARDWARE.contains("goldfish", ignoreCase = true)
+        MihomoApplication.isEmulator()
 
-    /** Writes the last uncaught exception to last_crash.txt so a future crash can be diagnosed. */
-    private fun installCrashLogger() {
+    /** Writes the last uncaught exception to last_crash.txt so a future crash can be diagnosed. */    private fun installCrashLogger() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching {
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                 val text = "time: $stamp\nthread: ${thread.name}\n\n" + Log.getStackTraceString(throwable)
-                listOfNotNull(getExternalFilesDir(null), filesDir).forEach { dir ->
-                    runCatching { File(dir, CRASH_FILE_NAME).writeText(text) }
-                }
+                // Only internal storage: the crash report can contain URLs and file paths,
+                // and external app-scoped storage is world-readable to other apps on older
+                // releases and survives an uninstall as a leftover.
+                runCatching { File(filesDir, CRASH_FILE_NAME).writeText(text) }
                 Log.e("MihomoApp", "Uncaught exception", throwable)
             }
-            previous?.uncaughtException(thread, throwable)
+            if (previous != null) {
+                previous.uncaughtException(thread, throwable)
+            } else {
+                // Without a previous handler the process would keep running in an undefined
+                // state (the crash happened on an arbitrary thread). Terminate explicitly
+                // instead of pretending the app survived.
+                Log.e("MihomoApp", "No previous uncaught exception handler; terminating")
+                exitProcess(2)
+            }
         }
     }
 }

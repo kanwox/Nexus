@@ -253,7 +253,9 @@
 
 以下检查必须全部通过：
 - `detekt`：`ForbiddenImport` 禁止 Material 控件与 `foundation.RoundedCornerShape` 导入。
-- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `Color(0x…)`。
+- `checkUiTokens`：禁止业务 UI 新增裸 `fontSize` / `lineHeight` / `letterSpacing` / `Color(0x…)` / 具名 Compose 颜色
+  （`Color.White` 等）。该检查覆盖整个 `app/src/main/java` 源码树（仅排除 `ui/theme/`），
+  并已挂到 `preBuild`，因此任何一次构建都会执行。
 - `DesignTokenContrastTest`：核心文本 token 必须满足 WCAG AA 对比度。
 - 组件变更必须在 `ui/components/DesignSystemPreview.kt` 的预览矩阵中覆盖 Light/Dark、SYSTEM/IOS、zh/en/ru 与 1.3 字体。
 

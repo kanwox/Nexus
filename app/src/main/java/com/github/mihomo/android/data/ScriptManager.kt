@@ -73,76 +73,131 @@ object ScriptManager {
 
     // Client that routes through the local mixed-port proxy (port is user-configurable).
     // Used when app traffic bypasses VPN (the app is always excluded from its own tunnel).
+    //
+    // Only the client for the CURRENT port is kept: every port change used to add another
+    // entry, and each OkHttpClient owns its own connection pool + dispatcher, so the map
+    // grew without bound (a leak that survives until the process dies).
     private val proxyClients = java.util.concurrent.ConcurrentHashMap<Int, OkHttpClient>()
 
-    private fun localProxyClient(port: Int): OkHttpClient = proxyClients.getOrPut(port) {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(60, TimeUnit.SECONDS)
-            .proxy(
-                java.net.Proxy(
-                    java.net.Proxy.Type.HTTP,
-                    java.net.InetSocketAddress("127.0.0.1", port)
+    private fun localProxyClient(port: Int): OkHttpClient {
+        proxyClients[port]?.let { return it }
+        synchronized(proxyClients) {
+            proxyClients[port]?.let { return it }
+            val client = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .callTimeout(60, TimeUnit.SECONDS)
+                .proxy(
+                    java.net.Proxy(
+                        java.net.Proxy.Type.HTTP,
+                        java.net.InetSocketAddress("127.0.0.1", port)
+                    )
                 )
-            )
-            .build()
+                .build()
+            // Evict the clients of the previous ports and release their resources.
+            val stale = proxyClients.keys.filter { it != port }
+            stale.forEach { old ->
+                proxyClients.remove(old)?.let { releaseClient(it) }
+            }
+            proxyClients[port] = client
+            return client
+        }
+    }
+
+    /** Releases the threads and connection pool a discarded OkHttpClient holds. */
+    private fun releaseClient(client: OkHttpClient) {
+        runCatching {
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+            if (client.cache != null) {
+                client.cache?.close()
+            }
+        }.onFailure { Log.d(TAG, "Failed to release a stale proxy client: ${it.message}") }
     }
 
     /**
      * Attempt to fetch a URL, with special handling for raw.githubusercontent.com:
      * 1. First try through the local mixed-port proxy - works when the core is running
-     * 2. Then try mirror URLs directly
-     * 3. Finally fall back to direct connection
+     * 2. Then try the DIRECT raw.githubusercontent.com URL
+     * 3. Finally fall back to mirror URLs
      */
-    private fun fetchUrl(url: String, mixedPort: Int): String {
+    private fun fetchUrl(url: String, mixedPort: Int): ScriptFetch {
         val isGithubRaw = url.contains("raw.githubusercontent.com")
 
         if (isGithubRaw) {
-            // Strategy 1: Local proxy (covers the case where VPN is on but app bypasses it)
-            runCatching {
+            // Strategy 1: Local proxy (covers the case where VPN is on but app bypasses it).
+            // This is the ORIGINAL source, so its payload is trusted as the baseline.
+            val viaProxy = runCatching {
                 val req = Request.Builder().url(url)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .build()
                 localProxyClient(mixedPort).newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
-                        return readScriptBody(resp)
+                        readScriptBody(resp)
+                    } else {
+                        null
                     }
                 }
-            }.onFailure { Log.d(TAG, "Local proxy failed for ${redactUrl(url)}: ${it.message}") }
+            }.getOrNull()
+            if (viaProxy != null) {
+                return ScriptFetch(viaProxy, fromMirror = false)
+            }
+            Log.d(TAG, "Local proxy failed for ${redactUrl(url)}")
 
-            // Strategy 2: Mirror URLs (direct connection, mirrors bypass GFW).
-            // NOTE: mirrors are third parties that can alter the payload; content hashes
-            // pinned by downloadScript/updateScriptFromRemote make such changes detectable.
+            // Strategy 2: the direct raw.githubusercontent.com URL. The mirror is only used
+            // when the ORIGINAL source cannot be reached, so the pinned hash is taken
+            // from the original whenever possible.
+            val direct = runCatching {
+                val req = Request.Builder().url(url)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) readScriptBody(resp) else null
+                }
+            }.getOrNull()
+            if (direct != null) {
+                return ScriptFetch(direct, fromMirror = false)
+            }
+
+            // Strategy 3: Mirror URLs (direct connection, mirrors bypass the GFW).
+            // A mirror is a third party that can alter the payload, and the returned code
+            // is executed with full JS privileges. The fetch therefore only happens when
+            // the original source failed, and the fact is recorded so it can be reported
+            // and so later divergence from the pinned hash is detected.
             val rawPath = url.removePrefix("https://raw.githubusercontent.com/")
             for (mirror in GITHUB_MIRRORS) {
-                val mirrorUrl = when {
-                    mirror.endsWith("/https://raw.githubusercontent.com/") -> mirror + rawPath
-                    else -> mirror + rawPath
-                }
-                runCatching {
+                val mirrorUrl = mirror + rawPath
+                val body = runCatching {
                     val req = Request.Builder().url(mirrorUrl)
                         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                         .build()
                     httpClient.newCall(req).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            Log.i(TAG, "Mirror fetch succeeded: ${redactUrl(url)}")
-                            return readScriptBody(resp)
-                        }
+                        if (resp.isSuccessful) readScriptBody(resp) else null
                     }
-                }.onFailure { Log.d(TAG, "Mirror failed for ${redactUrl(url)}: ${it.message}") }
+                }.getOrNull()
+                if (body != null) {
+                    Log.w(TAG, "Mirror fetch succeeded for ${redactUrl(url)}; the payload did not come from the original source")
+                    LogRepository.addLog(
+                        "warning",
+                        "脚本内容来自第三方镜像（原始地址不可达），其指纹已记录，后续内容变化将被检测"
+                    )
+                    return ScriptFetch(body, fromMirror = true)
+                }
             }
         }
 
-        // Strategy 3 (or primary for non-GitHub URLs): Direct download
+        // Strategy 4 (or primary for non-GitHub URLs): Direct download
         val req = Request.Builder().url(url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .build()
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP 错误: ${resp.code} ${resp.message}")
-            return readScriptBody(resp)
+            return ScriptFetch(readScriptBody(resp), fromMirror = false)
         }
     }
+
+    /** The body of a fetched script plus where it came from. */
+    private data class ScriptFetch(val body: String, val fromMirror: Boolean)
 
     private fun readScriptBody(resp: okhttp3.Response): String =
         ConfigManager.readBodyCapped(resp, MAX_SCRIPT_BYTES, "脚本内容为空")
@@ -174,7 +229,7 @@ object ScriptManager {
         runCatching {
             val cleanUrl = url.trim()
             requireSecureRemoteUrl(cleanUrl, allowPrivateHosts)
-            fetchUrl(cleanUrl, mixedPort)
+            fetchUrl(cleanUrl, mixedPort).body
         }
     }
 
@@ -197,12 +252,14 @@ object ScriptManager {
             }
 
             val id = if (existingIdx >= 0) current[existingIdx].id else java.util.UUID.randomUUID().toString()
-            val fileName = if (existingIdx >= 0 && current[existingIdx].scriptFile.isNotBlank()) {
-                current[existingIdx].scriptFile
-            } else {
-                "$id.js"
-            }
-            val file = getScriptsDir(context).resolve(fileName)
+            // The file name is stored in the script list, so it can come from a restored
+            // backup or a tampered SharedPreferences. It is resolved through
+            // SafeFileName, which rejects anything that is not a plain single-segment
+            // name — otherwise "../../databases/x" would escape the scripts directory.
+            val existingFileName = if (existingIdx >= 0) current[existingIdx].scriptFile else ""
+            val fileName = SafeFileName.sanitize(existingFileName) ?: "$id.js"
+            val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
+                ?: error("无法为脚本创建安全的文件路径")
             ConfigManager.writeTextAtomic(file, code)
 
             val resolvedName = name.trim().ifBlank {
@@ -244,11 +301,13 @@ object ScriptManager {
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
             requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
-            val body = fetchUrl(url, SettingsManager(context).mixedPort)
+            val fetched = fetchUrl(url, SettingsManager(context).mixedPort)
+            val body = fetched.body
 
             val id = java.util.UUID.randomUUID().toString()
             val fileName = "$id.js"
-            val file = getScriptsDir(context).resolve(fileName)
+            val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
+                ?: error("无法为脚本创建安全的文件路径")
             ConfigManager.writeTextAtomic(file, body)
 
             val item = ScriptItem(
@@ -282,7 +341,8 @@ object ScriptManager {
     ): ScriptItem {
         val id = java.util.UUID.randomUUID().toString()
         val fileName = "$id.js"
-        val file = getScriptsDir(context).resolve(fileName)
+        val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
+            ?: error("无法为脚本创建安全的文件路径")
         ConfigManager.writeTextAtomic(file, code)
 
         val item = ScriptItem(
@@ -305,9 +365,17 @@ object ScriptManager {
         return item
     }
 
+    /**
+     * Reads the on-disk code of a script.
+     *
+     * `scriptFile` is persisted metadata (and arrives from restored backups), so it is
+     * resolved through [SafeFileName.resolveChild]: a value like `../../databases/x`
+     * would otherwise let a crafted backup read a file outside the scripts directory.
+     * An unsafe name yields an empty script, which the engine treats as "nothing to run".
+     */
     fun readScriptCode(context: Context, script: ScriptItem): String {
-        val file = getScriptsDir(context).resolve(script.scriptFile)
-        return if (file.exists()) file.readText() else ""
+        val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile) ?: return ""
+        return if (file.exists()) runCatching { file.readText() }.getOrDefault("") else ""
     }
 
     /**
@@ -322,7 +390,7 @@ object ScriptManager {
     }
 
     fun updateScriptCode(context: Context, script: ScriptItem, newCode: String) {
-        val file = getScriptsDir(context).resolve(script.scriptFile)
+        val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile) ?: return
         ConfigManager.writeTextAtomic(file, newCode)
         synchronized(ioLock) {
             val current = getScripts(context).toMutableList()
@@ -341,7 +409,8 @@ object ScriptManager {
         runCatching {
             if (script.url.isBlank()) error("无远程更新链接")
             requireSecureRemoteUrl(script.url, SettingsManager(context).allowPrivateSubscriptionHosts)
-            val body = fetchUrl(script.url, SettingsManager(context).mixedPort)
+            val fetched = fetchUrl(script.url, SettingsManager(context).mixedPort)
+            val body = fetched.body
 
             val newHash = sha256(body)
             if (script.contentHash.isNotBlank() && script.contentHash != newHash) {
@@ -350,8 +419,14 @@ object ScriptManager {
                 // hash is pinned either way, so any later divergence becomes detectable.
                 Log.i(TAG, "Script ${script.name} content changed after remote update")
             }
+            if (fetched.fromMirror) {
+                // A mirror's payload is never silently trusted as the new baseline: the
+                // origin is surfaced and the hash is pinned so a later divergence shows up.
+                Log.w(TAG, "Script ${script.name} was updated from a third-party mirror")
+            }
 
-            val file = getScriptsDir(context).resolve(script.scriptFile)
+            val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile)
+                ?: error("无法为脚本创建安全的文件路径")
             ConfigManager.writeTextAtomic(file, body)
 
             val updated = script.copy(
@@ -386,8 +461,11 @@ object ScriptManager {
             val current = getScripts(context).toMutableList()
             val item = current.firstOrNull { it.id == id }
             if (item != null) {
-                val file = getScriptsDir(context).resolve(item.scriptFile)
-                if (file.exists()) file.delete()
+                // SafeFileName: a crafted scriptFile must not make the delete reach
+                // outside the scripts directory.
+                SafeFileName.resolveChild(getScriptsDir(context), item.scriptFile)?.let { file ->
+                    if (file.exists()) file.delete()
+                }
                 current.removeAll { it.id == id }
                 saveScripts(context, current)
             }

@@ -18,8 +18,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -34,7 +33,9 @@ import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.*
 
 private enum class RequestFilter(val labelKey: String) {
@@ -81,7 +82,7 @@ fun RequestLogsScreen(
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
-    val clipboardManager = LocalClipboardManager.current
+    val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
     val records by RequestRepository.recordsFlow.collectAsStateWithLifecycle()
 
@@ -95,8 +96,16 @@ fun RequestLogsScreen(
     var activeDetailRecord by remember { mutableStateOf<RequestRecord?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
-    val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-    val detailTimeFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
+    // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
+    // The locale comes from LocalConfiguration, which is observable — reading
+    // Locale.getDefault() directly would not recompose when the system locale changes.
+    val locale = LocalConfiguration.current.locales[0]
+    val timeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    }
+    val detailTimeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    }
 
     // Filter records based on status, protocol, source app and fluid search
     val filteredRecords = remember(records, searchQuery, selectedFilter, selectedProtocol, selectedApp) {
@@ -300,7 +309,7 @@ fun RequestLogsScreen(
                     dividerStartIndent = 16.dp
                 ) { _, record ->
                     val formattedTime = remember(record.timestamp) {
-                        timeFormat.format(Date(record.timestamp))
+                        timeFormat.format(Instant.ofEpochMilli(record.timestamp))
                     }
 
                     RequestRecordCell(
@@ -320,7 +329,7 @@ fun RequestLogsScreen(
     if (activeDetailRecord != null) {
         val rec = activeDetailRecord!!
         val formattedDetailTime = remember(rec.timestamp) {
-            detailTimeFormat.format(Date(rec.timestamp))
+            detailTimeFormat.format(Instant.ofEpochMilli(rec.timestamp))
         }
 
         CupertinoModalBottomSheet(
@@ -375,27 +384,27 @@ fun RequestLogsScreen(
                         .background(LoonBg)
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_host", lang),
                         value = rec.host,
                         showCopy = true,
                         onCopy = {
-                            clipboardManager.setText(AnnotatedString(rec.host))
+                            copyToClipboard(rec.host)
                             CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_endpoint", lang),
                         value = "${rec.destinationIp}:${rec.destinationPort}",
                         showCopy = true,
                         onCopy = {
-                            clipboardManager.setText(AnnotatedString("${rec.destinationIp}:${rec.destinationPort}"))
+                            copyToClipboard("${rec.destinationIp}:${rec.destinationPort}")
                             CupertinoToast.show(AppStrings.get("copied_endpoint_toast", lang))
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_network", lang),
                         value = rec.network
                     )
@@ -423,12 +432,12 @@ fun RequestLogsScreen(
                     } else {
                         rec.rule
                     }
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_rule", lang),
                         value = ruleDescription
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_node", lang),
                         value = rec.outbound,
                         valueColor = when {
@@ -439,7 +448,7 @@ fun RequestLogsScreen(
                     )
                     if (rec.chain.size > 1) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        DetailRow(
+                        CupertinoDetailRow(
                             label = AppStrings.get("requests_field_chain", lang),
                             value = rec.chain.joinToString(" ➔ ")
                         )
@@ -465,26 +474,31 @@ fun RequestLogsScreen(
                 ) {
                     val systemLabel = AppStrings.get("system_app", lang)
                     val appDisplay = if (!rec.packageName.isNullOrBlank()) {
-                        "${rec.sourceApp.ifBlank { rec.packageName }} (${rec.packageName})"
+                        // The "app (package)" shape is part of the string table.
+                        AppStrings.get("requests_app_with_package", lang)
+                            .replace("{app}", rec.sourceApp.ifBlank { rec.packageName })
+                            .replace("{package}", rec.packageName)
                     } else {
                         rec.sourceApp.ifBlank { systemLabel }
                     }
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_app", lang),
                         value = appDisplay
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_traffic", lang),
-                        value = "↑ ${trafficString(rec.uploadBytes)}   ↓ ${trafficString(rec.downloadBytes)}"
+                        value = AppStrings.get("traffic_up_down", lang)
+                            .replace("{up}", trafficString(rec.uploadBytes))
+                            .replace("{down}", trafficString(rec.downloadBytes))
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_duration", lang),
                         value = if (rec.isActive) AppStrings.get("requests_status_active", lang) else formatDuration(rec.durationMs, lang)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    DetailRow(
+                    CupertinoDetailRow(
                         label = AppStrings.get("requests_field_time", lang),
                         value = formattedDetailTime
                     )
@@ -574,7 +588,20 @@ fun RequestLogsScreen(
                     RequestFilter.DIRECT -> records.count { it.outbound.equals("DIRECT", ignoreCase = true) }
                 }
                 CupertinoActionSheetItem(
-                    text = AppStrings.get(filter.labelKey, lang) + " ($count)" + if (filter == selectedFilter) "  ✓" else "",
+                    // The count and the check mark are part of the string table, not
+                    // concatenated onto a translated label.
+                    text = if (filter == selectedFilter) {
+                        AppStrings.get("filter_selected_mark", lang).replace(
+                            "{label}",
+                            AppStrings.get("filter_count", lang)
+                                .replace("{label}", AppStrings.get(filter.labelKey, lang))
+                                .replace("{n}", count.toString())
+                        )
+                    } else {
+                        AppStrings.get("filter_count", lang)
+                            .replace("{label}", AppStrings.get(filter.labelKey, lang))
+                            .replace("{n}", count.toString())
+                    },
                     onClick = {
                         haptic.selection()
                         selectedFilter = filter
@@ -733,7 +760,9 @@ private fun RequestRecordCell(
                 )
 
                 val midText = if (record.uploadBytes > 0L || record.downloadBytes > 0L) {
-                    "↑ ${trafficString(record.uploadBytes)}  ↓ ${trafficString(record.downloadBytes)}"
+                    AppStrings.get("traffic_up_down", lang)
+                        .replace("{up}", trafficString(record.uploadBytes))
+                        .replace("{down}", trafficString(record.downloadBytes))
                 } else if (record.rulePayload.isNotBlank()) {
                     "${record.rule}(${record.rulePayload})"
                 } else {
@@ -784,59 +813,6 @@ private fun RequestRecordCell(
                     text = formattedTime,
                     color = LoonTextMuted,
                     fontSize = LoonTypeScale.footnote
-                )
-            }
-        }
-    }
-}
-
-/**
- * Clean detail row for the iOS Inspector sheet.
- */
-@Composable
-private fun DetailRow(
-    label: String,
-    value: String,
-    valueColor: androidx.compose.ui.graphics.Color = LoonTextPrimary,
-    showCopy: Boolean = false,
-    onCopy: (() -> Unit)? = null
-) {
-    val lang = LocalAppLanguage.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            fontSize = LoonTypeScale.callout,
-            color = LoonTextSecondary
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .padding(start = 12.dp)
-                .weight(1f, fill = false)
-        ) {
-            Text(
-                text = value,
-                fontSize = LoonTypeScale.calloutLarge,
-                fontWeight = FontWeight.Medium,
-                color = valueColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            if (showCopy && onCopy != null) {
-                Spacer(modifier = Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = AppStrings.get("copy_desc", lang),
-                    tint = IosBlue,
-                    modifier = Modifier
-                        .size(15.dp)
-                        .clickable(onClick = onCopy)
                 )
             }
         }

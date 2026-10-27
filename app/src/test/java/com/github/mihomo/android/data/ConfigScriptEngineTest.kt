@@ -1,5 +1,6 @@
 package com.github.mihomo.android.data
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -35,7 +36,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `previewScript rejects blank script code`() {
+    fun `previewScript rejects blank script code`() = runBlocking {
         val result = ConfigScriptEngine.previewScript(
             rawYaml = "proxies: []",
             code = "   "
@@ -45,7 +46,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `previewScript rejects invalid YAML input for JS scripts`() {
+    fun `previewScript rejects invalid YAML input for JS scripts`() = runBlocking {
         val result = ConfigScriptEngine.previewScript(
             rawYaml = "\t::not yaml[[[",
             code = "function main(config) { return config; }"
@@ -55,7 +56,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `previewScript merges YAML override snippets without an engine`() {
+    fun `previewScript merges YAML override snippets without an engine`() = runBlocking {
         val baseYaml = """
             mode: rule
             rules:
@@ -103,7 +104,7 @@ class ConfigScriptEngineTest {
     """.trimIndent()
 
     @Test
-    fun `JS main function rewrites the config`() {
+    fun `JS main function rewrites the config`() = runBlocking {
         val code = """
             function main(config) {
                 config.rules = ['MATCH,🚀 节点选择'];
@@ -121,7 +122,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `module exports and arrow function script styles also rewrite the config`() {
+    fun `module exports and arrow function script styles also rewrite the config`() = runBlocking {
         val styles = listOf(
             "module.exports = function(config) { config['mixed-port'] = 7891; return config; }",
             "module.exports = (config) => { config['mixed-port'] = 7892; return config; }",
@@ -141,7 +142,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `infinite loop script is interrupted by the engine timeout`() {
+    fun `infinite loop script is interrupted by the engine timeout`() = runBlocking {
         val originalTimeout = ConfigScriptEngine.scriptTimeoutMs
         ConfigScriptEngine.scriptTimeoutMs = 1000L
         try {
@@ -165,7 +166,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `promise-returning main is reported instead of silently ignored`() {
+    fun `promise-returning main is reported instead of silently ignored`() = runBlocking {
         val code = """
             function main(config) {
                 return Promise.resolve(config);
@@ -181,7 +182,7 @@ class ConfigScriptEngineTest {
     }
 
     @Test
-    fun `console output is captured into preview logs`() {
+    fun `console output is captured into preview logs`() = runBlocking {
         val code = """
             function main(config) {
                 console.log('rewriting', config.proxies.length, 'proxies');

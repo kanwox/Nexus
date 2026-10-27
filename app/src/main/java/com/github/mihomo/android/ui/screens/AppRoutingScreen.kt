@@ -414,7 +414,7 @@ private fun AppItemCell(
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = LoonOnAccent,
                     modifier = Modifier.size(13.dp)
                 )
             }
@@ -464,7 +464,12 @@ private fun AppIcon(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = label.take(1).uppercase(),
+                // Locale-aware: a bare uppercase() maps "i" to "İ" in a Turkish locale.
+                // The locale comes from LocalConfiguration, which is observable — reading
+                // Locale.getDefault() directly would not recompose on a locale change.
+                text = label.take(1).uppercase(
+                    androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
+                ),
                 color = LoonTextPrimary,
                 fontSize = LoonTypeScale.subhead,
                 fontWeight = FontWeight.Bold

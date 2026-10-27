@@ -88,7 +88,8 @@ object ImageCache {
                 .build()
             httpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val body = resp.body ?: return@withContext null
+                // okhttp 5 always has a body on a response.
+                val body = resp.body
                 if (body.contentLength() > MAX_ICON_BYTES) return@withContext null
                 val bytes = body.byteStream().use { readCapped(it) } ?: return@withContext null
 

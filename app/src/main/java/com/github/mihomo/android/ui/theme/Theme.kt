@@ -262,7 +262,9 @@ fun MihomoTheme(
         LocalAppFontFamily provides activeFontFamily,
         LocalReduceMotion provides reduceMotion,
         LocalWindowWidthClass provides windowWidthClass,
-        androidx.compose.foundation.LocalOverscrollConfiguration provides null,
+        // Compose 1.8 replaced LocalOverscrollConfiguration with LocalOverscrollFactory;
+        // providing a null factory is how the stretch overscroll effect is disabled now.
+        androidx.compose.foundation.LocalOverscrollFactory provides null,
         androidx.compose.foundation.LocalIndication provides NoIndication
     ) {
         MaterialTheme(

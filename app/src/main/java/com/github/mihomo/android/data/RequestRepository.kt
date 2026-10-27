@@ -26,6 +26,9 @@ object RequestRepository {
     private const val POLL_INTERVAL_MS = 1000L
     private const val BACKGROUND_POLL_INTERVAL_MS = 5000L
 
+    /** Consecutive controller failures before the poll loop reports the problem. */
+    private const val MAX_CONSECUTIVE_FAILURES = 5
+
     private val nextId = AtomicLong(1)
     // O(1) lookup map preserving insertion order. Eldest entries are at the beginning.
     private val recordMap = LinkedHashMap<String, RequestRecord>(MAX_RECORDS)
@@ -42,9 +45,21 @@ object RequestRepository {
         _recordsFlow.value = snapshot
     }
 
+    @Volatile
     private var pollJob: Job? = null
+
+    @Volatile
     private var appContext: Context? = null
+
+    @Volatile
     private var uidResolver: ((Int, String, String) -> Int)? = null
+
+    /**
+     * Consecutive controller failures. `MihomoApi.connections()` returns null on ANY
+     * failure, and a plain `?: continue` would swallow a dead controller forever without
+     * a trace. After [MAX_CONSECUTIVE_FAILURES] the poll loop says so.
+     */
+    private var consecutiveFailures = 0
 
     // uid -> (display label, package name); a long session with many apps must not hammer
     // PackageManager on every new connection.
@@ -68,7 +83,20 @@ object RequestRepository {
                 delay(pollInterval)
                 // Screen-off pauses everything non-essential (same gate as LogRepository).
                 if (LogRepository.isScreenOff) continue
-                val snapshot = MihomoApi.connections() ?: continue
+                val snapshot = MihomoApi.connections()
+                if (snapshot == null) {
+                    consecutiveFailures++
+                    if (consecutiveFailures == MAX_CONSECUTIVE_FAILURES) {
+                        // "warning" survives the screen-off gate, so a dead controller
+                        // stays visible even when the user has not opened the app.
+                        LogRepository.addLog(
+                            "warning",
+                            "连续 $MAX_CONSECUTIVE_FAILURES 次无法连接内核控制器，请求记录可能已停止更新"
+                        )
+                    }
+                    continue
+                }
+                consecutiveFailures = 0
                 applySnapshot(snapshot)
             }
         }
@@ -109,18 +137,23 @@ object RequestRepository {
                     chain = conn.chains.asReversed(),
                     uploadBytes = conn.uploadBytes,
                     downloadBytes = conn.downloadBytes,
-                    isActive = !conn.rule.equals("Reject", ignoreCase = true) &&
-                        !conn.outboundEqualsReject(),
+                    isActive = isActiveConnection(conn),
                     timestamp = if (conn.startMs > 0) conn.startMs else now,
                     lastSeenMs = now
                 )
                 changed = true
             } else {
-                if (existing.uploadBytes != conn.uploadBytes || existing.downloadBytes != conn.downloadBytes || !existing.isActive) {
+                val active = isActiveConnection(conn)
+                if (existing.uploadBytes != conn.uploadBytes || existing.downloadBytes != conn.downloadBytes || existing.isActive != active) {
                     recordMap[conn.id] = existing.copy(
                         uploadBytes = conn.uploadBytes,
                         downloadBytes = conn.downloadBytes,
-                        isActive = true,
+                        // The SAME rule as on the insert path: a rejected connection must
+                        // not flip back to "active". The old code set it to true
+                        // unconditionally, so a REJECT rule re-activated the record on
+                        // the next poll, and the `!existing.isActive` trigger re-opened
+                        // records that had just been closed.
+                        isActive = active,
                         lastSeenMs = now
                     )
                     changed = true
@@ -154,6 +187,17 @@ object RequestRepository {
 
     private fun MihomoApi.ApiConnection.outboundEqualsReject(): Boolean =
         chains.firstOrNull()?.equals("REJECT", ignoreCase = true) == true
+
+    /**
+     * Whether a connection counts as "active" in the request list.
+     *
+     * A connection that the core rejected (a REJECT rule, or a REJECT outbound) is never
+     * active — it is blocked, not routed. This single definition is used by BOTH the
+     * insert and the update path: the update path used to force `isActive = true`, so a
+     * rejected connection flipped back to "active" on the next poll.
+     */
+    private fun isActiveConnection(conn: MihomoApi.ApiConnection): Boolean =
+        !conn.rule.equals("Reject", ignoreCase = true) && !conn.outboundEqualsReject()
 
     private fun resolveAppLabel(conn: MihomoApi.ApiConnection): Pair<String, String?> {
         val resolver = uidResolver ?: return "" to null

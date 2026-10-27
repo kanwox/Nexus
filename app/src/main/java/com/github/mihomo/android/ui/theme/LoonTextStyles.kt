@@ -99,6 +99,19 @@ object LoonTextStyles {
     @ReadOnlyComposable
     fun segmentedLabelStrong(): TextStyle = base(13f, FontWeight.SemiBold, -0.15f)
 
+    /**
+     * Detail-sheet label role (13sp). Used by the shared [CupertinoDetailRow] so every
+     * inspector sheet reads identically instead of each screen inventing its own size.
+     */
+    @Composable
+    @ReadOnlyComposable
+    fun callout(): TextStyle = base(13f, FontWeight.Normal, -0.15f)
+
+    /** Detail-sheet value role (13.5sp); weight is chosen by the call site. */
+    @Composable
+    @ReadOnlyComposable
+    fun calloutLarge(): TextStyle = base(13.5f, FontWeight.Normal, -0.15f)
+
     @Composable
     @ReadOnlyComposable
     fun caption(): TextStyle = base(11f, FontWeight.Normal, -0.12f)

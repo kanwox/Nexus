@@ -1,7 +1,6 @@
 package com.github.mihomo.android.ui
 
 import android.util.Log
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +18,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -38,18 +38,25 @@ import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
+import androidx.compose.material3.Text
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import com.github.mihomo.android.ui.components.CupertinoAlertDialog
+import com.github.mihomo.android.ui.components.CupertinoTextField
 import com.github.mihomo.android.ui.components.CupertinoToast
 import com.github.mihomo.android.ui.components.CupertinoToastHost
 import com.github.mihomo.android.ui.components.LoonFloatingBottomBar
 import com.github.mihomo.android.ui.screens.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.ui.theme.LoonBg
+import com.github.mihomo.android.ui.theme.LoonMotion
 import com.github.mihomo.android.ui.theme.LoonResponsiveContent
+import com.github.mihomo.android.ui.theme.LoonTextSecondary
+import com.github.mihomo.android.ui.theme.LoonTypeScale
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -93,7 +100,10 @@ fun MainAppScreen(
     onAppFontChanged: (AppFont) -> Unit
 ) {
     // The composable is only hosted by MainActivity; data-layer calls need its Context.
-    val activity = LocalContext.current as ComponentActivity
+    // Only the Context API is used (contentResolver), so no Activity cast is needed —
+    // casting LocalContext to ComponentActivity breaks on hosts that use a different
+    // Activity type and is flagged by the ContextCastToActivity lint check.
+    val activity = LocalContext.current
 
     // Profiles / proxies / speed-test state lives in the ViewModel so an in-flight group
     // speed test survives rotation and its measured delays are not wiped.
@@ -145,6 +155,20 @@ fun MainAppScreen(
         }
     }
 
+    // The profile-override screen needs a target profile. When there is none (the profile was
+    // deleted, or the list has not loaded yet) it falls back to the profiles screen. This
+    // redirect must not run in the composition body: assigning state while composing is an
+    // illegal side effect and can trigger an endless recomposition loop.
+    LaunchedEffect(currentSubScreen, overrideTargetProfileId, overrideTargetProfile, profiles) {
+        if (currentSubScreen != SubScreen.PROFILE_OVERRIDE) return@LaunchedEffect
+        val hasTarget = overrideTargetProfile != null ||
+            profiles.firstOrNull { it.id == selectedProfileId } != null ||
+            profiles.firstOrNull() != null
+        if (!hasTarget) {
+            currentSubScreen = SubScreen.PROFILES
+        }
+    }
+
     var visibleShortcuts by remember { mutableStateOf(settingsManager.visibleShortcuts) }
     var shortcutOrder by remember { mutableStateOf(settingsManager.shortcutOrder) }
     var proxiesViewMode by remember { mutableStateOf(settingsManager.proxiesViewMode) }
@@ -177,6 +201,16 @@ fun MainAppScreen(
     // QR subscription import: a scanned URL pre-fills the add dialog on the profiles screen.
     var qrPrefillUrl by remember { mutableStateOf<String?>(null) }
 
+    // Backup password flow. The backup holds the subscription address, the script code and
+    // the LAN sharing password, so the export is encrypted with a user-chosen password and an
+    // encrypted import asks for that password first.
+    var showBackupPasswordDialog by remember { mutableStateOf(false) }
+    var showBackupImportPasswordDialog by remember { mutableStateOf(false) }
+    var showBackupPlainConfirmDialog by remember { mutableStateOf(false) }
+    var backupPassword by remember { mutableStateOf("") }
+    var pendingExportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
     val settingsScrollState = rememberScrollState()
     val dashboardScrollState = rememberScrollState()
     val proxiesTabsListState = rememberLazyListState()
@@ -198,11 +232,26 @@ fun MainAppScreen(
     LaunchedEffect(selectedProfileId) {
         proxiesPerGroupTabStates.clear()
     }
+    // currentTab is the single source of truth for the selected tab. The pager is driven from
+    // it, so a configuration change restores the tab (rememberSaveable) AND the pager page.
+    // The previous mirror (pagerState.currentPage -> currentTab) let the two drift apart.
     val pagerState = rememberPagerState(initialPage = currentTab, pageCount = { 3 })
     val coroutineScope = rememberCoroutineScope()
-    LaunchedEffect(pagerState.currentPage) {
-        if (currentTab != pagerState.currentPage) {
-            currentTab = pagerState.currentPage
+    // rememberPagerState only reads `initialPage` on the first composition, so the restored
+    // tab has to be pushed into the pager once after a configuration change. The flag is a
+    // plain `remember` so it resets on every new composition instance.
+    var pagerSyncedToTab by remember { mutableStateOf(false) }
+    LaunchedEffect(currentTab) {
+        if (!pagerSyncedToTab) {
+            pagerSyncedToTab = true
+            if (pagerState.currentPage != currentTab) {
+                pagerState.scrollToPage(currentTab)
+            }
+        } else if (pagerState.currentPage != currentTab) {
+            pagerState.animateScrollToPage(
+                page = currentTab,
+                animationSpec = tween(durationMillis = LoonMotion.normalMs, easing = FastOutSlowInEasing)
+            )
         }
     }
 
@@ -320,6 +369,66 @@ fun MainAppScreen(
         handleSubScreenBack()
     }
 
+    // ---- Backup export / import with an optional password ----
+
+    /** Writes the backup, encrypting it when [password] is not blank. */
+    fun doExportBackup(uri: android.net.Uri, password: String?) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                activity.contentResolver.openOutputStream(uri)?.use { output ->
+                    BackupManager.exportBackup(activity, output, password)
+                } ?: error(AppStrings.get("backup_write_failed", settingsManager.appLanguage))
+            }
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                result.fold(
+                    onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
+                    onFailure = {
+                        CupertinoToast.show(
+                            AppStrings.get("settings_backup_failed", appLanguage)
+                                .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
+                            isDestructive = true
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    /** Restores the backup; [password] is null for a plain-text backup. */
+    fun doImportBackup(uri: android.net.Uri, password: String?) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
+                    BackupManager.importBackup(
+                        activity,
+                        input,
+                        AppStrings.get("backup_too_large", settingsManager.appLanguage),
+                        password
+                    )
+                } ?: error(AppStrings.get("backup_read_failed", settingsManager.appLanguage))
+                inner.getOrThrow()
+            }
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                result.fold(
+                    onSuccess = { count ->
+                        vm.reloadProfiles()
+                        CupertinoToast.show(
+                            AppStrings.get("settings_backup_restored", appLanguage)
+                                .replace("{n}", count.toString())
+                        )
+                    },
+                    onFailure = {
+                        CupertinoToast.show(
+                            AppStrings.get("settings_backup_failed", appLanguage)
+                                .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
+                            isDestructive = true
+                        )
+                    }
+                )
+            }
+        }
+    }
+
     CompositionLocalProvider(LocalAppLanguage provides appLanguage) {
     Box(
         modifier = Modifier
@@ -330,7 +439,9 @@ fun MainAppScreen(
         HorizontalPager(
             state = pagerState,
             userScrollEnabled = false,
-            beyondViewportPageCount = 2,
+            // Only the visible tab is composed. Keeping the other two alive held the whole
+            // node list of the proxies tab in memory and recomposed it on every traffic tick.
+            beyondViewportPageCount = 0,
             modifier = Modifier.fillMaxSize()
         ) { page ->
             LoonResponsiveContent(maxWidth = 680.dp) {
@@ -349,7 +460,7 @@ fun MainAppScreen(
                     }
                     val currentMainActiveNode = (liveGroupMap[mainProxyGroupName]?.now
                         ?: parsedProfile.groups[mainProxyGroupName]?.now
-                        ?: settingsManager.getSelectedNode(mainProxyGroupName)
+                        ?: vm.selectedNodes[mainProxyGroupName]
                         ?: activeNodeName).ifBlank { parsedProfile.activeNode }
                     DashboardScreen(
                         scrollState = dashboardScrollState,
@@ -414,17 +525,22 @@ fun MainAppScreen(
                     // real dependencies (see the note on page 0): with captured local vals
                     // this map froze empty at first composition and every LIST-mode group
                     // rendered blank after a cold start.
+                    //
+                    // The persisted selection comes from vm.selectedNodes: reading
+                    // settingsManager.getSelectedNode() here would be a SharedPreferences disk
+                    // read per group, on the main thread, on every speed-test refresh.
                     val computedGroupMap by remember {
                         derivedStateOf {
                             val parsed = vm.parsedProfile
                             val liveMap = vm.liveGroupMap
+                            val savedNodes = vm.selectedNodes
                             val allGroupKeys = (parsed.groups.keys + liveMap.keys).distinct()
                             allGroupKeys.associateWith { gName ->
                                 val baseGroup = parsed.groups[gName] ?: liveMap.getValue(gName)
                                 val live = liveMap[gName]
                                 val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live.proxies else baseGroup.proxies
                                 val liveProxyMap = live?.proxies?.associateBy { it.name } ?: emptyMap()
-                                val savedNode = settingsManager.getSelectedNode(gName)
+                                val savedNode = savedNodes[gName]
                                 val resolvedNow = if (!savedNode.isNullOrBlank() && sourceProxies.any { it.name == savedNode }) {
                                     savedNode
                                 } else {
@@ -512,28 +628,33 @@ fun MainAppScreen(
         }
         val displayedSubScreen = currentSubScreen ?: lastActiveSubScreen
 
-        val edgeSwipeOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
+        // The drag phase writes a plain float state: launching a coroutine per frame to call
+        // Animatable.snapTo() cancelled the previous snap every time, so the offset could lag
+        // the finger. The settle animation is the only place a coroutine is used.
+        var edgeOffset by remember { mutableFloatStateOf(0f) }
         var isEdgeDragging by remember { mutableStateOf(false) }
         val density = LocalDensity.current
         val edgeZonePx = with(density) { 32.dp.toPx() }
         val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
         LaunchedEffect(currentSubScreen) {
-            edgeSwipeOffsetX.snapTo(0f)
             isEdgeDragging = false
         }
 
         // 2. Sub-screens overlay (smooth slide in / out over the main tabs with iOS edge swipe back)
         AnimatedVisibility(
             visible = currentSubScreen != null,
+            // RTL mirrors the whole navigation: the sub-screen is pushed in from the LEFT and
+            // the interactive back gesture starts at the RIGHT edge and drags the content
+            // leftwards. Both halves agree, so the mirroring below stays as it is (UI-I18N-04).
             enter = slideInHorizontally(
                 initialOffsetX = { if (isRtl) -it else it },
-                animationSpec = tween(300, easing = FastOutSlowInEasing)
-            ) + fadeIn(animationSpec = tween(220)),
+                animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)
+            ) + fadeIn(animationSpec = tween(LoonMotion.normalMs)),
             exit = slideOutHorizontally(
                 targetOffsetX = { if (isRtl) -it else it },
-                animationSpec = tween(260, easing = FastOutSlowInEasing)
-            ) + fadeOut(animationSpec = tween(200)),
+                animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
+            ) + fadeOut(animationSpec = tween(LoonMotion.fastMs)),
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(20f)
@@ -551,34 +672,41 @@ fun MainAppScreen(
                         },
                         onHorizontalDrag = { change, dragAmount ->
                             val delta = if (isRtl) -dragAmount else dragAmount
-                            if (isEdgeDragging && (delta > 0f || edgeSwipeOffsetX.value > 0f)) {
+                            if (isEdgeDragging && (delta > 0f || edgeOffset > 0f)) {
                                 change.consume()
-                                val next = (edgeSwipeOffsetX.value + delta).coerceAtLeast(0f)
-                                coroutineScope.launch { edgeSwipeOffsetX.snapTo(next) }
+                                edgeOffset = (edgeOffset + delta).coerceAtLeast(0f)
                             }
                         },
                         onDragEnd = {
                             if (isEdgeDragging) {
                                 isEdgeDragging = false
                                 val screenWidth = size.width.toFloat()
-                                if (edgeSwipeOffsetX.value > screenWidth * 0.30f) {
+                                if (edgeOffset > screenWidth * 0.30f) {
+                                    // Completing the back gesture: slide the rest of the way
+                                    // out, then pop the sub-screen.
                                     coroutineScope.launch {
-                                        edgeSwipeOffsetX.animateTo(
+                                        animate(
+                                            initialValue = edgeOffset,
                                             targetValue = screenWidth,
-                                            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-                                        )
+                                            animationSpec = tween(
+                                                durationMillis = LoonMotion.fastMs,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        ) { value, _ -> edgeOffset = value }
                                         handleSubScreenBack()
-                                        edgeSwipeOffsetX.snapTo(0f)
+                                        edgeOffset = 0f
                                     }
                                 } else {
+                                    // Cancelling the gesture: spring back to the resting place.
                                     coroutineScope.launch {
-                                        edgeSwipeOffsetX.animateTo(
+                                        animate(
+                                            initialValue = edgeOffset,
                                             targetValue = 0f,
                                             animationSpec = androidx.compose.animation.core.spring(
-                                                dampingRatio = 0.82f,
-                                                stiffness = 500f
+                                                dampingRatio = LoonMotion.edgeSettleDampingRatio,
+                                                stiffness = LoonMotion.edgeSettleStiffness
                                             )
-                                        )
+                                        ) { value, _ -> edgeOffset = value }
                                     }
                                 }
                             }
@@ -586,13 +714,22 @@ fun MainAppScreen(
                         onDragCancel = {
                             if (isEdgeDragging) {
                                 isEdgeDragging = false
-                                coroutineScope.launch { edgeSwipeOffsetX.animateTo(0f) }
+                                coroutineScope.launch {
+                                    animate(
+                                        initialValue = edgeOffset,
+                                        targetValue = 0f,
+                                        animationSpec = androidx.compose.animation.core.spring(
+                                            dampingRatio = LoonMotion.edgeSettleDampingRatio,
+                                            stiffness = LoonMotion.edgeSettleStiffness
+                                        )
+                                    ) { value, _ -> edgeOffset = value }
+                                }
                             }
                         }
                     )
                 }
                 .graphicsLayer {
-                    translationX = if (isRtl) -edgeSwipeOffsetX.value else edgeSwipeOffsetX.value
+                    translationX = if (isRtl) -edgeOffset else edgeOffset
                 }
         ) {
             AnimatedContent(
@@ -611,18 +748,18 @@ fun MainAppScreen(
                     val targetDepth = getDepth(targetState)
 
                     if (targetDepth > initialDepth) {
-                        (slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(260, easing = FastOutSlowInEasing)) +
-                                fadeIn(animationSpec = tween(220)))
+                        (slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                fadeIn(animationSpec = tween(LoonMotion.normalMs)))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { -it / 3 }, animationSpec = tween(260, easing = FastOutSlowInEasing)) +
-                                        fadeOut(animationSpec = tween(200))
+                                slideOutHorizontally(targetOffsetX = { -it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                        fadeOut(animationSpec = tween(LoonMotion.normalMs))
                             ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
                     } else {
-                        (slideInHorizontally(initialOffsetX = { -it / 3 }, animationSpec = tween(260, easing = FastOutSlowInEasing)) +
-                                fadeIn(animationSpec = tween(220)))
+                        (slideInHorizontally(initialOffsetX = { -it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                fadeIn(animationSpec = tween(LoonMotion.normalMs)))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(260, easing = FastOutSlowInEasing)) +
-                                        fadeOut(animationSpec = tween(200))
+                                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                        fadeOut(animationSpec = tween(LoonMotion.normalMs))
                             ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
                     }
                 },
@@ -678,7 +815,9 @@ fun MainAppScreen(
                             )
                         }
                         SubScreen.PROFILE_OVERRIDE -> {
-                            val currentTarget = overrideTargetProfile ?: profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
+                            val currentTarget = overrideTargetProfile
+                                ?: profiles.firstOrNull { it.id == selectedProfileId }
+                                ?: profiles.firstOrNull()
                             if (currentTarget != null) {
                                 ProfileOverrideScreen(
                                     profile = currentTarget,
@@ -695,9 +834,11 @@ fun MainAppScreen(
                                         }
                                     }
                                 )
-                            } else {
-                                currentSubScreen = SubScreen.PROFILES
                             }
+                            // NOTE: the "no target -> go back to PROFILES" redirect used to run
+                            // here, in the composition body. Assigning state during composition is
+                            // an illegal side effect and can loop; it lives in the
+                            // LaunchedEffect(currentSubScreen, overrideTargetProfileId) below.
                         }
                         SubScreen.SCRIPTS -> {
                             ScriptsScreen(
@@ -926,54 +1067,34 @@ fun MainAppScreen(
                         SubScreen.ABOUT -> {
                             AboutScreen(
                                 onExportBackup = { uri ->
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val result = runCatching {
-                                            activity.contentResolver.openOutputStream(uri)?.use { output ->
-                                                BackupManager.exportBackup(activity, output)
-                                            } ?: error(AppStrings.get("backup_write_failed", settingsManager.appLanguage))
-                                        }
-                                        kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                            result.fold(
-                                                onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
-                                                onFailure = {
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("settings_backup_failed", appLanguage)
-                                                            .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            )
-                                        }
-                                    }
+                                    // The backup contains the subscription address, the script
+                                    // code and the LAN sharing password: the user picks a
+                                    // password before the file is written.
+                                    pendingExportUri = uri
+                                    backupPassword = ""
+                                    showBackupPasswordDialog = true
                                 },
                                 onImportBackup = { uri ->
                                     coroutineScope.launch(Dispatchers.IO) {
-                                        val result = runCatching {
-                                            val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
-                                                BackupManager.importBackup(
-                                                    activity,
-                                                    input,
-                                                    AppStrings.get("backup_too_large", settingsManager.appLanguage)
-                                                )
-                                            } ?: error(AppStrings.get("backup_read_failed", settingsManager.appLanguage))
-                                            inner.getOrThrow()
-                                        }
+                                        // Peek at the magic header to find out whether the
+                                        // backup is encrypted; an encrypted file needs the
+                                        // password BEFORE it is imported.
+                                        val head = runCatching {
+                                            activity.contentResolver.openInputStream(uri)?.use { input ->
+                                                val buffer = ByteArray(8)
+                                                val read = input.read(buffer)
+                                                if (read <= 0) null else buffer.copyOf(read)
+                                            }
+                                        }.getOrNull()
+                                        val encrypted = head != null && BackupManager.isEncrypted(head)
                                         kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                            result.fold(
-                                                onSuccess = { count ->
-                                                    vm.reloadProfiles()
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("settings_backup_restored", appLanguage) + " ($count)"
-                                                    )
-                                                },
-                                                onFailure = {
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("settings_backup_failed", appLanguage)
-                                                            .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            )
+                                            pendingImportUri = uri
+                                            backupPassword = ""
+                                            if (encrypted) {
+                                                showBackupImportPasswordDialog = true
+                                            } else {
+                                                doImportBackup(uri, null)
+                                            }
                                         }
                                     }
                                 },
@@ -994,18 +1115,13 @@ fun MainAppScreen(
                 .navigationBarsPadding()
                 .padding(bottom = 16.dp)
         ) {
-            // Derived read: targetPage changes every frame while a tab animation runs, so
-            // reading it directly here would recompose this bar on every frame.
-            val targetTab by remember { derivedStateOf { pagerState.targetPage } }
+            // currentTab is the single source of truth for the selected tab (it is the
+            // rememberSaveable one), so the bar must not read the pager's target page.
             LoonFloatingBottomBar(
-                selectedTab = targetTab,
+                selectedTab = currentTab,
                 onTabSelected = { tabIndex ->
-                    currentTab = tabIndex
-                    coroutineScope.launch {
-                        pagerState.animateScrollToPage(
-                            page = tabIndex,
-                            animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                        )
+                    if (tabIndex != currentTab) {
+                        currentTab = tabIndex
                     }
                     if (tabIndex == 1) {
                         if (vpnStatus == VpnState.Status.RUNNING) {
@@ -1022,4 +1138,115 @@ fun MainAppScreen(
         CupertinoToastHost()
     }
     } // end CompositionLocalProvider
+
+    // =====================================================================
+    // Backup password dialogs
+    // =====================================================================
+
+    if (showBackupPasswordDialog) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("backup_password_title", appLanguage),
+            message = AppStrings.get("backup_password_warning", appLanguage),
+            confirmText = AppStrings.get("action_save", appLanguage),
+            dismissText = AppStrings.get("cancel", appLanguage),
+            onConfirm = {
+                showBackupPasswordDialog = false
+                val uri = pendingExportUri
+                pendingExportUri = null
+                if (uri == null) return@CupertinoAlertDialog
+                val password = backupPassword
+                backupPassword = ""
+                if (password.isBlank()) {
+                    // A blank password writes a plain-text JSON backup: ask once more.
+                    showBackupPlainConfirmDialog = true
+                    pendingExportUri = uri
+                } else {
+                    doExportBackup(uri, password)
+                }
+            },
+            onDismiss = {
+                showBackupPasswordDialog = false
+                pendingExportUri = null
+                backupPassword = ""
+            },
+            onDismissRequest = {
+                showBackupPasswordDialog = false
+                pendingExportUri = null
+                backupPassword = ""
+            }
+        ) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = AppStrings.get("backup_password_hint", appLanguage),
+                color = LoonTextSecondary,
+                fontSize = LoonTypeScale.footnote
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            CupertinoTextField(
+                value = backupPassword,
+                onValueChange = { backupPassword = it },
+                placeholder = AppStrings.get("backup_password_hint", appLanguage),
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+    }
+
+    if (showBackupPlainConfirmDialog) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("backup_password_title", appLanguage),
+            message = AppStrings.get("backup_password_plain_warning", appLanguage),
+            confirmText = AppStrings.get("action_save", appLanguage),
+            dismissText = AppStrings.get("cancel", appLanguage),
+            isDestructive = true,
+            onConfirm = {
+                showBackupPlainConfirmDialog = false
+                val uri = pendingExportUri
+                pendingExportUri = null
+                if (uri != null) doExportBackup(uri, null)
+            },
+            onDismiss = {
+                showBackupPlainConfirmDialog = false
+                pendingExportUri = null
+            },
+            onDismissRequest = {
+                showBackupPlainConfirmDialog = false
+                pendingExportUri = null
+            }
+        )
+    }
+
+    if (showBackupImportPasswordDialog) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("backup_password_import_title", appLanguage),
+            message = AppStrings.get("backup_password_import_hint", appLanguage),
+            confirmText = AppStrings.get("action_ok", appLanguage),
+            dismissText = AppStrings.get("cancel", appLanguage),
+            onConfirm = {
+                showBackupImportPasswordDialog = false
+                val uri = pendingImportUri
+                pendingImportUri = null
+                val password = backupPassword
+                backupPassword = ""
+                if (uri != null) doImportBackup(uri, password)
+            },
+            onDismiss = {
+                showBackupImportPasswordDialog = false
+                pendingImportUri = null
+                backupPassword = ""
+            },
+            onDismissRequest = {
+                showBackupImportPasswordDialog = false
+                pendingImportUri = null
+                backupPassword = ""
+            }
+        ) {
+            Spacer(modifier = Modifier.height(10.dp))
+            CupertinoTextField(
+                value = backupPassword,
+                onValueChange = { backupPassword = it },
+                placeholder = AppStrings.get("backup_password_import_hint", appLanguage),
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+    }
 }
