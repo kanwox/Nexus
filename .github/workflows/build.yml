@@ -73,6 +73,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
 
+      # The repository tracks gradlew with the executable bit set (mode 100755), but a
+      # checkout on a filesystem that does not preserve it (or a commit that accidentally
+      # drops it) makes every ./gradlew call fail with "Permission denied" (exit code 126).
+      # This step is the safety net for that case.
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
+
       - name: Toolchain versions
         run: |
           java -version
@@ -134,6 +141,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
+
+      # See the note in the quality job: a lost executable bit makes ./gradlew fail with
+      # "Permission denied" (exit code 126).
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon --stacktrace

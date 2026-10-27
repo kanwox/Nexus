@@ -104,6 +104,9 @@ The release workflow reads the section whose heading matches the `versionName` i
 - **CI SDK package names corrected**: from API 37 onwards the Android SDK uses
   minor-versioned package ids, so the platform package is `platforms;android-37.0` — the
   non-existent `platforms;android-37` made `sdkmanager` fail before the build started.
+- **`gradlew` is committed with the executable bit set** (mode `100755`) and the CI keeps a
+  `chmod +x gradlew` safety net: a lost executable bit made every `./gradlew` call fail
+  with "Permission denied" (exit code 126) before the build could start.
 - **Release builds fail loudly when signing is not configured** instead of silently
   producing a debug-signed "release" APK.
 - `versionName` 1.0.6-Alpha.1 / `versionCode` 22.
