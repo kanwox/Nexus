@@ -101,6 +101,9 @@ The release workflow reads the section whose heading matches the `versionName` i
   on pull requests in a read-only job, the release job only runs after they pass, a
   missing release APK fails the build instead of publishing the debug APK, and a
   `SHA256SUMS` file is published with each artifact.
+- **CI SDK package names corrected**: from API 37 onwards the Android SDK uses
+  minor-versioned package ids, so the platform package is `platforms;android-37.0` — the
+  non-existent `platforms;android-37` made `sdkmanager` fail before the build started.
 - **Release builds fail loudly when signing is not configured** instead of silently
   producing a debug-signed "release" APK.
 - `versionName` 1.0.6-Alpha.1 / `versionCode` 22.

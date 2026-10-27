@@ -45,9 +45,14 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
-          # AGP 9.4.1 targets build-tools 37.0.0 and compileSdk 37. platform-tools is
-          # installed explicitly so AGP never has to reach the SDK manager at build time.
-          packages: "platform-tools platforms;android-37 build-tools;37.0.0"
+          # AGP 9.4.1 targets build-tools 37.0.0 and compileSdk 37.
+          #
+          # NOTE the platform package id: from API 37 onwards the Android SDK uses
+          # MINOR VERSIONED package names, so the platform is "platforms;android-37.0",
+          # NOT "platforms;android-37" (which does not exist and makes sdkmanager fail
+          # with "Failed to find package"). Build-tools keep the old naming scheme
+          # ("build-tools;37.0.0").
+          packages: "platform-tools platforms;android-37.0 build-tools;37.0.0"
 
       - name: Install required Android SDK packages
         run: |
@@ -62,7 +67,7 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           # Explicit install as a safety net: AGP's own SDK download is disabled, so the
           # packages must exist before Gradle configures the project.
-          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;37.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
           "$SDKMANAGER" --list_installed | grep -E 'platform-tools|platforms;android-37|build-tools;37.0.0'
 
       - name: Setup Gradle
@@ -110,7 +115,9 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
-          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+          # See the note in the quality job: from API 37 the platform package id
+          # carries the minor version ("platforms;android-37.0").
+          packages: "platform-tools platforms;android-37.0 build-tools;37.0.0"
 
       - name: Install required Android SDK packages
         run: |
@@ -123,7 +130,7 @@ jobs:
             exit 1
           fi
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
