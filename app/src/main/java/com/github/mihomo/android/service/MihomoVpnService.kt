@@ -529,20 +529,25 @@ class MihomoVpnService : VpnService() {
                         PerAppProxyMode.WHITELIST -> {
                             // startVpn() already rejects an empty whitelist, so there is no
                             // silent "no allowed apps -> route everything" fallback here.
-                            packages.filter { it != packageName }.forEach { pkg ->
+                            // The app itself must be included in allowed applications so that
+                            // the System and Mixed stacks (which bind a local TCP listener on the
+                            // TUN interface) can exchange packets with the TUN interface.
+                            (packages + packageName).forEach { pkg ->
                                 runCatching { addAllowedApplication(pkg) }
                                     .onFailure { Log.w(TAG, "addAllowedApplication($pkg) failed", it) }
                             }
                         }
                         PerAppProxyMode.BLACKLIST -> {
-                            packages.forEach { pkg ->
+                            // The app itself must never be disallowed: System and Mixed stacks
+                            // require the host UID to receive and respond to TCP connections on TUN.
+                            (packages - packageName).forEach { pkg ->
                                 runCatching { addDisallowedApplication(pkg) }
                                     .onFailure { Log.w(TAG, "addDisallowedApplication($pkg) failed", it) }
                             }
-                            excludeSelfFromTunnel(this)
                         }
                         PerAppProxyMode.DISABLED -> {
-                            excludeSelfFromTunnel(this)
+                            // Global routing mode: all apps route through the tunnel.
+                            // Do not disallow the host app.
                         }
                     }
                 }
@@ -635,28 +640,6 @@ class MihomoVpnService : VpnService() {
     }
 
     private var lastNotificationUpdateTimeMs: Long = 0L
-
-    /**
-     * Excludes this app from the tunnel it just established.
-     *
-     * If the self-exclusion fails the app's OWN traffic goes through the tunnel, so its
-     * requests to the external controller on 127.0.0.1 are routed into the tunnel as well
-     * and can never come back — the app then looks like it is offline. That failure must
-     * therefore abort the start with a visible error instead of silently leaving a
-     * half-working tunnel behind.
-     */
-    private fun excludeSelfFromTunnel(builder: Builder) {
-        try {
-            builder.addDisallowedApplication(packageName)
-        } catch (e: Throwable) {
-            Log.e(TAG, "addDisallowedApplication($packageName) failed; aborting the start", e)
-            throw IllegalStateException(
-                "Failed to exclude the app itself from the tunnel ($packageName): " +
-                    (e.message ?: e.javaClass.simpleName),
-                e
-            )
-        }
-    }
 
     /** Connection-owner lookup for RequestRepository (API 29+ only, returns 0 below). */
     private fun queryConnectionOwnerUid(protocol: Int, source: String, target: String): Int {
