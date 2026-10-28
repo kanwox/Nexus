@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -115,7 +116,6 @@ fun ProfilesScreen(
     onRefreshSubscription: (ProfileItem) -> Unit = onUpdateProfile,
     onImportLocalFile: (() -> Unit)? = null,
     onReorderProfiles: ((List<ProfileItem>) -> Unit)? = null,
-    onNavigateToOverride: ((ProfileItem) -> Unit)? = null,
     onNavigateToQrScan: () -> Unit = {},
     preFillSubscriptionUrl: String? = null,
     onPreFillConsumed: () -> Unit = {}
@@ -137,17 +137,14 @@ fun ProfilesScreen(
     var editingProfile by remember { mutableStateOf<ProfileItem?>(null) }
     var editName by remember { mutableStateOf("") }
     var editUrl by remember { mutableStateOf("") }
+    var editAutoUpdate by remember { mutableStateOf(false) }
+    var editIntervalText by remember { mutableStateOf("1440") }
 
     var deletingProfile by remember { mutableStateOf<ProfileItem?>(null) }
 
     // On-disk size per profile. `File.length()` is a stat() syscall and must not run in the
     // composition body (UI-PERF-03), so it is resolved off the main thread and cached here.
     var profileFileSizes by remember { mutableStateOf(emptyMap<String, Long>()) }
-
-    // Auto-update editor sheet draft state.
-    var autoUpdateProfile by remember { mutableStateOf<ProfileItem?>(null) }
-    var draftAutoUpdate by remember { mutableStateOf(false) }
-    var draftIntervalText by remember { mutableStateOf("1440") }
 
     // Long-press drag reorder state. Data swaps happen live while dragging; the dragged
     // card keeps following the finger through dragOffsetY, re-based after every swap.
@@ -207,27 +204,60 @@ fun ProfilesScreen(
             .background(LoonBg)
             .statusBarsPadding()
     ) {
+        val remoteSubs = profiles.filter { !it.url.isNullOrBlank() }
+        var isUpdatingAll by remember { mutableStateOf(false) }
+
         CupertinoNavBar(
             title = AppStrings.get("nav_profiles", lang),
             showBackButton = onBack != null,
             onBack = onBack,
             actions = {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .iosPressable {
-                            haptic.selection()
-                            showAddSheet = true
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = AppStrings.get("action_add", lang),
-                        tint = IosBlue,
-                        modifier = Modifier.size(24.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (remoteSubs.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .iosPressable {
+                                    if (!isUpdatingAll) {
+                                        isUpdatingAll = true
+                                        haptic.selection()
+                                        CupertinoToast.show(AppStrings.get("subscription_updated", lang))
+                                        scope.launch {
+                                            remoteSubs.forEach { sub ->
+                                                onRefreshSubscription(sub)
+                                            }
+                                            isUpdatingAll = false
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = AppStrings.get("action_update", lang),
+                                tint = IosBlue,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .iosPressable {
+                                haptic.selection()
+                                showAddSheet = true
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = AppStrings.get("action_add", lang),
+                            tint = IosBlue,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
         )
@@ -306,26 +336,25 @@ fun ProfilesScreen(
                     }
                     val timeText = remember(profile, lang) { formatRelativeTime(profile.lastUpdated, lang) }
 
-                    val expireText: String?
+                    val expireDateStr: String?
                     val expireColor: Color
-                    if (profile.expireTimestamp > 0L) {
+                    if (isSub && profile.expireTimestamp > 0L) {
                         val expireMillis = profile.expireTimestamp * 1000L
                         val now = System.currentTimeMillis()
                         if (expireMillis <= now) {
-                            expireText = AppStrings.current("profile_expired")
+                            expireDateStr = AppStrings.current("profile_expired")
                             expireColor = LoonDangerText
                         } else {
                             val daysLeft = (expireMillis - now + DAY_MS - 1L) / DAY_MS
-                            expireText = if (daysLeft <= EXPIRE_WARN_DAYS) {
+                            expireDateStr = if (daysLeft <= EXPIRE_WARN_DAYS) {
                                 AppStrings.current("profile_expire_days_left").replace("{days}", daysLeft.toString())
                             } else {
-                                AppStrings.current("profile_expire_at")
-                                    .replace("{date}", expireDateFormat().format(Instant.ofEpochMilli(expireMillis)))
+                                expireDateFormat().format(Instant.ofEpochMilli(expireMillis))
                             }
                             expireColor = if (daysLeft <= EXPIRE_WARN_DAYS) LoonWarningText else LoonTextSecondary
                         }
                     } else {
-                        expireText = null
+                        expireDateStr = null
                         expireColor = LoonTextSecondary
                     }
 
@@ -433,52 +462,49 @@ fun ProfilesScreen(
                             Spacer(modifier = Modifier.width(13.dp))
 
                             Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = profile.name,
+                                        color = LoonTextPrimary,
+                                        fontSize = LoonTypeScale.bodyLarge,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (expireDateStr != null) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = expireDateStr,
+                                            color = expireColor,
+                                            fontSize = LoonTypeScale.footnote,
+                                            fontWeight = FontWeight.Normal,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
                                 Text(
-                                    text = profile.name,
-                                    color = LoonTextPrimary,
-                                    fontSize = LoonTypeScale.bodyLarge,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                    text = infoText,
+                                    color = LoonTextSecondary,
+                                    fontSize = LoonTypeScale.footnote,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = infoText,
-                                            color = LoonTextSecondary,
-                                            fontSize = LoonTypeScale.footnote,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f, fill = false)
-                                        )
-                                        if (expireText != null) {
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = expireText,
-                                                color = expireColor,
-                                                fontSize = LoonTypeScale.footnote,
-                                                fontWeight = FontWeight.Medium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = timeText,
-                                        color = LoonTextSecondary,
-                                        fontSize = LoonTypeScale.footnote,
-                                        maxLines = 1
-                                    )
-                                }
                             }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            // 上次更新时间居中显示在卡片右侧
+                            Text(
+                                text = timeText,
+                                color = LoonTextSecondary,
+                                fontSize = LoonTypeScale.footnote,
+                                maxLines = 1
+                            )
 
                             Spacer(modifier = Modifier.width(8.dp))
 
@@ -595,7 +621,6 @@ fun ProfilesScreen(
     if (actionSheetProfile != null) {
         val target = actionSheetProfile!!
         val isSub = !target.url.isNullOrBlank()
-        val autoUpdateLabel = AppStrings.current("profile_auto_update")
 
         val actions = buildList {
             if (isSub) {
@@ -609,18 +634,6 @@ fun ProfilesScreen(
                         }
                     )
                 )
-                add(
-                    CupertinoActionSheetItem(
-                        text = autoUpdateLabel,
-                        onClick = {
-                            haptic.selection()
-                            actionSheetProfile = null
-                            draftAutoUpdate = target.autoUpdate
-                            draftIntervalText = target.autoUpdateInterval.toString()
-                            autoUpdateProfile = target
-                        }
-                    )
-                )
             }
             add(
                 CupertinoActionSheetItem(
@@ -630,22 +643,12 @@ fun ProfilesScreen(
                         actionSheetProfile = null
                         editName = target.name
                         editUrl = target.url ?: ""
+                        editAutoUpdate = target.autoUpdate
+                        editIntervalText = target.autoUpdateInterval.toString()
                         editingProfile = target
                     }
                 )
             )
-            if (onNavigateToOverride != null) {
-                add(
-                    CupertinoActionSheetItem(
-                        text = AppStrings.get("profile_override", lang),
-                        onClick = {
-                            haptic.selection()
-                            actionSheetProfile = null
-                            onNavigateToOverride(target)
-                        }
-                    )
-                )
-            }
             add(
                 CupertinoActionSheetItem(
                     text = AppStrings.get("profile_delete", lang),
@@ -667,92 +670,6 @@ fun ProfilesScreen(
         )
     }
 
-    if (autoUpdateProfile != null) {
-        val target = autoUpdateProfile!!
-        CupertinoModalBottomSheet(
-            onDismissRequest = { autoUpdateProfile = null },
-            title = AppStrings.current("profile_auto_update"),
-            doneText = null,
-            trailingAction = {
-                Box(
-                    modifier = Modifier
-                        .height(36.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .iosPressable {
-                            val interval = draftIntervalText.trim().toIntOrNull()
-                                ?.coerceIn(SubscriptionUpdateWorker.MIN_INTERVAL_MINUTES, 60 * 24 * 30)
-                                ?: 1440
-                            val updated = target.copy(
-                                autoUpdate = draftAutoUpdate,
-                                autoUpdateInterval = interval
-                            )
-                            autoUpdateProfile = null
-                            onUpdateProfile(updated)
-                            // The profile store is rewritten as a whole: keep it off the
-                            // main thread (UI-PERF-03).
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    ConfigManager.updateProfile(context, updated)
-                                }
-                            }
-                        }
-                        .padding(horizontal = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = AppStrings.current("action_save"),
-                        color = IosBlue,
-                        fontSize = LoonTypeScale.title3,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        ) {
-            Spacer(modifier = Modifier.height(2.dp))
-            CupertinoGroupedSection {
-                CupertinoCell(
-                    title = AppStrings.current("profile_auto_update"),
-                    trailing = {
-                        CupertinoSwitch(
-                            checked = draftAutoUpdate,
-                            onCheckedChange = { draftAutoUpdate = it }
-                        )
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            CupertinoGroupedSection(header = AppStrings.current("profile_auto_update_interval")) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                ) {
-                    CupertinoTextField(
-                        value = draftIntervalText,
-                        onValueChange = { newValue -> draftIntervalText = newValue.filter { ch -> ch.isDigit() } },
-                        placeholder = "1440",
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = AppStrings.current("profile_interval_unit"),
-                        color = LoonTextSecondary,
-                        fontSize = LoonTypeScale.footnote
-                    )
-                }
-            }
-            Text(
-                text = AppStrings.current("profile_auto_update_desc"),
-                color = LoonTextSecondary,
-                fontSize = LoonTypeScale.footnote,
-                lineHeight = LoonLineHeight.footnote,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 30.dp, vertical = 10.dp)
-            )
-        }
-    }
-
     if (editingProfile != null) {
         val target = editingProfile!!
         val isSub = !target.url.isNullOrBlank()
@@ -764,14 +681,23 @@ fun ProfilesScreen(
             onConfirm = {
                 val finalName = editName.trim().ifBlank { target.name }
                 val finalUrl = if (isSub) editUrl.trim() else target.url
-                val updated = target.copy(name = finalName, url = finalUrl)
+                val latest = localProfiles.find { it.id == target.id } ?: target
+                val interval = editIntervalText.trim().toIntOrNull()
+                    ?.coerceIn(SubscriptionUpdateWorker.MIN_INTERVAL_MINUTES, 60 * 24 * 30)
+                    ?: 1440
+                val updated = latest.copy(
+                    name = finalName,
+                    url = finalUrl,
+                    autoUpdate = if (isSub) editAutoUpdate else latest.autoUpdate,
+                    autoUpdateInterval = if (isSub) interval else latest.autoUpdateInterval
+                )
                 editingProfile = null
-                onUpdateProfile(updated)
-                // The profile store is rewritten as a whole: keep it off the main thread.
+                // Save to store first off the main thread, then notify parent to reload.
                 scope.launch {
                     withContext(Dispatchers.IO) {
                         ConfigManager.updateProfile(context, updated)
                     }
+                    onUpdateProfile(updated)
                 }
             },
             onDismiss = { editingProfile = null },
@@ -792,6 +718,37 @@ fun ProfilesScreen(
                     placeholder = AppStrings.get("field_url", lang),
                     singleLine = true
                 )
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = AppStrings.current("profile_auto_update"),
+                        color = LoonTextPrimary,
+                        fontSize = LoonTypeScale.body
+                    )
+                    CupertinoSwitch(
+                        checked = editAutoUpdate,
+                        onCheckedChange = { editAutoUpdate = it }
+                    )
+                }
+                if (editAutoUpdate) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    CupertinoTextField(
+                        value = editIntervalText,
+                        onValueChange = { newValue -> editIntervalText = newValue.filter { ch -> ch.isDigit() } },
+                        placeholder = "1440",
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = AppStrings.current("profile_interval_unit"),
+                        color = LoonTextSecondary,
+                        fontSize = LoonTypeScale.footnote
+                    )
+                }
             }
         }
     }

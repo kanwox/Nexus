@@ -9,7 +9,48 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
-## [1.0.5-Alpha.6] - 2026-10-27
+## [1.0.5-Alpha.7] - 2026-10-28
+
+### Security & Reliability
+
+- **Fixed encrypted backup import**: increased the header read buffer so the 13-byte magic
+  header is fully captured, allowing encrypted backups to prompt for password entry.
+- **SSRF guard for HTTP redirects**: added an OkHttp interceptor that inspects 301/302/307
+  redirect targets against link-local and private network boundaries, preventing redirects
+  to internal infrastructure or cleartext downgrades.
+- **Persistent flag for legacy script scope migration**: the migration now runs exactly once
+  and does not re-enable scripts for profiles where the user intentionally unselected all scripts.
+- **Safe script save with error handling**: added defensive error handling in the script
+  editor to catch filesystem issues gracefully instead of crashing on coroutine uncaught exceptions.
+- **LAN sharing IP detection**: properly skips the VPN interface and virtual tunnel addresses,
+  ensuring the real Wi-Fi / Ethernet LAN IP is presented for sharing.
+- **Extended protected config keys**: added `external-controller-unix`, `external-controller-pipe`,
+  `external-doh`, and `tunnels` to prevent untrusted subscriptions from declaring external channels.
+
+### UI & UX Refinement
+
+- **Unified Core Status Screen**: restyled the kernel status screen with iOS Inset Grouped
+  sections, standard background styling, and smooth rubber-band overscroll.
+- **Provider update concurrency fix**: fixed concurrent state updates in CoreScreen to prevent
+  the update indicators from getting stuck.
+- **Streamlined Per-App Proxying**: simplified labels to "Proxy Selected" and "Bypass Selected",
+  and automatically sorts checked applications to the top of the list for quick inspection.
+- **Focused DNS Settings**: completely removed the redundant upstream and fallback server
+  editors, keeping only Fake-IP, IPv6, and third-party plaintext DNS leak prevention.
+- **Redesigned Profiles Screen**:
+  - The expiration date now displays directly adjacent to the subscription title (without "Expires" label).
+  - Last-updated timestamp is positioned in the vertical center of the card's right side.
+  - Auto-update schedule and interval configuration are now integrated directly inside the Edit Profile dialog.
+  - Removed Profile Override and its prepend rules / hosts overrides.
+  - Added a one-tap "Update All Subscriptions" action button in the navigation bar.
+- **Log Screen Icon Consistency**: removed the pause toggle and unified the navigation bar
+  actions into clean, borderless iOS icon buttons.
+- **Borderless Modal Sheets**: removed redundant nested card outlines inside the Dashboard
+  Mode Selector and Proxies Layout sheets, achieving a pure, layered iOS presentation.
+- **Strict 52dp Row Height & Symmetric Hairline Dividers**:
+  - Enforced a minimum 52dp height standard for all Cupertino cells across primary and secondary screens.
+  - Standardized dividers so indented rows retain a balanced 14dp trailing margin, and icon-less
+    rows use symmetric 16dp margins on both sides—eliminating one-sided flush dividers.
 
 ### Fixed
 

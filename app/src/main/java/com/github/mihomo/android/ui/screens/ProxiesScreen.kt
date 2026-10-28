@@ -219,110 +219,102 @@ fun ProxiesScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                        .padding(horizontal = 20.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    CupertinoGroupedSection(title = AppStrings.get("proxies_layout_section", lang)) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = AppStrings.get("proxies_view_mode", lang),
-                                    fontSize = LoonTypeScale.callout,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextSecondary
-                                )
-                                CupertinoSegmentedControl(
-                                    items = listOf("TABS", "LIST"),
-                                    selectedItem = currentViewMode,
-                                    onItemSelected = { onViewModeChanged(it) },
-                                    labelProvider = {
-                                        if (it == "TABS") AppStrings.get("proxies_view_tabs", lang)
-                                        else AppStrings.get("proxies_view_list", lang)
-                                    }
-                                )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = AppStrings.get("proxies_view_mode", lang),
+                            fontSize = LoonTypeScale.callout,
+                            fontWeight = FontWeight.Medium,
+                            color = LoonTextSecondary
+                        )
+                        CupertinoSegmentedControl(
+                            items = listOf("TABS", "LIST"),
+                            selectedItem = currentViewMode,
+                            onItemSelected = { onViewModeChanged(it) },
+                            labelProvider = {
+                                if (it == "TABS") AppStrings.get("proxies_view_tabs", lang)
+                                else AppStrings.get("proxies_view_list", lang)
                             }
-
-                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = AppStrings.get("proxies_columns", lang),
-                                    fontSize = LoonTypeScale.callout,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextSecondary
-                                )
-                                CupertinoSegmentedControl(
-                                    items = listOf(1, 2, 3),
-                                    selectedItem = nodeColumns,
-                                    onItemSelected = { onNodeColumnsChanged(it) },
-                                    labelProvider = {
-                                        when (it) {
-                                            1 -> AppStrings.get("proxies_column_1", lang)
-                                            2 -> AppStrings.get("proxies_column_2", lang)
-                                            else -> AppStrings.get("proxies_column_3", lang)
-                                        }
-                                    }
-                                )
-                            }
-
-                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = AppStrings.get("proxies_sort", lang),
-                                    fontSize = LoonTypeScale.callout,
-                                    fontWeight = FontWeight.Medium,
-                                    color = LoonTextSecondary
-                                )
-                                CupertinoSegmentedControl(
-                                    items = listOf("DEFAULT", "DELAY", "NAME"),
-                                    selectedItem = nodeSortMode,
-                                    onItemSelected = { onNodeSortModeChanged(it) },
-                                    labelProvider = {
-                                        when (it) {
-                                            "DELAY" -> AppStrings.get("proxies_sort_delay", lang)
-                                            "NAME" -> AppStrings.get("proxies_sort_name", lang)
-                                            else -> AppStrings.get("proxies_sort_default", lang)
-                                        }
-                                    }
-                                )
-                            }
-                        }
+                        )
                     }
 
-                    CupertinoGroupedSection(title = AppStrings.get("proxies_display_section", lang)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = AppStrings.get("proxies_show_icons", lang),
-                                    fontSize = LoonTypeScale.body,
-                                    fontWeight = FontWeight.Normal,
-                                    color = LoonTextPrimary
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = AppStrings.get("proxies_show_icons_desc", lang),
-                                    fontSize = LoonTypeScale.footnote,
-                                    color = LoonTextSecondary
-                                )
+                    HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = AppStrings.get("proxies_columns", lang),
+                            fontSize = LoonTypeScale.callout,
+                            fontWeight = FontWeight.Medium,
+                            color = LoonTextSecondary
+                        )
+                        CupertinoSegmentedControl(
+                            items = listOf(1, 2, 3),
+                            selectedItem = nodeColumns,
+                            onItemSelected = { onNodeColumnsChanged(it) },
+                            labelProvider = {
+                                when (it) {
+                                    1 -> AppStrings.get("proxies_column_1", lang)
+                                    2 -> AppStrings.get("proxies_column_2", lang)
+                                    else -> AppStrings.get("proxies_column_3", lang)
+                                }
                             }
-                            CupertinoSwitch(
-                                checked = showGroupIcons,
-                                onCheckedChange = { onShowGroupIconsChanged(it) }
+                        )
+                    }
+
+                    HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = AppStrings.get("proxies_sort", lang),
+                            fontSize = LoonTypeScale.callout,
+                            fontWeight = FontWeight.Medium,
+                            color = LoonTextSecondary
+                        )
+                        CupertinoSegmentedControl(
+                            items = listOf("DEFAULT", "DELAY", "NAME"),
+                            selectedItem = nodeSortMode,
+                            onItemSelected = { onNodeSortModeChanged(it) },
+                            labelProvider = {
+                                when (it) {
+                                    "DELAY" -> AppStrings.get("proxies_sort_delay", lang)
+                                    "NAME" -> AppStrings.get("proxies_sort_name", lang)
+                                    else -> AppStrings.get("proxies_sort_default", lang)
+                                }
+                            }
+                        )
+                    }
+
+                    HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = AppStrings.get("proxies_show_icons", lang),
+                                fontSize = LoonTypeScale.body,
+                                fontWeight = FontWeight.Normal,
+                                color = LoonTextPrimary
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = AppStrings.get("proxies_show_icons_desc", lang),
+                                fontSize = LoonTypeScale.footnote,
+                                color = LoonTextSecondary
                             )
                         }
+                        CupertinoSwitch(
+                            checked = showGroupIcons,
+                            onCheckedChange = { onShowGroupIconsChanged(it) }
+                        )
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }

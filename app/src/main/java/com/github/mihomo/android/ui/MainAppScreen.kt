@@ -70,7 +70,6 @@ enum class SubScreen {
     APP_ROUTING,
     LOGS,
     SCRIPTS,
-    PROFILE_OVERRIDE,
     RULES,
     DNS,
     DNS_SETTINGS,
@@ -125,8 +124,6 @@ fun MainAppScreen(
     var currentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
         mutableStateOf<SubScreen?>(null)
     }
-    var overrideTargetProfileId by rememberSaveable { mutableStateOf<String?>(null) }
-    var overrideTargetProfile by remember { mutableStateOf<ProfileItem?>(null) }
 
     // Field-level derived reads: vpnState updates once per second (traffic strings), and
     // reading the whole object here would recompose this entire screen (and the three
@@ -144,29 +141,6 @@ fun MainAppScreen(
     // Initial profile listing (disk IO) is owned by the ViewModel.
     LaunchedEffect(Unit) {
         vm.reloadProfiles()
-    }
-
-    // Re-resolve the override target after rotation, when only its id could be restored.
-    LaunchedEffect(overrideTargetProfileId, profiles) {
-        if (overrideTargetProfileId == null) {
-            overrideTargetProfile = null
-        } else if (overrideTargetProfile?.id != overrideTargetProfileId) {
-            overrideTargetProfile = profiles.find { it.id == overrideTargetProfileId }
-        }
-    }
-
-    // The profile-override screen needs a target profile. When there is none (the profile was
-    // deleted, or the list has not loaded yet) it falls back to the profiles screen. This
-    // redirect must not run in the composition body: assigning state while composing is an
-    // illegal side effect and can trigger an endless recomposition loop.
-    LaunchedEffect(currentSubScreen, overrideTargetProfileId, overrideTargetProfile, profiles) {
-        if (currentSubScreen != SubScreen.PROFILE_OVERRIDE) return@LaunchedEffect
-        val hasTarget = overrideTargetProfile != null ||
-            profiles.firstOrNull { it.id == selectedProfileId } != null ||
-            profiles.firstOrNull() != null
-        if (!hasTarget) {
-            currentSubScreen = SubScreen.PROFILES
-        }
     }
 
     var visibleShortcuts by remember { mutableStateOf(settingsManager.visibleShortcuts) }
@@ -347,21 +321,7 @@ fun MainAppScreen(
     }
 
     val handleSubScreenBack: () -> Unit = {
-        when (currentSubScreen) {
-            SubScreen.SCRIPTS -> {
-                if (overrideTargetProfile != null) {
-                    currentSubScreen = SubScreen.PROFILE_OVERRIDE
-                } else {
-                    currentSubScreen = null
-                }
-            }
-            SubScreen.PROFILE_OVERRIDE -> {
-                currentSubScreen = SubScreen.PROFILES
-            }
-            else -> {
-                currentSubScreen = null
-            }
-        }
+        currentSubScreen = null
     }
 
     // Handle Android system back button
@@ -602,8 +562,6 @@ fun MainAppScreen(
                     fakeIpEnabled = fakeIpEnabled,
                     themeMode = currentThemeMode,
                     onNavigateToScripts = {
-                        overrideTargetProfile = null
-                        overrideTargetProfileId = null
                         currentSubScreen = SubScreen.SCRIPTS
                     },
                     onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },
@@ -741,8 +699,7 @@ fun MainAppScreen(
                         SubScreen.RULES, SubScreen.DNS, SubScreen.DNS_SETTINGS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
                         SubScreen.APPEARANCE, SubScreen.CORE, SubScreen.QR_SCAN,
                         SubScreen.VPN_TUNNEL, SubScreen.ABOUT -> 1
-                        SubScreen.PROFILE_OVERRIDE -> 2
-                        SubScreen.SCRIPTS -> 3
+                        SubScreen.SCRIPTS -> 2
                     }
                     val initialDepth = getDepth(initialState)
                     val targetDepth = getDepth(targetState)
@@ -806,49 +763,12 @@ fun MainAppScreen(
                                 onReorderProfiles = { newOrderList ->
                                     vm.reorderProfiles(newOrderList)
                                 },
-                                onNavigateToQrScan = { currentSubScreen = SubScreen.QR_SCAN },
-                                onNavigateToOverride = { profile ->
-                                    overrideTargetProfile = profile
-                                    overrideTargetProfileId = profile.id
-                                    currentSubScreen = SubScreen.PROFILE_OVERRIDE
-                                }
+                                onNavigateToQrScan = { currentSubScreen = SubScreen.QR_SCAN }
                             )
-                        }
-                        SubScreen.PROFILE_OVERRIDE -> {
-                            val currentTarget = overrideTargetProfile
-                                ?: profiles.firstOrNull { it.id == selectedProfileId }
-                                ?: profiles.firstOrNull()
-                            if (currentTarget != null) {
-                                ProfileOverrideScreen(
-                                    profile = currentTarget,
-                                    onBack = { currentSubScreen = SubScreen.PROFILES },
-                                    onNavigateToScripts = { currentSubScreen = SubScreen.SCRIPTS },
-                                    onProfileUpdated = { updated ->
-                                        overrideTargetProfile = updated
-                                        overrideTargetProfileId = updated.id
-                                        vm.onProfileMetadataUpdated()
-                                        if (updated.id == selectedProfileId && coreActive) {
-                                            coroutineScope.launch(Dispatchers.IO) {
-                                                ClashCore.reloadActiveConfig(activity)
-                                            }
-                                        }
-                                    }
-                                )
-                            }
-                            // NOTE: the "no target -> go back to PROFILES" redirect used to run
-                            // here, in the composition body. Assigning state during composition is
-                            // an illegal side effect and can loop; it lives in the
-                            // LaunchedEffect(currentSubScreen, overrideTargetProfileId) below.
                         }
                         SubScreen.SCRIPTS -> {
                             ScriptsScreen(
-                                onBack = {
-                                    if (overrideTargetProfile != null) {
-                                        currentSubScreen = SubScreen.PROFILE_OVERRIDE
-                                    } else {
-                                        currentSubScreen = null
-                                    }
-                                },
+                                onBack = { currentSubScreen = null },
                                 onScriptsChanged = {
                                     vm.onScriptsChanged(coreActive)
                                 }
@@ -1081,7 +1001,7 @@ fun MainAppScreen(
                                         // password BEFORE it is imported.
                                         val head = runCatching {
                                             activity.contentResolver.openInputStream(uri)?.use { input ->
-                                                val buffer = ByteArray(8)
+                                                val buffer = ByteArray(32)
                                                 val read = input.read(buffer)
                                                 if (read <= 0) null else buffer.copyOf(read)
                                             }

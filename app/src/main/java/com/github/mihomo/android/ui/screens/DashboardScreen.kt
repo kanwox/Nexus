@@ -813,55 +813,53 @@ fun DashboardScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                            .padding(bottom = 16.dp)
                     ) {
-                        CupertinoGroupedSection {
-                            val modes = listOf(
-                                Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), AppStrings.get("mode_rule_desc", lang)),
-                                Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), AppStrings.get("mode_global_desc", lang)),
-                                Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), AppStrings.get("mode_direct_desc", lang))
-                            )
+                        val modes = listOf(
+                            Triple(TunnelMode.RULE, AppStrings.get("mode_rule", lang), AppStrings.get("mode_rule_desc", lang)),
+                            Triple(TunnelMode.GLOBAL, AppStrings.get("mode_global", lang), AppStrings.get("mode_global_desc", lang)),
+                            Triple(TunnelMode.DIRECT, AppStrings.get("mode_direct", lang), AppStrings.get("mode_direct_desc", lang))
+                        )
 
-                            modes.forEachIndexed { index, (mode, title, desc) ->
-                                val isSelected = mode == currentMode
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .iosPressable {
-                                            haptic.selection()
-                                            onModeSelected(mode)
-                                            showModeBottomSheet = false
-                                        }
-                                        .padding(horizontal = 16.dp, vertical = 13.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = title,
-                                            fontSize = LoonTypeScale.body,
-                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                            color = LoonTextPrimary
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = desc,
-                                            fontSize = LoonTypeScale.footnote,
-                                            color = LoonTextSecondary
-                                        )
+                        modes.forEachIndexed { index, (mode, title, desc) ->
+                            val isSelected = mode == currentMode
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .iosPressable {
+                                        haptic.selection()
+                                        onModeSelected(mode)
+                                        showModeBottomSheet = false
                                     }
-                                    if (isSelected) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            tint = IosBlue,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
+                                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = title,
+                                        fontSize = LoonTypeScale.body,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isSelected) IosBlue else LoonTextPrimary
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = desc,
+                                        fontSize = LoonTypeScale.footnote,
+                                        color = LoonTextSecondary
+                                    )
                                 }
-                                if (index < modes.lastIndex) {
-                                    CupertinoIndentedDivider(startIndent = 16.dp)
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = IosBlue,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
+                            }
+                            if (index < modes.lastIndex) {
+                                CupertinoDivider(startIndent = 20.dp, endIndent = 20.dp)
                             }
                         }
                     }

@@ -1,8 +1,10 @@
 package com.github.mihomo.android
 
 import android.app.Application
+import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.core.content.edit
 import com.github.kr328.clash.common.Global
 import com.github.mihomo.android.core.ClashCore
 import kotlinx.coroutines.launch
@@ -80,20 +82,25 @@ class MihomoApplication : Application() {
      * with the currently enabled script ids exactly once, preserving their old behavior.
      */
     private fun migrateLegacyScriptScopes() {
+        val prefs = getSharedPreferences("mihomo_migrations", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("legacy_script_scopes_migrated", false)) return
+
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching {
                 val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(this@MihomoApplication)
                 val enabledIds = com.github.mihomo.android.data.ScriptManager.getScripts(this@MihomoApplication)
                     .filter { it.enabled }.map { it.id }
-                if (enabledIds.isEmpty()) return@launch
-                for (profile in profiles) {
-                    if (profile.scriptEnabled && profile.scriptIds.isEmpty()) {
-                        com.github.mihomo.android.data.ConfigManager.updateProfile(
-                            this@MihomoApplication,
-                            profile.copy(scriptIds = enabledIds)
-                        )
+                if (enabledIds.isNotEmpty()) {
+                    for (profile in profiles) {
+                        if (profile.scriptEnabled && profile.scriptIds.isEmpty()) {
+                            com.github.mihomo.android.data.ConfigManager.updateProfile(
+                                this@MihomoApplication,
+                                profile.copy(scriptIds = enabledIds)
+                            )
+                        }
                     }
                 }
+                prefs.edit { putBoolean("legacy_script_scopes_migrated", true) }
             }.onFailure { Log.w("MihomoApp", "Script scope migration failed: ${it.message}") }
         }
     }

@@ -2,6 +2,7 @@ package com.github.mihomo.android.ui.screens
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -419,21 +420,33 @@ private fun GuideRow(
 private fun getLocalIpAddress(context: Context): String? {
     runCatching {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val activeNet = cm?.activeNetwork
-        val linkProps = cm?.getLinkProperties(activeNet)
-        val ip = linkProps?.linkAddresses?.mapNotNull { it.address }
-            ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
-            ?.hostAddress
-        if (!ip.isNullOrBlank()) return ip
+        if (cm != null) {
+            @Suppress("DEPRECATION")
+            val physical = cm.allNetworks.firstOrNull { net ->
+                val caps = runCatching { cm.getNetworkCapabilities(net) }.getOrNull()
+                caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+            }
+            val linkProps = cm.getLinkProperties(physical ?: cm.activeNetwork)
+            val ip = linkProps?.linkAddresses?.mapNotNull { it.address }
+                ?.firstOrNull { it is Inet4Address && !it.isLoopbackAddress && it.hostAddress?.startsWith("172.19.") != true }
+                ?.hostAddress
+            if (!ip.isNullOrBlank()) return ip
+        }
     }
 
     runCatching {
         val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
         for (intf in interfaces) {
+            val name = intf.name.lowercase()
+            if (name.startsWith("tun") || name.startsWith("dummy") || name.startsWith("p2p")) continue
             val addrs = Collections.list(intf.inetAddresses)
             for (addr in addrs) {
                 if (!addr.isLoopbackAddress && addr is Inet4Address) {
                     val host = addr.hostAddress ?: ""
+                    if (host.startsWith("172.19.")) continue
                     if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
                         return host
                     }

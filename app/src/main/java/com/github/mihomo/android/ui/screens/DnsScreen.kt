@@ -183,6 +183,7 @@ fun DnsScreen(
 
                 cupertinoGroupedItems(
                     items = filteredRecords,
+                    key = { _, record -> record.id },
                     header = sectionHeader,
                     dividerStartIndent = 16.dp
                 ) { _, record ->

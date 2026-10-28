@@ -74,6 +74,10 @@ object ConfigManager {
         // A server that drips one byte per read timeout would otherwise stall an auto-update
         // channel indefinitely; cap the total call duration as well.
         .callTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor(createSafeRedirectInterceptor {
+            runCatching { SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts }
+                .getOrDefault(true)
+        })
         .build()
 
     /**
@@ -191,11 +195,12 @@ object ConfigManager {
         "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
         "redir-port", "tproxy-port", "allow-lan", "bind-address",
         "external-controller", "external-controller-cors", "secret",
+        "external-controller-unix", "external-controller-pipe", "external-doh",
         "authentication", "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
         "external-ui", "external-ui-name", "external-ui-url",
         "tun", "dns", "interface-name", "routing-mark",
         "geodata-mode", "geo-auto-update", "geox-url",
-        "listeners", "sub-rules"
+        "listeners", "sub-rules", "tunnels"
     )
 
     /**

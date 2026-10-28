@@ -1,7 +1,28 @@
 package com.github.mihomo.android.data
 
+import okhttp3.Interceptor
 import java.net.Inet6Address
 import java.net.InetAddress
+
+/**
+ * Interceptor that validates redirect targets against SSRF rules before OkHttp follows them.
+ */
+internal fun createSafeRedirectInterceptor(allowPrivateSupplier: () -> Boolean): Interceptor {
+    return Interceptor { chain ->
+        val request = chain.request()
+        val response = chain.proceed(request)
+        if (response.isRedirect) {
+            val location = response.header("Location")
+            if (!location.isNullOrBlank()) {
+                val nextUrl = request.url.resolve(location)?.toString()
+                if (nextUrl != null) {
+                    requireSecureRemoteUrl(nextUrl, allowPrivateSupplier())
+                }
+            }
+        }
+        response
+    }
+}
 
 /**
  * Remote subscription/script endpoints accept both https and http (cleartext is deliberately

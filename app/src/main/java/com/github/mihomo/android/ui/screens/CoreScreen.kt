@@ -1,8 +1,11 @@
 package com.github.mihomo.android.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,8 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Public
@@ -25,6 +27,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -46,23 +49,14 @@ import com.github.mihomo.android.data.RequestRepository
 import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.CupertinoCell
+import com.github.mihomo.android.ui.components.CupertinoDivider
 import com.github.mihomo.android.ui.components.CupertinoGroupedSection
 import com.github.mihomo.android.ui.components.CupertinoIndentedDivider
 import com.github.mihomo.android.ui.components.CupertinoNavBar
 import com.github.mihomo.android.ui.components.CupertinoToast
+import com.github.mihomo.android.ui.components.bounceOverscroll
 import com.github.mihomo.android.i18n.AppStrings
-import com.github.mihomo.android.ui.theme.IosBlue
-import com.github.mihomo.android.ui.theme.IosGreen
-import com.github.mihomo.android.ui.theme.IosOrange
-import com.github.mihomo.android.ui.theme.LoonCard
-import com.github.mihomo.android.ui.theme.LoonCardBorder
-import com.github.mihomo.android.ui.theme.LoonInfoText
-import com.github.mihomo.android.ui.theme.LoonSizes
-import com.github.mihomo.android.ui.theme.LoonTextPrimary
-import com.github.mihomo.android.ui.theme.LoonTypeScale
-import com.github.mihomo.android.ui.theme.LoonTextSecondary
-import com.github.mihomo.android.ui.theme.LoonWarningText
-import com.github.mihomo.android.ui.theme.RoundedCornerShape
+import com.github.mihomo.android.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -98,7 +92,7 @@ fun CoreScreen(onBack: () -> Unit) {
     var fallbackVersion by remember { mutableStateOf("") }
     var proxyProviders by remember { mutableStateOf<List<MihomoApi.ApiProvider>>(emptyList()) }
     var ruleProviders by remember { mutableStateOf<List<MihomoApi.ApiProvider>>(emptyList()) }
-    var updatingNames by remember { mutableStateOf(setOf<String>()) }
+    val updatingNames = remember { mutableStateListOf<String>() }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { fallbackVersion = ClashCore.getCoreVersion() }
@@ -137,6 +131,7 @@ fun CoreScreen(onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(LoonBg)
             .statusBarsPadding()
     ) {
         CupertinoNavBar(
@@ -144,152 +139,149 @@ fun CoreScreen(onBack: () -> Unit) {
             showBackButton = true,
             onBack = onBack
         )
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(Modifier.height(8.dp))
-
             if (!isRunning) {
-                StatusBanner(
-                    text = AppStrings.current("core_not_running"),
-                    color = LoonWarningText
-                )
-                Spacer(Modifier.height(16.dp))
+                item {
+                    StatusBanner(
+                        text = AppStrings.current("core_not_running"),
+                        color = LoonWarningText
+                    )
+                }
             }
 
-            CupertinoGroupedSection(title = AppStrings.current("core_title")) {
-                InfoRow(
-                    AppStrings.current("core_version"),
-                    apiVersion ?: runningCoreVersion.ifBlank { fallbackVersion.ifBlank { "—" } }
-                )
-                CupertinoIndentedDivider()
-                InfoRow(
-                    AppStrings.current("core_connections"),
-                    if (isRunning) connectionsCount.toString() else "0"
-                )
-                CupertinoIndentedDivider()
-                InfoRow(
-                    AppStrings.current("core_memory"),
-                    memoryBytes?.takeIf { it > 0L }?.let { trafficString(it) } ?: "—"
-                )
-                CupertinoIndentedDivider()
-                UptimeInfoRow(startedAtMs = startedAtMs, isRunning = isRunning, lang = lang)
-                CupertinoIndentedDivider()
-                TotalTrafficInfoRow(totalTraffic)
+            item {
+                CupertinoGroupedSection(title = AppStrings.current("core_title")) {
+                    InfoRow(
+                        AppStrings.current("core_version"),
+                        apiVersion ?: runningCoreVersion.ifBlank { fallbackVersion.ifBlank { "—" } }
+                    )
+                    CupertinoDivider()
+                    InfoRow(
+                        AppStrings.current("core_connections"),
+                        if (isRunning) connectionsCount.toString() else "0"
+                    )
+                    CupertinoDivider()
+                    InfoRow(
+                        AppStrings.current("core_memory"),
+                        memoryBytes?.takeIf { it > 0L }?.let { trafficString(it) } ?: "—"
+                    )
+                    CupertinoDivider()
+                    UptimeInfoRow(startedAtMs = startedAtMs, isRunning = isRunning, lang = lang)
+                    CupertinoDivider()
+                    TotalTrafficInfoRow(totalTraffic)
+                }
             }
 
-            Spacer(Modifier.height(20.dp))
+            item {
+                CupertinoGroupedSection(title = AppStrings.current("core_traffic_ranking")) {
+                    if (ranking.isEmpty()) {
+                        InfoRow(AppStrings.current("core_ranking_empty"), "")
+                    } else {
+                        ranking.forEachIndexed { index, (host, up, down) ->
+                            if (index > 0) CupertinoDivider()
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = host,
+                                    color = LoonTextPrimary,
+                                    fontSize = LoonTypeScale.body,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "↑ ${trafficString(up)}  ↓ ${trafficString(down)}",
+                                    color = LoonTextSecondary,
+                                    fontSize = LoonTypeScale.callout
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
-            CupertinoGroupedSection(title = AppStrings.current("core_traffic_ranking")) {
-                if (ranking.isEmpty()) {
-                    InfoRow(AppStrings.current("core_ranking_empty"), "")
-                } else {
-                    ranking.forEachIndexed { index, (host, up, down) ->
-                        if (index > 0) CupertinoIndentedDivider()
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 9.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = host,
-                                color = LoonTextPrimary,
-                                fontSize = LoonTypeScale.body,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "↑ ${trafficString(up)}  ↓ ${trafficString(down)}",
-                                color = LoonTextSecondary,
-                                fontSize = LoonTypeScale.callout
+            item {
+                CupertinoGroupedSection(title = AppStrings.current("core_proxies_providers")) {
+                    if (proxyProviders.isEmpty()) {
+                        InfoRow(AppStrings.current("core_provider_empty"), "")
+                    } else {
+                        proxyProviders.forEachIndexed { index, provider ->
+                            if (index > 0) CupertinoIndentedDivider()
+                            ProviderRow(
+                                icon = ProxyProviderIcon,
+                                iconBg = IosBlue,
+                                provider = provider,
+                                updating = provider.name in updatingNames,
+                                onUpdate = {
+                                    scope.launch {
+                                        val successMessage =
+                                            AppStrings.get("core_provider_updated", lang).replace("{name}", provider.name)
+                                        val failureMessage =
+                                            AppStrings.get("core_provider_update_failed", lang).replace("{name}", provider.name)
+                                        updateProvider(
+                                            name = provider.name,
+                                            isRule = false,
+                                            onSuccessMessage = successMessage,
+                                            onFailureMessage = failureMessage,
+                                            onBusyChanged = { name, busy ->
+                                                if (busy) updatingNames.add(name) else updatingNames.remove(name)
+                                            },
+                                            refresh = { refreshProviders() }
+                                        )
+                                    }
+                                }
                             )
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
-
-            CupertinoGroupedSection(title = AppStrings.current("core_proxies_providers")) {
-                if (proxyProviders.isEmpty()) {
-                    InfoRow(AppStrings.current("core_provider_empty"), "")
-                } else {
-                    proxyProviders.forEachIndexed { index, provider ->
-                        if (index > 0) CupertinoIndentedDivider()
-                        ProviderRow(
-                            icon = ProxyProviderIcon,
-                            iconBg = IosBlue,
-                            provider = provider,
-                            updating = provider.name in updatingNames,
-                            onUpdate = {
-                                scope.launch {
-                                    val successMessage =
-                                        AppStrings.get("core_provider_updated", lang).replace("{name}", provider.name)
-                                    val failureMessage =
-                                        AppStrings.get("core_provider_update_failed", lang).replace("{name}", provider.name)
-                                    updateProvider(
-                                        name = provider.name,
-                                        isRule = false,
-                                        onSuccessMessage = successMessage,
-                                        onFailureMessage = failureMessage,
-                                        onBusyChanged = { name, busy ->
-                                            updatingNames =
-                                                if (busy) updatingNames + name else updatingNames - name
-                                        },
-                                        refresh = { refreshProviders() }
-                                    )
+            item {
+                CupertinoGroupedSection(title = AppStrings.current("core_rules_providers")) {
+                    if (ruleProviders.isEmpty()) {
+                        InfoRow(AppStrings.current("core_provider_empty"), "")
+                    } else {
+                        ruleProviders.forEachIndexed { index, provider ->
+                            if (index > 0) CupertinoIndentedDivider()
+                            ProviderRow(
+                                icon = RuleProviderIcon,
+                                iconBg = IosGreen,
+                                provider = provider,
+                                updating = provider.name in updatingNames,
+                                onUpdate = {
+                                    scope.launch {
+                                        val successMessage =
+                                            AppStrings.get("core_provider_updated", lang).replace("{name}", provider.name)
+                                        val failureMessage =
+                                            AppStrings.get("core_provider_update_failed", lang).replace("{name}", provider.name)
+                                        updateProvider(
+                                            name = provider.name,
+                                            isRule = true,
+                                            onSuccessMessage = successMessage,
+                                            onFailureMessage = failureMessage,
+                                            onBusyChanged = { name, busy ->
+                                                if (busy) updatingNames.add(name) else updatingNames.remove(name)
+                                            },
+                                            refresh = { refreshProviders() }
+                                        )
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
-
-            Spacer(Modifier.height(20.dp))
-
-            CupertinoGroupedSection(title = AppStrings.current("core_rules_providers")) {
-                if (ruleProviders.isEmpty()) {
-                    InfoRow(AppStrings.current("core_provider_empty"), "")
-                } else {
-                    ruleProviders.forEachIndexed { index, provider ->
-                        if (index > 0) CupertinoIndentedDivider()
-                        ProviderRow(
-                            icon = RuleProviderIcon,
-                            iconBg = IosGreen,
-                            provider = provider,
-                            updating = provider.name in updatingNames,
-                            onUpdate = {
-                                scope.launch {
-                                    val successMessage =
-                                        AppStrings.get("core_provider_updated", lang).replace("{name}", provider.name)
-                                    val failureMessage =
-                                        AppStrings.get("core_provider_update_failed", lang).replace("{name}", provider.name)
-                                    updateProvider(
-                                        name = provider.name,
-                                        isRule = true,
-                                        onSuccessMessage = successMessage,
-                                        onFailureMessage = failureMessage,
-                                        onBusyChanged = { name, busy ->
-                                            updatingNames =
-                                                if (busy) updatingNames + name else updatingNames - name
-                                        },
-                                        refresh = { refreshProviders() }
-                                    )
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(32.dp))
-            Spacer(Modifier.navigationBarsPadding())
         }
     }
 }
@@ -407,16 +399,19 @@ private fun ProviderRow(
                     fontSize = LoonTypeScale.subhead
                 )
             } else {
-                Text(
-                    text = AppStrings.current("core_provider_update"),
-                    color = LoonInfoText,
-                    fontSize = LoonTypeScale.body,
-                    fontWeight = FontWeight.SemiBold,
+                Box(
                     modifier = Modifier
-                        .clickable(onClick = onUpdate)
-                        // UI-A11Y-01: the label keeps its size, the target is 48dp.
                         .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-                )
+                        .clickable(onClick = onUpdate),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = AppStrings.current("core_provider_update"),
+                        color = LoonInfoText,
+                        fontSize = LoonTypeScale.body,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     )

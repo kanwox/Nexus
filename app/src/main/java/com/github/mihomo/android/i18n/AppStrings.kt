@@ -568,8 +568,8 @@ object AppStrings {
         "rule_type_custom" to "自定义",
         // --- App routing ----------------------------------------------------------------------
         "app_mode_all" to "全部代理",
-        "app_mode_whitelist" to "仅代理所选应用",
-        "app_mode_blacklist" to "仅绕过所选应用",
+        "app_mode_whitelist" to "仅代理",
+        "app_mode_blacklist" to "仅绕过",
         "app_routing_disabled_footer" to "当前模式下，设备上所有应用程序的网络流量均经由代理核心转发，无需单独选择应用。",
         "app_search_placeholder_short" to "搜索应用或包名",
         "app_loading" to "正在读取已安装应用...",
@@ -980,8 +980,8 @@ object AppStrings {
         "rule_type_custom" to "Custom",
         // --- App routing ----------------------------------------------------------------------
         "app_mode_all" to "Proxy All",
-        "app_mode_whitelist" to "Proxy Selected Apps",
-        "app_mode_blacklist" to "Bypass Selected Apps",
+        "app_mode_whitelist" to "Proxy Selected",
+        "app_mode_blacklist" to "Bypass Selected",
         "app_routing_disabled_footer" to "In this mode all app traffic goes through the proxy core, no app selection needed.",
         "app_search_placeholder_short" to "Search apps or packages",
         "app_loading" to "Loading installed apps...",
@@ -1393,8 +1393,8 @@ object AppStrings {
         "rule_type_custom" to "Пользовательский",
         // --- App routing ----------------------------------------------------------------------
         "app_mode_all" to "Проксировать все",
-        "app_mode_whitelist" to "Только выбранные приложения",
-        "app_mode_blacklist" to "Обходить выбранные приложения",
+        "app_mode_whitelist" to "Только выбранные",
+        "app_mode_blacklist" to "Обходить выбранные",
         "app_routing_disabled_footer" to "В этом режиме весь трафик приложений проходит через ядро прокси, выбирать приложения не нужно.",
         "app_search_placeholder_short" to "Поиск приложений или пакетов",
         "app_loading" to "Загрузка списка приложений...",

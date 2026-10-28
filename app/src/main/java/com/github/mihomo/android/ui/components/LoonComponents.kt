@@ -401,25 +401,28 @@ fun LoonShortcutCard(
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(IosRed)
-                        .clickable { onDelete() }
-                        // UI-A11Y-01 + UI-A11Y-04: the badge is a labelled, 48dp-target button.
                         .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+                        .clickable { onDelete() }
                         .semantics {
                             contentDescription = deleteLabel
                             role = Role.Button
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "\u2212",
-                        color = LoonOnAccent,
-                        fontSize = LoonTypeScale.body,
-                        fontWeight = FontWeight.ExtraBold
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(IosRed),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "\u2212",
+                            color = LoonOnAccent,
+                            fontSize = LoonTypeScale.body,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
                 }
             }
         }

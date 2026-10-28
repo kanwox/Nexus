@@ -69,6 +69,10 @@ object ScriptManager {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
+        .addInterceptor(createSafeRedirectInterceptor {
+            runCatching { SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts }
+                .getOrDefault(true)
+        })
         .build()
 
     // Client that routes through the local mixed-port proxy (port is user-configurable).

@@ -98,7 +98,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToCore
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_app_routing", lang),
                     icon = Icons.Default.Apps,
@@ -106,7 +106,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToAppRouting
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_dns_section", lang),
                     value = if (fakeIpEnabled) "Fake-IP" else "Redir-Host",
@@ -115,7 +115,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToDnsSettings
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_profiles_subs_plain", lang),
                     icon = Icons.Default.FolderZip,
@@ -123,7 +123,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToProfiles
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_scripts_center", lang),
                     value = AppStrings.get("script_count", lang).replace("{n}", scripts.size.toString()),
@@ -132,7 +132,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToScripts
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("shortcut_logs", lang),
                     icon = Icons.Default.Terminal,
@@ -157,7 +157,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToVpnTunnel
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_lan_share_plain", lang),
                     icon = Icons.Default.WifiTethering,
@@ -182,7 +182,7 @@ fun SettingsScreen(
                     showChevron = true,
                     onClick = onNavigateToAppearance
                 )
-                CupertinoDivider()
+                CupertinoIndentedDivider()
                 CupertinoCell(
                     title = AppStrings.get("settings_about_page", lang),
                     value = "v$installedVersion",

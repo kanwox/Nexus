@@ -400,7 +400,8 @@ fun <T> LazyListScope.cupertinoGroupedItems(
         ) {
             itemContent(index, item)
             if (!isLast) {
-                CupertinoIndentedDivider(startIndent = dividerStartIndent)
+                val endGap = if (dividerStartIndent > 20.dp) 14.dp else 16.dp
+                CupertinoIndentedDivider(startIndent = dividerStartIndent, endIndent = endGap)
             }
         }
     }
@@ -439,6 +440,7 @@ fun CupertinoCell(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 52.dp)
             .then(
                 if (onClick != null && enabled) {
                     Modifier.iosPressable(enabled = true) {
@@ -447,7 +449,7 @@ fun CupertinoCell(
                     }
                 } else Modifier
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = if (subtitle != null) 10.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -532,13 +534,13 @@ fun CupertinoCell(
 }
 
 /**
- * Text-aligned indented hairline divider for iOS Inset Grouped lists.
- * Indents past the leading icon squircle so it starts aligned with the cell text.
+ * Text-aligned indented hairline divider for iOS Inset Grouped lists with leading icons.
+ * Indents past the icon squircle on the left, and leaves a small subtle margin on the right.
  */
 @Composable
 fun CupertinoIndentedDivider(
-    startIndent: Dp = 59.dp,
-    endIndent: Dp = 0.dp
+    startIndent: Dp = 58.dp,
+    endIndent: Dp = 14.dp
 ) {
     HorizontalDivider(
         modifier = Modifier.padding(start = startIndent, end = endIndent),
@@ -547,11 +549,15 @@ fun CupertinoIndentedDivider(
     )
 }
 
+/**
+ * Balanced hairline divider for rows without leading icons.
+ * Leaves equal, symmetric small margins on both sides.
+ */
 @Composable
 fun CupertinoDivider(
     modifier: Modifier = Modifier,
-    startIndent: Dp = 59.dp,
-    endIndent: Dp = 0.dp
+    startIndent: Dp = 16.dp,
+    endIndent: Dp = 16.dp
 ) {
     HorizontalDivider(
         modifier = modifier.padding(start = startIndent, end = endIndent),
@@ -1686,16 +1692,19 @@ fun CupertinoDetailRow(
             )
             if (showCopy && onCopy != null) {
                 Spacer(modifier = Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = AppStrings.get("copy_desc", lang),
-                    tint = IosBlue,
+                Box(
                     modifier = Modifier
-                        .size(LoonSizes.iconSmall)
-                        .clickable(onClick = onCopy)
-                        // UI-A11Y-01: keep the 16dp icon, widen the touch target to 48dp.
                         .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-                )
+                        .clickable(onClick = onCopy),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = AppStrings.get("copy_desc", lang),
+                        tint = IosBlue,
+                        modifier = Modifier.size(LoonSizes.iconSmall)
+                    )
+                }
             }
         }
     }

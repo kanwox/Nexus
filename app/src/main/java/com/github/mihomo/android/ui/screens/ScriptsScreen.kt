@@ -761,22 +761,31 @@ fun ScriptsScreen(
                 val finalName = editInfoName.trim().ifBlank { target.name }
                 val finalUrl = if (isRemote) editInfoUrl.trim() else target.url
                 scope.launch {
-                    withContext(Dispatchers.IO) {
-                        val code = ScriptManager.readScriptCode(context, target)
-                        ScriptManager.saveScript(
-                            context = context,
-                            existingId = target.id,
-                            name = finalName,
-                            url = finalUrl,
-                            pattern = target.pattern,
-                            type = target.type,
-                            code = code,
-                            enabled = true
+                    val result = runCatching {
+                        withContext(Dispatchers.IO) {
+                            val code = ScriptManager.readScriptCode(context, target)
+                            ScriptManager.saveScript(
+                                context = context,
+                                existingId = target.id,
+                                name = finalName,
+                                url = finalUrl,
+                                pattern = target.pattern,
+                                type = target.type,
+                                code = code,
+                                enabled = true
+                            )
+                        }
+                    }
+                    if (result.isSuccess) {
+                        editingInfoScript = null
+                        refresh()
+                        CupertinoToast.show(AppStrings.get("saved_toast", lang))
+                    } else {
+                        CupertinoToast.show(
+                            result.exceptionOrNull()?.message ?: AppStrings.get("unknown_error", lang),
+                            isDestructive = true
                         )
                     }
-                    editingInfoScript = null
-                    refresh()
-                    CupertinoToast.show(AppStrings.get("saved_toast", lang))
                 }
             },
             onDismiss = { editingInfoScript = null },
@@ -918,7 +927,7 @@ private fun ScriptEditorScreen(
         }
         isSaving = true
         scope.launch {
-            try {
+            val result = runCatching {
                 withContext(Dispatchers.IO) {
                     val saved = ScriptManager.saveScript(
                         context = context,
@@ -932,11 +941,20 @@ private fun ScriptEditorScreen(
                     )
                     linkScriptToEnabledProfiles(context, saved.id)
                 }
-                CupertinoToast.show(AppStrings.get("saved_toast", lang))
-                onSaved()
-            } finally {
-                isSaving = false
             }
+            isSaving = false
+            result.fold(
+                onSuccess = {
+                    CupertinoToast.show(AppStrings.get("saved_toast", lang))
+                    onSaved()
+                },
+                onFailure = {
+                    CupertinoToast.show(
+                        it.message ?: AppStrings.get("unknown_error", lang),
+                        isDestructive = true
+                    )
+                }
+            )
         }
     }
 

@@ -58,17 +58,21 @@ fun AppRoutingScreen(
     var showSystemApps by remember { mutableStateOf(false) }
     var showActionSheet by remember { mutableStateOf(false) }
 
-    // Direct filter based on system app toggle & search query
-    val displayApps = remember(apps, showSystemApps, searchQuery) {
+    // Direct filter based on system app toggle & search query, with selected apps sorted to the top
+    val displayApps = remember(apps, showSystemApps, searchQuery, selectedPackages) {
         val base = if (showSystemApps) apps else apps.filter { !it.isSystem }
         val q = searchQuery.trim().lowercase()
-        if (q.isEmpty()) {
+        val filtered = if (q.isEmpty()) {
             base
         } else {
             base.filter {
                 it.label.lowercase().contains(q) || it.packageName.lowercase().contains(q)
             }
         }
+        filtered.sortedWith(
+            compareByDescending<InstalledApp> { selectedPackages.contains(it.packageName) }
+                .thenBy { it.label.lowercase() }
+        )
     }
 
     Column(
@@ -127,7 +131,7 @@ fun AppRoutingScreen(
                             onModeChanged(PerAppProxyMode.DISABLED)
                         }
                     )
-                    CupertinoIndentedDivider(startIndent = 16.dp)
+                    CupertinoDivider()
                     ModeRow(
                         title = AppStrings.get("app_mode_whitelist", lang),
                         isSelected = currentMode == PerAppProxyMode.WHITELIST,
@@ -136,7 +140,7 @@ fun AppRoutingScreen(
                             onModeChanged(PerAppProxyMode.WHITELIST)
                         }
                     )
-                    CupertinoIndentedDivider(startIndent = 16.dp)
+                    CupertinoDivider()
                     ModeRow(
                         title = AppStrings.get("app_mode_blacklist", lang),
                         isSelected = currentMode == PerAppProxyMode.BLACKLIST,
