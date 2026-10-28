@@ -238,7 +238,7 @@ object ClashCore {
 
     fun startTun(
         fd: Int,
-        stack: String = "mixed",
+        stack: String = "mips",
         // Defaults come from TunConfig so the address plan handed to the core can never
         // drift away from the one the VPN service assigns to the interface.
         gateway: String = TunConfig.GATEWAY,
@@ -246,12 +246,13 @@ object ClashCore {
         dns: String = TunConfig.DNS,
         vpnService: VpnService
     ) {
-        Log.i(TAG, "Starting TUN with fd=$fd, stack=$stack")
+        val effectiveStack = if (stack.equals("gvisor", ignoreCase = true)) "gvisor" else "mips"
+        Log.i(TAG, "Starting TUN with fd=$fd, stack=$effectiveStack (configured=$stack)")
         val cm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             vpnService.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         } else null
 
-        Bridge.nativeStartTun(fd, stack, gateway, portal, dns, object : TunInterface {
+        Bridge.nativeStartTun(fd, effectiveStack, gateway, portal, dns, object : TunInterface {
             override fun markSocket(fd: Int) {
                 vpnService.protect(fd)
             }

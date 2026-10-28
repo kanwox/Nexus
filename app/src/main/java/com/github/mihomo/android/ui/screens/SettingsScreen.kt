@@ -147,11 +147,7 @@ fun SettingsScreen(
             CupertinoGroupedSection(header = AppStrings.get("settings_section_network", lang)) {
                 CupertinoCell(
                     title = AppStrings.get("settings_vpn_tunnel", lang),
-                    value = when (tunStack.lowercase()) {
-                        "mixed" -> "Mixed"
-                        "gvisor" -> "gVisor"
-                        else -> "System"
-                    },
+                    value = if (tunStack.equals("gvisor", ignoreCase = true)) "gVisor" else "Mips",
                     icon = Icons.Default.VpnKey,
                     iconBg = IosBlue,
                     showChevron = true,
@@ -202,7 +198,7 @@ fun SettingsScreenPreview() {
     MihomoTheme {
         SettingsScreen(
             scrollState = androidx.compose.foundation.rememberScrollState(),
-            tunStack = "mixed",
+            tunStack = "mips",
             fakeIpEnabled = true,
             themeMode = ThemeMode.SYSTEM,
             onNavigateToProfiles = {},

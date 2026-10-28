@@ -28,7 +28,10 @@ class SettingsManager(context: Context) {
         set(value) = prefs.edit { putString("tunnel_mode", value) }
 
     var tunStack: String
-        get() = prefs.getString("tun_stack", "mixed") ?: "mixed"
+        get() {
+            val v = prefs.getString("tun_stack", "mips") ?: "mips"
+            return if (v.equals("gvisor", ignoreCase = true)) "gvisor" else "mips"
+        }
         set(value) = prefs.edit { putString("tun_stack", value) }
 
     var perAppProxyMode: PerAppProxyMode

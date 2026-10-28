@@ -180,9 +180,8 @@ fun VpnTunnelScreen(
 
     if (showTunDialog) {
         val stacks = listOf(
-            Triple("mixed", "Mixed", AppStrings.get("tun_desc_mixed", lang)),
-            Triple("gvisor", "gVisor", AppStrings.get("tun_desc_gvisor", lang)),
-            Triple("system", "System", AppStrings.get("tun_desc_system", lang))
+            Triple("mips", "Mips", AppStrings.get("tun_desc_mips", lang)),
+            Triple("gvisor", "gVisor", AppStrings.get("tun_desc_gvisor", lang))
         )
         CupertinoModalBottomSheet(
             onDismissRequest = { showTunDialog = false },
@@ -280,11 +279,7 @@ private fun TunStackCell(
 ) {
     CupertinoCell(
         title = AppStrings.get("settings_tun_stack", lang),
-        value = when (tunStack.lowercase()) {
-            "mixed" -> "Mixed"
-            "gvisor" -> "gVisor"
-            else -> "System"
-        },
+        value = if (tunStack.equals("gvisor", ignoreCase = true)) "gVisor" else "Mips",
         showChevron = true,
         onClick = onClick
     )
