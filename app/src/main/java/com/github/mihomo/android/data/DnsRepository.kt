@@ -36,10 +36,13 @@ object DnsRepository {
     // [DNS] cache hit www.google.com --> 198.18.0.2, expire at 2026-10-24 15:30:00
     // [DNS] www.google.com --> 142.250.190.46 from 223.5.5.5
     // [DNS] dns.google --> [8.8.8.8 8.8.4.4] from 223.5.5.5
+    // [DNS] cloudflare.com --> 104.16.132.229, 15ms
     private val arrowRegex = Regex(
-        """\[DNS]\s+(?:cache\s+hit\s+)?([^\s:]+)(?:\s+[A-Za-z0-9]+)?\s+-->\s+(\[[^]]+]|[0-9a-fA-F.:]+)(?:[,\s]+(?:from\s+([^\s,]+)|expire\s+at\s+.*|([0-9]+ms)))?""",
+        """\[DNS]\s+(cache\s+hit\s+)?([^\s:]+)(?:\s+([A-Za-z0-9]+))?\s+-->\s+(\[[^]]+]|[0-9a-fA-F.:]+)(.*)$""",
         RegexOption.IGNORE_CASE
     )
+    private val serverSuffixRegex = Regex("""from\s+([^\s,]+)""", RegexOption.IGNORE_CASE)
+    private val latencySuffixRegex = Regex("""(\d+)\s*ms\b""", RegexOption.IGNORE_CASE)
 
     private val resolveRegex = Regex(
         """\[DNS]\s+resolve\s+(\S+)\s+([A-Za-z0-9]+)\s+from\s+(\S+)""",
@@ -53,7 +56,8 @@ object DnsRepository {
         isFakeIp: Boolean = false,
         latencyMs: Int = 0,
         type: String = "A",
-        server: String? = null
+        server: String? = null,
+        isCacheHit: Boolean = false
     ) {
         val cleanDomain = domain.trim()
         val cleanIp = ip.trim().trim('[', ']').split(Regex("""\s+""")).joinToString(", ")
@@ -65,23 +69,33 @@ object DnsRepository {
             ?.removeSuffix(":53")
 
         val effectiveFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19.")
+        val isResolving = cleanIp.equals("Resolving...", ignoreCase = true)
+        val resolvedType = type.ifBlank {
+            if (!isResolving && cleanIp.contains(':') && !cleanIp.contains('.')) "AAAA" else "A"
+        }
 
-        domainToIpMap[cleanDomain.lowercase()] = cleanIp
+        if (!isResolving) {
+            domainToIpMap[cleanDomain.lowercase()] = cleanIp
+        }
 
         // If there was an in-progress "Resolving..." entry for this domain, update it in place
         val pendingIndex = recordList.indexOfFirst {
-            it.domain.equals(cleanDomain, ignoreCase = true) && (it.ip == "Resolving...")
+            it.domain.equals(cleanDomain, ignoreCase = true) && it.isResolving
         }
-        if ((pendingIndex != -1) && (cleanIp != "Resolving...")) {
+        if (pendingIndex != -1 && !isResolving) {
             val old = recordList[pendingIndex]
             recordList[pendingIndex] = old.copy(
                 ip = cleanIp,
                 isFakeIp = effectiveFakeIp,
                 latencyMs = latencyMs,
                 server = cleanServer ?: old.server,
-                type = type
+                type = type.ifBlank { old.type.ifBlank { resolvedType } },
+                isCacheHit = isCacheHit
             )
             publisher.request()
+            return
+        }
+        if (pendingIndex != -1 && isResolving) {
             return
         }
 
@@ -99,8 +113,9 @@ object DnsRepository {
             isFakeIp = effectiveFakeIp,
             latencyMs = latencyMs,
             timestamp = System.currentTimeMillis(),
-            type = type,
-            server = cleanServer
+            type = resolvedType,
+            server = cleanServer,
+            isCacheHit = isCacheHit
         )
         if (recordList.size >= MAX_RECORDS) {
             recordList.removeLast()
@@ -129,10 +144,21 @@ object DnsRepository {
 
             val arrowMatch = arrowRegex.find(message)
             if (arrowMatch != null) {
-                val domain = arrowMatch.groupValues[1]
-                val ipRaw = arrowMatch.groupValues[2]
-                val server = arrowMatch.groupValues[3].takeIf { it.isNotBlank() }
-                addRecord(domain = domain, ip = ipRaw, server = server)
+                val isCacheHit = arrowMatch.groupValues[1].isNotBlank()
+                val domain = arrowMatch.groupValues[2]
+                val recordType = arrowMatch.groupValues[3].uppercase()
+                val ipRaw = arrowMatch.groupValues[4]
+                val tail = arrowMatch.groupValues[5]
+                val server = serverSuffixRegex.find(tail)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                val latencyMs = latencySuffixRegex.find(tail)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                addRecord(
+                    domain = domain,
+                    ip = ipRaw,
+                    latencyMs = latencyMs,
+                    type = recordType,
+                    server = server,
+                    isCacheHit = isCacheHit
+                )
                 return
             }
 

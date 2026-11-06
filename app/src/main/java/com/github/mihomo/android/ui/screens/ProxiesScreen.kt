@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.github.kr328.clash.core.model.Proxy
 import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.mihomo.android.data.MihomoApi
+import com.github.mihomo.android.data.SpeedTestState
 import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
@@ -76,20 +77,24 @@ fun AnimatedSpeedTestIcon(
 private fun sortProxies(
     proxies: List<Proxy>,
     sortMode: String,
-    delayCache: Map<String, Int> = emptyMap(),
+    delayCache: Map<String, SpeedTestState> = emptyMap(),
     groupName: String = ""
 ): List<Proxy> {
     return when (sortMode) {
         "DELAY" -> proxies.sortedWith(
             compareBy<Proxy> { proxy ->
-                val d = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name] ?: proxy.delay
+                val state = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name]
+                // Legacy Int semantics: a Success is sortable, a failure sinks to the
+                // bottom, untested entries stay in the middle tier.
+                val d = state?.toLegacyDelay() ?: proxy.delay
                 when {
                     d in 1..65534 -> 0
-                    d == -2 || d >= 65535 -> 2
+                    state is SpeedTestState.Timeout || state is SpeedTestState.Failed || d == -2 || d >= 65535 -> 2
                     else -> 1
                 }
             }.thenBy { proxy ->
-                val d = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name] ?: proxy.delay
+                val state = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name]
+                val d = state?.toLegacyDelay() ?: proxy.delay
                 if (d in 1..65534) d else Int.MAX_VALUE
             }
         )
@@ -121,7 +126,7 @@ fun ProxiesScreen(
     showGroupIcons: Boolean = true,
     nodeColumns: Int = 1,
     nodeSortMode: String = "DEFAULT",
-    delayCache: Map<String, Int> = emptyMap(),
+    delayCache: Map<String, SpeedTestState> = emptyMap(),
     onViewModeChanged: (String) -> Unit,
     onShowGroupIconsChanged: (Boolean) -> Unit,
     onNodeColumnsChanged: (Int) -> Unit = {},
@@ -192,7 +197,7 @@ fun ProxiesScreen(
 
             Box(
                 modifier = Modifier
-                    .size(32.dp)
+                    .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                     .iosPressable(pressedScale = 0.88f) {
                         haptic.lightTick()
                         showOptionsMenu = true
@@ -358,7 +363,7 @@ fun ProxiesScreen(
 
                         Surface(
                             modifier = Modifier
-                                .height(35.dp)
+                                .heightIn(min = 35.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .border(
                                     width = 0.5.dp,
@@ -375,7 +380,10 @@ fun ProxiesScreen(
                             color = pillBg
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 13.dp),
+                                modifier = Modifier.padding(
+                                    start = 13.dp,
+                                    end = if (isSelected || isPillTesting) 2.dp else 13.dp
+                                ),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -383,7 +391,7 @@ fun ProxiesScreen(
                                     RemoteIcon(
                                         url = groupIconUrl,
                                         modifier = Modifier.size(16.dp),
-                                        contentDescription = groupName
+                                        contentDescription = null
                                     )
                                 }
                                 Text(
@@ -394,11 +402,11 @@ fun ProxiesScreen(
                                     maxLines = 1
                                 )
                                 if (isSelected || isPillTesting) {
-                                    // UI-A11Y-01: the visual dot stays 20dp, but the touch and
-                                    // semantics boundary is the 48dp minimum.
+                                    // UI-A11Y-01: the visual icon stays 14dp, while the touch and
+                                    // semantics boundary expands inside the pill.
                                     Box(
                                         modifier = Modifier
-                                            .size(20.dp)
+                                            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = 35.dp)
                                             .clickable(
                                                 enabled = !isPillTesting,
                                                 interactionSource = remember { MutableInteractionSource() },
@@ -462,8 +470,9 @@ fun ProxiesScreen(
                     groupMap[targetGroupName]
                 }
                 val rawProxies = targetGroup?.proxies ?: emptyList()
-                val proxies = remember(rawProxies, nodeSortMode) {
-                    sortProxies(rawProxies, nodeSortMode, delayCache, targetGroupName)
+                val delaySnapshot = if (nodeSortMode == "DELAY") delayCache.toMap() else emptyMap()
+                val proxies = remember(rawProxies, nodeSortMode, targetGroupName, delaySnapshot) {
+                    sortProxies(rawProxies, nodeSortMode, delaySnapshot, targetGroupName)
                 }
                 val groupState = if (targetGroupName.isNotBlank()) {
                     perGroupTabStates.getOrPut(targetGroupName) { LazyListState() }
@@ -510,12 +519,12 @@ fun ProxiesScreen(
                                 for (proxy in rowProxies) {
                                     Box(modifier = Modifier.weight(1f)) {
                                         val isItemTesting = testingNodes.contains("$targetGroupName:${proxy.name}")
-                                        val effectiveDelay = delayCache["$targetGroupName:${proxy.name}"]
+                                        val delayState = delayCache["$targetGroupName:${proxy.name}"]
                                             ?: delayCache[proxy.name]
-                                            ?: proxy.delay
+                                            ?: SpeedTestState.fromNativeDelay(proxy.delay)
                                         LoonProxyItemCard(
                                             proxy = proxy,
-                                            delay = effectiveDelay,
+                                            delayState = delayState,
                                             isSelected = proxy.name == currentNow,
                                             columns = cols,
                                             isTesting = isItemTesting,
@@ -624,12 +633,12 @@ fun ProxiesScreen(
                                     for (proxy in rowProxies) {
                                         Box(modifier = Modifier.weight(1f)) {
                                             val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
-                                            val effectiveDelay = delayCache["$groupName:${proxy.name}"]
+                                            val delayState = delayCache["$groupName:${proxy.name}"]
                                                 ?: delayCache[proxy.name]
-                                                ?: proxy.delay
+                                                ?: SpeedTestState.fromNativeDelay(proxy.delay)
                                             LoonProxyItemCard(
                                                 proxy = proxy,
-                                                delay = effectiveDelay,
+                                                delayState = delayState,
                                                 isSelected = proxy.name == groupNow,
                                                 columns = cols,
                                                 isTesting = isItemTesting,
@@ -666,10 +675,18 @@ fun ProxiesScreen(
     // Node Detail Sheet (long-press): protocol info + latency history
     // =================================================================
     nodeDetailTarget?.let { (detailGroup, detailNode) ->
+        val detailProxy = groupMap[detailGroup]?.proxies?.find { it.name == detailNode }
+        val detailDelayState = delayCache["$detailGroup:$detailNode"]
+            ?: delayCache[detailNode]
+            ?: SpeedTestState.fromNativeDelay(detailProxy?.delay ?: 0)
+        val detailIsTesting = testingNodes.contains("$detailGroup:$detailNode") ||
+            testingNodes.contains("group:$detailGroup")
         NodeDetailSheet(
             groupName = detailGroup,
             nodeName = detailNode,
             group = groupMap[detailGroup],
+            delayState = detailDelayState,
+            isTesting = detailIsTesting,
             onDismiss = { nodeDetailTarget = null },
             onSelect = { proxy ->
                 nodeDetailTarget = null
@@ -691,6 +708,8 @@ private fun NodeDetailSheet(
     groupName: String,
     nodeName: String,
     group: ProxyGroup?,
+    delayState: SpeedTestState,
+    isTesting: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Proxy) -> Unit,
     onTest: () -> Unit
@@ -726,11 +745,18 @@ private fun NodeDetailSheet(
                     valueColor = if (udpSupported) LoonSuccessText else LoonTextSecondary
                 )
                 CupertinoIndentedDivider()
-                val alive = detail?.alive ?: ((localProxy?.delay ?: 0) > 0)
+                val alive = detail?.alive ?: (delayState is SpeedTestState.Success || (localProxy?.delay ?: 0) in 1..65534)
+                val isUntested = detail == null && delayState is SpeedTestState.Untested && (localProxy?.delay ?: 0) <= 0
+                val (aliveText, aliveColor) = when {
+                    isTesting -> AppStrings.get("node_detail_testing", lang) to IosBlue
+                    isUntested -> "--" to LoonTextSecondary
+                    alive -> AppStrings.get("node_detail_alive_ok", lang) to LoonSuccessText
+                    else -> AppStrings.get("node_detail_alive_dead", lang) to LoonDangerText
+                }
                 DetailInfoRow(
                     AppStrings.get("node_detail_alive", lang),
-                    AppStrings.get(if (alive) "node_detail_alive_ok" else "node_detail_alive_dead", lang),
-                    valueColor = if (alive) LoonSuccessText else LoonDangerText
+                    aliveText,
+                    valueColor = aliveColor
                 )
                 CupertinoIndentedDivider()
                 DetailInfoRow(AppStrings.get("node_detail_groups", lang), groupName)
@@ -830,10 +856,12 @@ private fun DetailActionButton(
     onClick: () -> Unit
 ) {
     Surface(
-        modifier = modifier.height(44.dp),
+        modifier = modifier
+            .heightIn(min = LoonSizes.touchTargetMin)
+            .clip(RoundedCornerShape(10.dp))
+            .iosPressable(onClick = onClick),
         shape = RoundedCornerShape(10.dp),
-        color = if (emphasized) IosBlue else LoonTertiaryBg,
-        onClick = onClick
+        color = if (emphasized) IosBlue else LoonTertiaryBg
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
@@ -931,7 +959,7 @@ private fun LoonGroupHeaderCard(
                         modifier = Modifier
                             .padding(end = 12.dp)
                             .size(32.dp),
-                        contentDescription = groupName
+                        contentDescription = null
                     )
                 }
 
@@ -976,7 +1004,7 @@ private fun LoonGroupHeaderCard(
                     if (showSpeedTest) {
                         Box(
                             modifier = Modifier
-                                .size(34.dp)
+                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                                 .clickable(
                                     enabled = !isTesting,
                                     interactionSource = remember { MutableInteractionSource() },
@@ -1030,7 +1058,7 @@ private fun LoonGroupHeaderCard(
 @Composable
 private fun LoonProxyItemCard(
     proxy: Proxy,
-    delay: Int = proxy.delay,
+    delayState: SpeedTestState = SpeedTestState.fromNativeDelay(proxy.delay),
     isSelected: Boolean,
     columns: Int = 1,
     isTesting: Boolean = false,
@@ -1051,6 +1079,7 @@ private fun LoonProxyItemCard(
     val isCompact3Col = columns >= 3
     val cardShape = remember(isCompact3Col) { RoundedCornerShape(if (isCompact3Col) 11.dp else 13.dp) }
 
+    val haptic = rememberIosHaptic()
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1065,12 +1094,13 @@ private fun LoonProxyItemCard(
                 color = borderColor,
                 shape = cardShape
             )
-            // Long press opens the node detail sheet; the regular tap still goes to the
-            // card's own pressable handler.
-            .pointerInput(proxy.name) {
-                detectTapGestures(onLongPress = { onLongPress() })
-            }
-            .iosPressable(pressedScale = 0.97f) { onClick() },
+            .iosPressable(
+                pressedScale = 0.97f,
+                onLongClick = {
+                    haptic.impact()
+                    onLongPress()
+                }
+            ) { onClick() },
         color = cardBg,
         shape = cardShape
     ) {
@@ -1106,7 +1136,7 @@ private fun LoonProxyItemCard(
                 }
 
                 CupertinoLatencyText(
-                    delay = delay,
+                    delayState = delayState,
                     isTesting = isTesting,
                     compact = false,
                     onClick = onTestSingleNode
@@ -1146,7 +1176,7 @@ private fun LoonProxyItemCard(
                     )
 
                     CupertinoLatencyText(
-                        delay = delay,
+                        delayState = delayState,
                         isTesting = isTesting,
                         compact = isCompact3Col,
                         onClick = onTestSingleNode
@@ -1162,16 +1192,19 @@ private fun LoonProxyItemCard(
 // =============================================================================
 @Composable
 private fun CupertinoLatencyText(
-    delay: Int,
+    delayState: SpeedTestState,
     isTesting: Boolean,
     compact: Boolean,
     onClick: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
+    // Structured result → the same visual language as before, plus the states the old
+    // Int cache collapsed into "--": a timeout/failure now shows an explicit marker.
+    val delay = delayState.toLegacyDelay()
     val isValidDelay = delay in 1..65534
     val delayColor = when {
-        isValidDelay && delay <= 250 -> LoonSuccessText
-        isValidDelay && delay <= 600 -> LoonWarningText
+        isValidDelay && delay!! <= 250 -> LoonSuccessText
+        isValidDelay && delay!! <= 600 -> LoonWarningText
         else -> LoonDangerText
     }
 
@@ -1199,7 +1232,7 @@ private fun CupertinoLatencyText(
                 modifier = Modifier.size(if (compact) 11.dp else 13.dp),
                 color = IosBlue
             )
-        } else if (isValidDelay) {
+        } else if (isValidDelay && delay != null) {
             Text(
                 text = if (compact) {
                     AppStrings.get("proxies_latency_ms_compact", lang).replace("{ms}", delay.toString())
@@ -1209,6 +1242,30 @@ private fun CupertinoLatencyText(
                 color = delayColor,
                 fontSize = if (compact) LoonTypeScale.micro else LoonTypeScale.captionLarge,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        } else if (delayState is SpeedTestState.Timeout) {
+            Text(
+                text = AppStrings.get("speed_timeout", lang),
+                color = LoonDangerText,
+                fontSize = if (compact) LoonTypeScale.micro else LoonTypeScale.captionLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        } else if (delayState is SpeedTestState.Failed) {
+            Text(
+                text = AppStrings.get("speed_failed", lang),
+                color = LoonDangerText,
+                fontSize = if (compact) LoonTypeScale.micro else LoonTypeScale.captionLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        } else {
+            Text(
+                text = "--",
+                color = LoonTextMuted,
+                fontSize = if (compact) LoonTypeScale.micro else LoonTypeScale.captionLarge,
+                fontWeight = FontWeight.Normal,
                 maxLines = 1
             )
         }

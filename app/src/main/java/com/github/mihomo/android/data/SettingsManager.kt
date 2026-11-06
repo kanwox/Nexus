@@ -153,24 +153,198 @@ class SettingsManager(context: Context) {
     companion object {
         const val DEFAULT_NAMESERVERS = "https://223.5.5.5/dns-query, https://doh.pub/dns-query, 223.5.5.5, 119.29.29.29"
         const val DEFAULT_FALLBACK_SERVERS = "https://1.1.1.1/dns-query, https://8.8.8.8/dns-query, 1.1.1.1, 8.8.8.8"
+
+        /**
+         * Reserved scope for selections restored from a backup before any profile was
+         * active; getSelectedNodesForProfile adopts them on the first profile read.
+         */
+        const val LEGACY_STAGING_PROFILE_ID = "_legacy_restore_"
+
+        /** Prefix of the pre-isolation global selection keys. */
+        private const val LEGACY_GLOBAL_PREFIX = "sel_node_"
     }
 
-    fun getSelectedNode(group: String): String? {
-        return prefs.getString("sel_node_$group", null)
+    // ------------------------------------------------------------------
+    // Per-profile node selection storage
+    //
+    // The key scope is deliberately the PROFILE, not the group name alone: two
+    // subscriptions can both ship a "PROXY" group with same-named nodes, and a
+    // global group-name scope carried profile A's choice into profile B (and made
+    // B show A's measured delays). Keys are
+    //
+    //     "sel_node_<profileId>/<group>"
+    //
+    // Legacy global keys ("sel_node_<group>") are migrated lazily on the first
+    // read of each profile (see [getSelectedNodesForProfile]): the legacy map is
+    // applied once, then removed so it can never leak into another profile again.
+    // ------------------------------------------------------------------
+
+    /** Raw scoped read; returns the saved node for [group] within [profileId] only. */
+    fun getSelectedNode(profileId: String, group: String): String? {
+        return prefs.getString(selectedNodeKey(profileId, group), null)
     }
 
-    fun setSelectedNode(group: String, node: String) {
-        prefs.edit { putString("sel_node_$group", node) }
+    /** Raw scoped write; the choice stays visible to this profile only. */
+    fun setSelectedNode(profileId: String, group: String, node: String) {
+        prefs.edit { putString(selectedNodeKey(profileId, group), node) }
     }
 
-    fun getAllSelectedNodes(): Map<String, String> {
+    /**
+     * All scoped selections for one profile, keyed by group name. On the FIRST call
+     * for a profile this also consumes the legacy global map: entries are copied
+     * into the profile scope and then deleted, so the same group can no longer
+     * resolve for a different profile. The write-back is wrapped in runCatching —
+     * a read-only prefs process (robolectric tests, content-provider sandboxing)
+     * must still be able to read.
+     */
+    fun getSelectedNodesForProfile(profileId: String): Map<String, String> {
+        val prefix = selectedNodePrefix(profileId)
+        val result = mutableMapOf<String, String>()
+        val legacy = mutableMapOf<String, String>()
+        val staging = mutableMapOf<String, String>()
+        for ((key, value) in prefs.all) {
+            val text = value as? String ?: continue
+            if (text.isBlank()) continue
+            when {
+                key.startsWith(prefix) -> result[key.removePrefix(prefix)] = text
+                key.startsWith("sel_node_") -> {
+                    val rest = key.removePrefix("sel_node_")
+                    if (rest.contains('/')) {
+                        val scope = rest.substringBefore('/')
+                        if (scope == LEGACY_STAGING_PROFILE_ID) {
+                            staging[rest.substringAfter('/')] = text
+                        }
+                    } else {
+                        legacy[rest] = text
+                    }
+                }
+            }
+        }
+        // Adopt staged backup restores only when this profile has no scoped choices yet.
+        if (staging.isNotEmpty() && result.isEmpty()) {
+            for ((group, node) in staging) {
+                result[group] = node
+                runCatching { prefs.edit { putString(selectedNodeKey(profileId, group), node) } }
+            }
+            runCatching { clearScopedSelections(LEGACY_STAGING_PROFILE_ID) }
+        }
+        // Migrate pre-isolation global keys on the first read; they belong to whatever
+        // profile is being read first, exactly as the old behavior implied.
+        if (legacy.isNotEmpty() && result.isEmpty()) {
+            for ((group, node) in legacy) {
+                result[group] = node
+                runCatching { prefs.edit { putString(selectedNodeKey(profileId, group), node) } }
+            }
+            runCatching { clearScopedSelections(LEGACY_GLOBAL_PREFIX) }
+        }
+        return result
+    }
+
+    /** Removes every selection key in the given scope ("sel_node_<group>" legacy form). */
+    private fun clearScopedSelections(prefix: String) {
+        val stale = prefs.all.keys.filter { it.startsWith(prefix) }
+        if (stale.isEmpty()) return
+        prefs.edit { stale.forEach { remove(it) } }
+    }
+
+    /** Clears every scoped selection of [profileId] (used when a profile is deleted). */
+    fun clearSelectedNodesForProfile(profileId: String) = clearScopedSelections(selectedNodePrefix(profileId))
+
+    // ------------------------------------------------------------------
+    // Per-profile "home" strategy group (the dashboard / proxies default tab).
+    //
+    // The old code guessed the main group by name ("节点选择"/"PROXY"/"Proxies"), which
+    // breaks for subscriptions using different naming. The pin lives in the same
+    // profile scope as the node selections: switching profiles switches the pin.
+    // ------------------------------------------------------------------
+
+    /** The user-pinned home group of [profileId], or null when left on auto-guess. */
+    fun getPreferredGroupName(profileId: String): String? {
+        val pinned = prefs.getString(prefGroupKey(profileId), null)?.takeIf { it.isNotBlank() }
+        if (pinned == null) {
+            // Adopt a staged restore once, same mechanism as the node selections.
+            val staged = prefs.getString(prefGroupKey(LEGACY_STAGING_PROFILE_ID), null)
+            if (!staged.isNullOrBlank()) {
+                runCatching {
+                    prefs.edit {
+                        putString(prefGroupKey(profileId), staged)
+                        remove(prefGroupKey(LEGACY_STAGING_PROFILE_ID))
+                    }
+                }
+                return staged
+            }
+        }
+        return pinned
+    }
+
+    /** Pins [groupName] as the home group of [profileId]; null clears the pin. */
+    fun setPreferredGroupName(profileId: String, groupName: String?) {
+        val key = prefGroupKey(profileId)
+        if (groupName.isNullOrBlank()) prefs.edit { remove(key) }
+        else prefs.edit { putString(key, groupName) }
+    }
+
+    private fun prefGroupKey(profileId: String) = "preferred_group_$profileId"
+
+    /** scoped key: "sel_node_<profileId>/<group>"; the id is a UUID, so '/' is unambiguous. */
+    private fun selectedNodeKey(profileId: String, group: String) =
+        "${selectedNodePrefix(profileId)}$group"
+
+    private fun selectedNodePrefix(profileId: String) = "sel_node_$profileId/"
+
+    /**
+     * Backup round-trip support. Backups store selections under the legacy global key
+     * format ("sel_node_<group>") because a backup must stay restorable on older app
+     * versions AND because at export time the active profile id is already part of the
+     * scoped key (see [getAllSelectedNodesForBackup]). On restore the entries are routed
+     * to the profile that is active at restore time (or the first profile) and the raw
+     * global key is NOT written — a global key would immediately leak into every profile.
+     */
+    fun restoreLegacySelection(group: String, node: String) {
+        // selectedProfileId is the authoritative target; when it is unset the entries
+        // are kept under a reserved staging scope that the next migration pass
+        // (getSelectedNodesForProfile) adopts for the first profile being read.
+        val scopeId = selectedProfileId ?: LEGACY_STAGING_PROFILE_ID
+        prefs.edit { putString(selectedNodeKey(scopeId, group), node) }
+    }
+
+    /**
+     * Flattens every profile's scoped selections into the legacy global key shape for
+     * backup export. Same-name groups across profiles collapse (last wins by profile
+     * order) — the same lossy behavior as before, but now deterministic. Also adopts
+     * the legacy staging scope if a restore happened before any profile existed.
+     */
+    fun getAllSelectedNodesForBackup(): Map<String, String> {
         val result = mutableMapOf<String, String>()
         for ((key, value) in prefs.all) {
-            if (key.startsWith("sel_node_") && value is String && value.isNotBlank()) {
-                result[key.removePrefix("sel_node_")] = value
+            val text = value as? String ?: continue
+            if (text.isBlank()) continue
+            if (key.startsWith("sel_node_") && !key.removePrefix("sel_node_").contains('/')) {
+                // A legacy global key that survived (written by an older version between
+                // backup and upgrade): keep exporting it as-is.
+                result[key.removePrefix("sel_node_")] = text
+            }
+        }
+        // Scoped entries: the active profile wins over the staging scope.
+        val active = selectedProfileId
+        for ((scope, group) in scopedSelectionEntries()) {
+            if (scope == active || scope == LEGACY_STAGING_PROFILE_ID) {
+                result[group] = prefs.getString(selectedNodeKey(scope, group), null) ?: continue
             }
         }
         return result
+    }
+
+    /** Enumerates (scopeId, group) pairs from the scoped selection keys. */
+    private fun scopedSelectionEntries(): List<Pair<String, String>> {
+        val entries = mutableListOf<Pair<String, String>>()
+        for (key in prefs.all.keys) {
+            if (!key.startsWith("sel_node_")) continue
+            val rest = key.removePrefix("sel_node_")
+            val slash = rest.indexOf('/')
+            if (slash > 0) entries += rest.substring(0, slash) to rest.substring(slash + 1)
+        }
+        return entries
     }
 
     // View mode persistence (TABS or LIST)
@@ -262,4 +436,12 @@ class SettingsManager(context: Context) {
             return runCatching { AppFont.valueOf(raw!!) }.getOrDefault(AppFont.SYSTEM)
         }
         set(value) = prefs.edit { putString("app_font", value.name) }
+
+    var autoCheckUpdate: Boolean
+        get() = prefs.getBoolean("auto_check_update", true)
+        set(value) = prefs.edit { putBoolean("auto_check_update", value) }
+
+    var lastUpdateCheckTime: Long
+        get() = prefs.getLong("last_update_check_time", 0L)
+        set(value) = prefs.edit { putLong("last_update_check_time", value) }
 }

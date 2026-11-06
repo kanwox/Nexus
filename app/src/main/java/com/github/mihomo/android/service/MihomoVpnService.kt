@@ -462,9 +462,11 @@ class MihomoVpnService : VpnService() {
                 // first and this job would resurrect a ghost tunnel afterwards.
                 ensureActive()
 
-                // Restore user's saved proxy selections into core
+                // Restore user's saved proxy selections into core. The selections are
+                // scoped to the ACTIVE profile: a global scope used to carry profile A's
+                // choice into profile B when both shipped same-named groups.
                 runCatching {
-                    val allSaved = settings.getAllSelectedNodes()
+                    val allSaved = settings.getSelectedNodesForProfile(activeProfile?.id ?: "")
                     allSaved.forEach { (gName, savedNode) ->
                         ClashCore.patchSelector(gName, savedNode)
                         Log.i(TAG, "Restored group selector: $gName -> $savedNode")
@@ -493,11 +495,20 @@ class MihomoVpnService : VpnService() {
                     // Kill switch: while the service holds the interface, apps are blocked
                     // from network access whenever the tunnel is not fully connected, so a
                     // stalled reconnect cannot leak the real IP.
-                    // setBlocking() only exists from API 29 — on API 26-28 the kill switch
-                    // silently has no effect at all.
+                    // setBlocking() only exists from API 29 — on API 26-28 the toggle is
+                    // disabled in the UI, and the setting is additionally verified here so
+                    // a stale "on" value (restored from a backup, downgraded OS) can never
+                    // pretend protection that does not exist.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && settings.killSwitchEnabled) {
                         runCatching { setBlocking(true) }
                             .onFailure { Log.w(TAG, "setBlocking (kill switch) failed", it) }
+                    } else if (settings.killSwitchEnabled) {
+                        // Visible degradation instead of a silent no-op: the persisted
+                        // switch reads "on" but this device cannot honor it.
+                        com.github.mihomo.android.data.LogRepository.addLog(
+                            "warning",
+                            "本系统版本 (API ${Build.VERSION.SDK_INT}) 不支持断网保护，该开关在本机不生效"
+                        )
                     }
                     // allowBypass() lets an app bind its sockets to a NON-VPN network (so a
                     // LAN-only feature such as casting or a printer can still reach the

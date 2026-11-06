@@ -133,9 +133,24 @@ object Bridge {
     private fun extractAssets(context: Context, targetDir: File): List<String> {
         val assetFiles = listOf("geoip.metadb", "Country.mmdb", "geosite.dat")
         val failed = mutableListOf<String>()
+        val versionMarker = targetDir.resolve(".bundled_geo_version")
+        val currentApkVersion = runCatching {
+            androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            )
+        }.getOrDefault(0L)
+        val recordedVersion = runCatching { versionMarker.readText().trim().toLong() }.getOrDefault(-1L)
+        val apkInstallTime = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+        }.getOrDefault(0L)
+        val versionChanged = currentApkVersion > 0L && currentApkVersion != recordedVersion
+
         for (fileName in assetFiles) {
             val destFile = targetDir.resolve(fileName)
-            if (destFile.exists() && destFile.length() > 0L) continue
+            val hasValidDest = destFile.exists() && destFile.length() > 0L
+            // Preserve files manually updated by the user after the APK was installed/updated.
+            val userUpdatedAfterApk = hasValidDest && apkInstallTime > 0L && destFile.lastModified() > apkInstallTime
+            if (hasValidDest && (!versionChanged || userUpdatedAfterApk)) continue
             runCatching {
                 // Extract to a temp file and rename so a crash mid-copy cannot leave a
                 // truncated database that the core would then load as if it were valid.
@@ -146,6 +161,7 @@ object Bridge {
                     }
                 }
                 check(tmpFile.length() > 0L) { "extracted file is empty" }
+                if (destFile.exists()) destFile.delete()
                 check(tmpFile.renameTo(destFile)) { "rename to $fileName failed" }
                 Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
             }.onFailure { e ->
@@ -153,6 +169,9 @@ object Bridge {
                 Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
                 failed += fileName
             }
+        }
+        if (failed.isEmpty() && currentApkVersion > 0L) {
+            runCatching { versionMarker.writeText(currentApkVersion.toString()) }
         }
         return failed
     }

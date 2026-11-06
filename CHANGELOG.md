@@ -9,61 +9,51 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
-## [1.0.5] - 2026-10-28
+## [1.0.6] - 2026-11-06
 
 ### Added
 
-- **TUN User-Space Stacks**: Supported Mips (`mips`, based on lwIP/mipstack, default) and gVisor (`gvisor`) user-space network stacks for reliable packet processing under Android VpnService.
-- **Multi-Source Configuration Import**: Supported remote subscription URLs, local YAML file imports, and QR code scanning.
-- **Subscription Auto-Update**: Background periodic update scheduling via WorkManager with configurable intervals and live core hot-reloading.
-- **Core Observability**: Integrated lightweight external-controller over loopback, providing structured request tracing, connection management, node latency history, and provider status.
-- **Encrypted Backup & Restore**: Optional AES-256-GCM backup export and import with PBKDF2 key derivation for profile credentials and application preferences.
-- **Design System & Aesthetics**: Fully unified iOS / Loon design system (`DesignTokens`, `LoonTextStyles`) featuring continuous corner curvature, strict minimum 52dp list row heights, symmetric hairline dividers, and borderless modal sheets.
-- **Internationalization**: Complete localization across Simplified Chinese (简体中文), English, and Russian (Русский).
+- **Batch Subscription Refresh**: Added bounded concurrent subscription updates (`Semaphore(3)`) with live navigation bar activity indication and completion summary feedback.
+- **Local Rule Tester Enhancements**: Added `DST-PORT` and `PORT` evaluation (supporting port lists, ranges, `host:port`, and `[ipv6]:port` inputs), input debouncing for large rule sets, and static-estimation notices when higher-priority dynamic rules (`GEOIP`, `GEOSITE`, `RULE-SET`, `PROCESS-NAME`) are skipped.
+- **Backup Restore Diagnostics**: Added detailed post-import failure reporting via `CupertinoAlertDialog` when individual profiles or scripts fail validation, paired with immediate in-memory settings synchronization and core hot-reload.
+- **Silent Automatic Update Check**: Added an optional background update check (once every 24 hours on launch) that surfaces available releases via a non-intrusive badge on the Settings and About rows without modal startup interruptions.
 
 ### Changed
 
-- **TUN Routing Compatibility**: Resolved policy routing and UID isolation conflicts with the TUN interface, ensuring seamless bidirectional communication for local listening sockets.
-- **Streamlined DNS Settings**: Focused the DNS configuration on Fake-IP, IPv6 support, and plaintext DNS leak protection, removing redundant manual upstream/fallback server editors.
-- **Profiles Management Overhaul**: Simplified profile card metadata layout, embedded auto-update schedule settings into profile editing, and added one-tap batch update actions.
-- **Rendering & Resource Optimization**:
-  - Virtualized proxy node lists with localized state updates, eliminating recomposition overhead during concurrent health checks.
-  - Implemented asynchronous icon decoding with bounded LRU caching in per-app routing.
-  - Adaptive connection polling intervals based on application visibility and screen state.
-- **Accessibility & Interaction**:
-  - Enforced minimum 48dp touch targets and visible focus indicators across all interactive controls.
-  - Full support for system-wide "reduce animations" preferences.
-  - Verified WCAG AA contrast compliance across light and dark themes.
-- **Build & Toolchain Upgrade**:
-  - Targeted and compiled against Android 15 (API 37).
-  - Updated toolchain: Gradle 9.8.2, AGP 9.4.1, Kotlin 2.4.21, Compose 1.12.1, and OkHttp 5.5.1.
-  - Enforced SHA-256 dependency verification and strict design token linting.
+- **iOS / Cupertino Interaction & Accessibility**:
+  - Moved `LocalIndication` (`NoIndication`) and `LocalOverscrollFactory` inside `MaterialTheme` and removed `Surface(onClick)` ripple wrappers so tabs, segmented controls, switches, and action buttons render without Material ink ripples.
+  - Added `onLongClick` support (`combinedClickable`) to `iosPressable` and removed duplicate `pointerInput` gesture detectors on proxy node cards.
+  - Replaced fixed `.height(...)` constraints with `.heightIn(min = ...)` across `CupertinoNavBar`, `CupertinoActionSheet`, `CupertinoSegmentedControl`, `CupertinoAlertDialog` (with scrollable body), `CupertinoSearchBar`, and group pills.
+  - Enforced 48dp minimum touch targets (`LoonSizes.touchTargetMin`) on navigation bar actions, search clear buttons, group speed-test buttons, and profile item menus.
+  - Updated `bounceOverscroll` to compute pull thresholds via `LocalDensity` and bypass overscroll translation when `LocalReduceMotion` is enabled.
+  - Configured numeric `KeyboardOptions` on port, MTU, and auto-update interval inputs, and set `contentDescription = null` on decorative group icons.
+- **Navigation & Service Restart Coalescing**:
+  - Tracked parent sub-screens (`PROFILES -> QR_SCAN`, `DNS -> DNS_SETTINGS`) with 3-level transition depth and RTL-aware horizontal slide transitions so back navigation returns to the originating sub-screen.
+  - Coalesced per-app routing (`APP_ROUTING`) modifications to trigger a single VPN restart upon leaving the screen.
+- **Geo Asset Extraction & System Receivers**:
+  - Recorded `.bundled_geo_version` by APK `longVersionCode` in `Bridge.extractAssets` to refresh bundled Geo databases on app upgrades without overwriting newer user-updated files.
+  - Updated `BootReceiver` to execute profile checks and service startup asynchronously via `goAsync()` on `Dispatchers.IO`.
+  - Added `forcePersist` to `LogRepository.addLog` so background subscription updates in `SubscriptionUpdateWorker` persist at `info` level while the screen is off.
 
 ### Fixed
 
-- **TCP Handshake on Android VpnService**: Fixed traffic stall on non-root Android environments by utilizing pure user-space TCP/IP stacks and eliminating unsupported kernel socket redirection.
-- **Plaintext DNS Leak Protection**: Corrected rule syntax to use natively supported Mihomo rule primitives (`AND`, `NOT`, `DST-PORT`, `IP-CIDR`), expanding protection to both UDP and TCP on port 53.
-- **Network Handover**: Added active detection for physical network loss and capabilities changes to ensure timely core route and DNS cache refreshes during Wi-Fi and cellular transitions.
-- **Core Lifecycle Serialization**: Serialized core initialization, configuration reloads, and tunnel teardown routines to prevent race conditions and file descriptor leaks.
-- **Service Restart Semantics**: Corrected foreground service restart behaviors (`START_NOT_STICKY` with persisted intent state) to avoid unintended tunnel resurrection after explicit user stops.
-- **Data & Parsing Reliability**:
-  - Resolved 13-byte magic header truncation in encrypted backup detection.
-  - Enforced strict YAML 1.2 boolean scalar parsing to prevent corruption of proxy names or credentials (e.g., `on`, `yes`).
-  - Added SSRF boundary guards to reject subscription downloads and HTTP redirects targeting private or loopback addresses.
-  - Applied centralized file path sanitization (`SafeFileName`) to mitigate directory traversal risks.
-  - Added payload validation to reject truncated or HTML error bodies during subscription updates.
-  - Percent-encoded REST API endpoints to support node and group names containing whitespace.
-- **Scripting Security**: Enforced a 64 MB heap cap on the QuickJS engine and ensured global scripting master toggles take immediate effect.
-
-### Removed
-
-- Removed experimental biometric application lock.
-- Removed screenshot prevention toggle.
-- Removed live network throughput line chart.
-- Removed standalone Profile Override screen and redundant custom DNS server edit fields.
-
-### Security
-
-- Restricted Android 12+ device-to-device and cloud backup transfers to prevent credential leakage (`backup_rules.xml`, `data_extraction_rules.xml`).
-- Guarded sensitive runtime configuration parameters (`listeners`, `sub-rules`, `tunnels`, controller credentials) against untrusted subscription overrides.
-- Excluded virtual and tunnel interfaces from LAN proxy IP resolution.
+- **Speed Test State & Live Sorting**:
+  - Mapped native `0` and `-1` delay sentinels to `SpeedTestState.Untested` (`--`) and `-2` / `>= 65535` to `SpeedTestState.Timeout`.
+  - Recorded `SpeedTestState.Timeout` in `delayCacheStore` when probes fail and prioritized group-qualified keys (`group:node`) during online proxy refreshes.
+  - Subscribed Tabs-mode `DELAY` sorting to `delayCache` snapshots for live reordering and sank failed or timed-out nodes to the bottom tier.
+  - Updated `NodeDetailSheet` availability state to distinguish untested and in-progress probes from unreachable nodes.
+  - Rethrew `CancellationException` and guarded `activeGroupChecks` cleanup with `deferred.isCompleted` in `ClashCore.testProxyDelayNative`.
+- **Configuration Reload & State Rollback**:
+  - Propagated file read errors in `BackupManager.exportBackup` and checked `Result.getOrThrow()` during backup export.
+  - Enforced a 20 MB stream cap and structure validation (`validateConfigStructure`) on local profile URI imports.
+  - Verified `ClashCore.patchSelector` and `ClashCore.reloadActiveConfig` return values across proxy selection, tunnel mode, Fake-IP, DNS, IPv6, LAN sharing, mixed port, and log level changes, rolling back UI and persisted settings on failure and removing duplicate reload calls in `DnsSettingsScreen`.
+  - Prevented `refreshSubscription` from emitting a success toast after a failed hot-reload rollback.
+  - Awaited `VpnState.Status.STOPPED` before calling `ClashCore.reset()` and cleared ViewModel speed-test and delay caches on core reset.
+  - Displayed `--` before asynchronous profile file sizes finish loading, refreshed relative timestamps every 60 seconds, validated non-empty subscription URLs when editing, and matched toast dismissal by message ID in `CupertinoToast.dismiss`.
+- **DNS & Request Log Accuracy**:
+  - Distinguished `[DNS] cache hit` entries (`isCacheHit`), pending resolutions (`isResolving`), and parsed latency values in `DnsRepository`, and prevented `"Resolving..."` placeholders from polluting `domainToIpMap`.
+  - Excluded `REJECT` connections from `RequestRepository.activeCountFlow`, gated local connection closure on `MihomoApi.closeConnection` returning `true`, formatted IPv6 endpoints as `[ipv6]:port`, and derived `DnsScreen` and `RequestLogsScreen` detail sheets from live record IDs.
+- **In-App Update System**:
+  - Routed release metadata and APK download requests through the local mixed proxy port first when the VPN tunnel is active (falling back to direct connection), and restricted requests to direct connection when the tunnel is stopped.
+  - Resumed APK installation automatically upon returning from the system unknown-sources permission screen and reused verified cached APKs in `cacheDir/updates` to avoid redundant downloads.
+  - Ensured download state cleanup inside a `finally` block on coroutine cancellation and removed the 300-character truncation on scrollable release notes.

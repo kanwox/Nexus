@@ -70,9 +70,9 @@ private const val LIST_ITEM_SPACING_DP = 10
 private fun expireDateFormat(): DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.getDefault()).withZone(ZoneId.systemDefault())
 
-private fun formatRelativeTime(timestamp: Long, lang: String): String {
+private fun formatRelativeTime(timestamp: Long, lang: String, nowMillis: Long = System.currentTimeMillis()): String {
     if (timestamp <= 0L) return AppStrings.get("time_never_updated", lang)
-    val diff = System.currentTimeMillis() - timestamp
+    val diff = nowMillis - timestamp
     if (diff < 60_000L) return AppStrings.get("time_just_now", lang)
     val minutes = diff / 60_000L
     if (minutes < 60L) return AppStrings.get("time_minutes_ago", lang).replace("{n}", minutes.toString())
@@ -114,6 +114,8 @@ fun ProfilesScreen(
     onUpdateProfile: (ProfileItem) -> Unit,
     onDeleteProfile: (ProfileItem) -> Unit,
     onRefreshSubscription: (ProfileItem) -> Unit = onUpdateProfile,
+    isUpdatingAll: Boolean = false,
+    onRefreshAllSubscriptions: (() -> Unit)? = null,
     onImportLocalFile: (() -> Unit)? = null,
     onReorderProfiles: ((List<ProfileItem>) -> Unit)? = null,
     onNavigateToQrScan: () -> Unit = {},
@@ -126,6 +128,12 @@ fun ProfilesScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val itemSpacingPx = with(LocalDensity.current) { LIST_ITEM_SPACING_DP.dp.toPx() }
+    val nowTick by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            kotlinx.coroutines.delay(60_000L)
+            value = System.currentTimeMillis()
+        }
+    }
 
     var showAddSheet by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -165,7 +173,7 @@ fun ProfilesScreen(
     // Resolve the on-disk sizes off the main thread whenever the profile list changes.
     LaunchedEffect(profiles) {
         val sizes = withContext(Dispatchers.IO) {
-            localProfiles.associate { it.id to it.file.length() }
+            profiles.associate { it.id to it.file.length() }
         }
         profileFileSizes = sizes
     }
@@ -205,7 +213,6 @@ fun ProfilesScreen(
             .statusBarsPadding()
     ) {
         val remoteSubs = profiles.filter { !it.url.isNullOrBlank() }
-        var isUpdatingAll by remember { mutableStateOf(false) }
 
         CupertinoNavBar(
             title = AppStrings.get("nav_profiles", lang),
@@ -216,34 +223,38 @@ fun ProfilesScreen(
                     if (remoteSubs.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                                 .clip(CircleShape)
-                                .iosPressable {
-                                    if (!isUpdatingAll) {
-                                        isUpdatingAll = true
-                                        haptic.selection()
-                                        CupertinoToast.show(AppStrings.get("subscription_updated", lang))
-                                        scope.launch {
-                                            remoteSubs.forEach { sub ->
-                                                onRefreshSubscription(sub)
-                                            }
-                                            isUpdatingAll = false
+                                .iosPressable(enabled = !isUpdatingAll) {
+                                    haptic.selection()
+                                    if (onRefreshAllSubscriptions != null) {
+                                        onRefreshAllSubscriptions()
+                                    } else {
+                                        remoteSubs.forEach { sub ->
+                                            onRefreshSubscription(sub)
                                         }
                                     }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = AppStrings.get("action_update", lang),
-                                tint = IosBlue,
-                                modifier = Modifier.size(22.dp)
-                            )
+                            if (isUpdatingAll) {
+                                CupertinoActivityIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = IosBlue
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = AppStrings.get("profile_update", lang),
+                                    tint = IosBlue,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
                         }
                     }
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
+                            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                             .clip(CircleShape)
                             .iosPressable {
                                 haptic.selection()
@@ -330,11 +341,14 @@ fun ProfilesScreen(
                             "$used / $total"
                         } else {
                             // The on-disk size is read off the main thread (see the
-                            // profileFileSizes loader); an unknown size falls back to "0 B".
-                            formatFileSize(profileFileSizes[profile.id] ?: 0L)
+                            // profileFileSizes loader); an unloaded size shows "--".
+                            val bytes = profileFileSizes[profile.id]
+                            if (bytes == null) "--" else formatFileSize(bytes)
                         }
                     }
-                    val timeText = remember(profile, lang) { formatRelativeTime(profile.lastUpdated, lang) }
+                    val timeText = remember(profile, lang, nowTick) {
+                        formatRelativeTime(profile.lastUpdated, lang, nowTick)
+                    }
 
                     val expireDateStr: String?
                     val expireColor: Color
@@ -520,7 +534,7 @@ fun ProfilesScreen(
 
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                                     .clip(CircleShape)
                                     .iosPressable {
                                         haptic.selection()
@@ -681,6 +695,10 @@ fun ProfilesScreen(
             onConfirm = {
                 val finalName = editName.trim().ifBlank { target.name }
                 val finalUrl = if (isSub) editUrl.trim() else target.url
+                if (isSub && finalUrl.isNullOrBlank()) {
+                    CupertinoToast.show(AppStrings.get("profile_url_required", lang), isDestructive = true)
+                    return@CupertinoAlertDialog
+                }
                 val latest = localProfiles.find { it.id == target.id } ?: target
                 val interval = editIntervalText.trim().toIntOrNull()
                     ?.coerceIn(SubscriptionUpdateWorker.MIN_INTERVAL_MINUTES, 60 * 24 * 30)
@@ -740,7 +758,10 @@ fun ProfilesScreen(
                         value = editIntervalText,
                         onValueChange = { newValue -> editIntervalText = newValue.filter { ch -> ch.isDigit() } },
                         placeholder = "1440",
-                        singleLine = true
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        )
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.service.MihomoVpnService
+import kotlinx.coroutines.launch
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -15,6 +16,18 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         Log.i(TAG, "Received broadcast action: $action")
+        val appContext = context.applicationContext
+        val pendingResult = goAsync()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                handleBroadcast(appContext, action)
+            } finally {
+                pendingResult.finish()
+            }
+        }
+    }
+
+    private fun handleBroadcast(context: Context, action: String) {
         val settingsManager = SettingsManager(context)
 
         val isBoot = action == Intent.ACTION_BOOT_COMPLETED ||

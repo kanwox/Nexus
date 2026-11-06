@@ -54,20 +54,33 @@ class DnsAndRequestRepositoryTest {
         // 3. Cache hit resolution
         DnsRepository.parseFromLog("[DNS] cache hit twitter.com --> 198.18.0.30, expire at 2026-10-24 16:00:00")
         assertEquals("198.18.0.30", DnsRepository.findIpForDomain("twitter.com"))
+        val twitterRecord = DnsRepository.recordsFlow.value.first { it.domain == "twitter.com" }
+        assertTrue(twitterRecord.isCacheHit)
 
         // 4. Resolution with upstream server
         DnsRepository.parseFromLog("[DNS] dns.google --> [8.8.8.8 8.8.4.4] from 223.5.5.5")
         assertEquals("8.8.8.8, 8.8.4.4", DnsRepository.findIpForDomain("dns.google"))
+        val googleDnsRecord = DnsRepository.recordsFlow.value.first { it.domain == "dns.google" }
+        assertFalse(googleDnsRecord.isCacheHit)
+        assertEquals("223.5.5.5", googleDnsRecord.server)
 
         // 5. Mihomo format with comma before upstream protocol server
         DnsRepository.parseFromLog("[DNS] example.com --> [93.184.216.34], from udp://8.8.8.8:53")
         assertEquals("93.184.216.34", DnsRepository.findIpForDomain("example.com"))
 
-        // 6. Pending resolve updated by result
-        DnsRepository.parseFromLog("[DNS] resolve cloudflare.com A from udp://223.5.5.5:53")
-        assertEquals("Resolving...", DnsRepository.findIpForDomain("cloudflare.com"))
+        // 6. Pending resolve updated by result (does not pollute domainToIpMap with "Resolving...")
+        DnsRepository.parseFromLog("[DNS] resolve cloudflare.com AAAA from udp://223.5.5.5:53")
+        assertNull(DnsRepository.findIpForDomain("cloudflare.com"))
+        val pendingCf = DnsRepository.recordsFlow.value.first { it.domain == "cloudflare.com" }
+        assertTrue(pendingCf.isResolving)
+        assertEquals("AAAA", pendingCf.type)
         DnsRepository.parseFromLog("[DNS] cloudflare.com --> 104.16.132.229, 15ms")
         assertEquals("104.16.132.229", DnsRepository.findIpForDomain("cloudflare.com"))
+        val resolvedCf = DnsRepository.recordsFlow.value.first { it.domain == "cloudflare.com" }
+        assertFalse(resolvedCf.isResolving)
+        assertFalse(resolvedCf.isCacheHit)
+        assertEquals(15, resolvedCf.latencyMs)
+        assertEquals("AAAA", resolvedCf.type)
     }
 
     @Test

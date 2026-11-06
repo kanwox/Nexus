@@ -11,14 +11,23 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonObject
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Structured connection records polled from the core's external-controller (/connections).
+ * Structured connection records streamed from the core's external-controller (/connections).
  * This replaced the previous log-regex parsing: the API reports stable connection ids, real
  * byte counters, the full proxy chain and close events, so records can be updated in place,
  * per-connection close actually works, and a core log format change can no longer silently
  * empty the request view.
+ *
+ * Transport: the same /connections endpoint is FIRST consumed as a WebSocket stream (a
+ * full snapshot pushed by the core about once per second — no polling request churn and
+ * no 1s staleness). When the stream cannot be established or degrades repeatedly, the
+ * repository falls back to the historical REST poll loop (foreground/background interval
+ * plus screen-off gating preserved). [transportModeFlow] exposes which path is live for
+ * diagnostics. The public API (recordsFlow, activeCountFlow, applySnapshot) is unchanged.
  */
 object RequestRepository {
     private const val MAX_RECORDS = 500
@@ -26,8 +35,22 @@ object RequestRepository {
     private const val POLL_INTERVAL_MS = 1000L
     private const val BACKGROUND_POLL_INTERVAL_MS = 5000L
 
+    /** Transport identifiers published through [transportModeFlow]. */
+    const val TRANSPORT_WEBSOCKET = "websocket"
+    const val TRANSPORT_POLLING = "polling"
+
     /** Consecutive controller failures before the poll loop reports the problem. */
     private const val MAX_CONSECUTIVE_FAILURES = 5
+
+    /** Consecutive WS-side failures (open failure / abnormal close / parse errors). */
+    private const val MAX_WS_FAILURES = 3
+
+    /** WS reconnect attempts before permanently falling back to REST polling. */
+    private const val MAX_WS_RECONNECTS = 3
+
+    /** First reconnect delay; doubles on every retry, capped at [MAX_WS_BACKOFF_MS]. */
+    private const val BASE_WS_BACKOFF_MS = 1000L
+    private const val MAX_WS_BACKOFF_MS = 30_000L
 
     private val nextId = AtomicLong(1)
     // O(1) lookup map preserving insertion order. Eldest entries are at the beginning.
@@ -40,6 +63,10 @@ object RequestRepository {
     private val _activeCountFlow = MutableStateFlow(0)
     val activeCountFlow: StateFlow<Int> = _activeCountFlow.asStateFlow()
 
+    /** Which transport currently feeds the snapshots ("websocket" or "polling"). */
+    private val _transportModeFlow = MutableStateFlow(TRANSPORT_POLLING)
+    val transportModeFlow: StateFlow<String> = _transportModeFlow.asStateFlow()
+
     private val publisher = ThrottledPublisher(PUBLISH_INTERVAL_MS, _recordsFlow.subscriptionCount) {
         val snapshot = synchronized(this) { recordMap.values.reversed() }
         _recordsFlow.value = snapshot
@@ -47,6 +74,30 @@ object RequestRepository {
 
     @Volatile
     private var pollJob: Job? = null
+
+    /** The coroutine running the WS supervisor loop; null when polling-only. */
+    @Volatile
+    private var streamJob: Job? = null
+
+    /**
+     * The live WebSocket handle. `newConnectionsWebSocket` runs on the stream-loop
+     * coroutine, and okhttp delivers callbacks on its own dispatcher threads, so the
+     * reference is volatile; `stopPolling` may cancel it from any thread.
+     */
+    @Volatile
+    private var activeSocket: okhttp3.WebSocket? = null
+
+    /**
+     * True from [stopPolling] until the next [startPolling]. This is the ONLY signal
+     * that distinguishes "the user stopped the VPN" from "the socket died": the socket
+     * death itself is always observable as activeSocket becoming null (the listener
+     * callbacks null it), so the supervisor must not infer a stop from that.
+     */
+    @Volatile
+    private var streamStopped: Boolean = true
+
+    /** Counts consecutive WS failures (open errors, abnormal closes, parse errors). */
+    private val wsFailureCounter = AtomicInteger(0)
 
     @Volatile
     private var appContext: Context? = null
@@ -66,12 +117,139 @@ object RequestRepository {
     private val uidLabelCache = HashMap<Int, Pair<String, String?>>()
 
     /**
-     * Starts the poll loop. [resolver] performs the Android connection-owner lookup
-     * (getConnectionOwnerUid) for a connection's source/dest endpoints; it is invoked on IO.
+     * Starts connection tracking: WebSocket stream first, REST polling as the fallback.
+     *
+     * The supervisor loop launches WS attempts with exponential backoff; after
+     * [MAX_WS_RECONNECTS] failed attempts it gives up on the stream, starts the poll
+     * loop, and stays there — the controller port/secret never change within a process,
+     * so a transport that failed 3 times in a row is very unlikely to succeed by
+     * hammering it, while the poll loop still delivers correct (only coarser-grained)
+     * data. `startPolling` remains as the entry point name so the VPN-service call site
+     * does not change; it now means "start the streaming supervisor".
      */
     fun startPolling(scope: CoroutineScope, context: Context, resolver: (Int, String, String) -> Int) {
         appContext = context.applicationContext
         uidResolver = resolver
+        if (pollJob?.isActive == true || streamJob?.isActive == true) return
+        streamStopped = false
+        wsFailureCounter.set(0)
+        streamJob = scope.launch(Dispatchers.IO) { runStreamSupervisor(scope) }
+        // The poll loop is created LAZILY by the supervisor on permanent degradation, so
+        // both transports never run at once.
+    }
+
+    fun stopPolling() {
+        streamStopped = true
+        streamJob?.cancel()
+        streamJob = null
+        runCatching { activeSocket?.cancel() }
+        activeSocket = null
+        pollJob?.cancel()
+        pollJob = null
+        _transportModeFlow.value = TRANSPORT_POLLING
+        wsFailureCounter.set(0)
+    }
+
+    // ------------------------------------------------------------------
+    // WebSocket-first transport with polling fallback
+    // ------------------------------------------------------------------
+
+    /**
+     * Owns the WS lifecycle until it permanently degrades into the poll loop. Exposed
+     * backoff computation stays pure via [wsBackoffMs] so retries are unit-testable.
+     */
+    private suspend fun runStreamSupervisor(scope: CoroutineScope) {
+        var reconnectAttempt = 0
+        while (kotlinx.coroutines.currentCoroutineContext().isActive && !streamStopped) {
+            val opened = openWebSocket()
+            if (!opened) {
+                wsFailureCounter.incrementAndGet()
+                if (wsFailureCounter.get() >= MAX_WS_FAILURES || reconnectAttempt + 1 >= MAX_WS_RECONNECTS) {
+                    degradeToPolling(scope, "websocket unavailable (${wsFailureCounter.get()} failures)")
+                    return
+                }
+                delay(wsBackoffMs(reconnectAttempt))
+                reconnectAttempt++
+                continue
+            }
+            // The socket is up; callbacks drive everything now. Wait until the socket
+            // dies (cancel/failure/close) before deciding whether to retry.
+            waitWhileSocketActive()
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive || streamStopped) return
+            // Socket death: the listener nulled activeSocket. Retry with backoff unless
+            // the failure budget is exhausted.
+            wsFailureCounter.incrementAndGet()
+            if (wsFailureCounter.get() >= MAX_WS_FAILURES) {
+                degradeToPolling(scope, "websocket failed ${wsFailureCounter.get()} times")
+                return
+            }
+            delay(wsBackoffMs(reconnectAttempt))
+            reconnectAttempt++
+        }
+    }
+
+    /** Opens one WS; returns false when the controller is not ready or the call threw. */
+    private fun openWebSocket(): Boolean {
+        val listener = object : okhttp3.WebSocketListener() {
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                val snapshot = runCatching {
+                    MihomoApi.parseConnections(
+                        kotlinx.serialization.json.Json.parseToJsonElement(text).jsonObject
+                    )
+                }.getOrNull()
+                if (snapshot == null) {
+                    // A malformed frame is a transport-quality problem too: after
+                    // MAX_WS_FAILURES of them the stream is treated as broken.
+                    if (wsFailureCounter.incrementAndGet() >= MAX_WS_FAILURES) {
+                        runCatching { webSocket.cancel() }
+                        runCatching { activeSocket = null }
+                    }
+                    return
+                }
+                wsFailureCounter.set(0)
+                applySnapshot(snapshot)
+            }
+
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                // A clean server-side close still ends the stream: nulling the handle
+                // wakes the supervisor, which retries or degrades. stopPolling() sets
+                // streamStopped first, so a clean shutdown short-circuits there.
+                runCatching { activeSocket = null }
+            }
+
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                runCatching { activeSocket = null }
+            }
+        }
+        val socket = MihomoApi.newConnectionsWebSocket(listener) ?: return false
+        activeSocket = socket
+        _transportModeFlow.value = TRANSPORT_WEBSOCKET
+        return true
+    }
+
+    /** Suspends until the active socket is gone (failed/closed/cancelled) or streaming is stopped. */
+    private suspend fun waitWhileSocketActive() {
+        while (activeSocket != null &&
+            !streamStopped &&
+            kotlinx.coroutines.currentCoroutineContext().isActive
+        ) {
+            delay(200)
+        }
+    }
+
+    /** Permanently switches to the REST poll loop (foreground/background/screen-off logic unchanged). */
+    private fun degradeToPolling(scope: CoroutineScope, reason: String) {
+        if (_transportModeFlow.value == TRANSPORT_WEBSOCKET) {
+            LogRepository.addLog("info", "连接流降级为轮询模式: $reason")
+        }
+        _transportModeFlow.value = TRANSPORT_POLLING
+        runCatching { activeSocket?.cancel() }
+        activeSocket = null
+        startPollLoop(scope)
+    }
+
+    /** The historical poll loop, byte-for-byte the old behavior. */
+    private fun startPollLoop(scope: CoroutineScope) {
         if (pollJob?.isActive == true) return
         pollJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
@@ -102,9 +280,13 @@ object RequestRepository {
         }
     }
 
-    fun stopPolling() {
-        pollJob?.cancel()
-        pollJob = null
+    /**
+     * Exponential backoff for WS reconnects: 1s, 2s, 4s, ... capped at 30s. Kept as a
+     * pure function of the attempt index for unit testing.
+     */
+    internal fun wsBackoffMs(attempt: Int): Long {
+        val shift = attempt.coerceIn(0, 30)
+        return (BASE_WS_BACKOFF_MS shl shift).coerceAtMost(MAX_WS_BACKOFF_MS)
     }
 
     @Synchronized
@@ -177,8 +359,9 @@ object RequestRepository {
             }
         }
 
-        if (_activeCountFlow.value != liveIds.size) {
-            _activeCountFlow.value = liveIds.size
+        val activeCount = recordMap.values.count { it.isActive }
+        if (_activeCountFlow.value != activeCount) {
+            _activeCountFlow.value = activeCount
         }
         if (changed) {
             publisher.request()
@@ -230,13 +413,15 @@ object RequestRepository {
         return pair
     }
 
-    /** Asks the core to drop the connection behind [id]; the record is closed either way. */
+    /** Asks the core to drop the connection behind [id]; only marks closed when the core confirms. */
     suspend fun closeConnection(id: Long): Boolean = withContext(Dispatchers.IO) {
         val connectionId = synchronized(this@RequestRepository) {
             recordMap.values.firstOrNull { it.id == id }?.connectionId
         }
         val requested = if (connectionId != null) MihomoApi.closeConnection(connectionId) else false
-        markClosed(id)
+        if (requested) {
+            markClosed(id)
+        }
         requested
     }
 
@@ -249,6 +434,7 @@ object RequestRepository {
                 isActive = false,
                 durationMs = (closedAt - record.timestamp).coerceAtLeast(0L)
             )
+            _activeCountFlow.value = recordMap.values.count { it.isActive }
             publisher.request()
         }
     }

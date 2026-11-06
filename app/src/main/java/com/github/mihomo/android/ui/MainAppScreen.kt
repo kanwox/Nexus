@@ -124,6 +124,9 @@ fun MainAppScreen(
     var currentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
         mutableStateOf<SubScreen?>(null)
     }
+    var parentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
+        mutableStateOf<SubScreen?>(null)
+    }
 
     // Field-level derived reads: vpnState updates once per second (traffic strings), and
     // reading the whole object here would recompose this entire screen (and the three
@@ -138,9 +141,11 @@ fun MainAppScreen(
     var tunnelMode by remember { mutableStateOf(TunnelMode.fromString(settingsManager.tunnelMode)) }
     var appLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
 
-    // Initial profile listing (disk IO) is owned by the ViewModel.
+    // Initial profile listing (disk IO) is owned by the ViewModel; silent update check runs
+    // in the background at most once every 24h when enabled.
     LaunchedEffect(Unit) {
         vm.reloadProfiles()
+        UpdateChecker.checkIfDue(activity)
     }
 
     var visibleShortcuts by remember { mutableStateOf(settingsManager.visibleShortcuts) }
@@ -163,6 +168,10 @@ fun MainAppScreen(
     var ipv6Enabled by remember { mutableStateOf(settingsManager.ipv6Enabled) }
     var allowLanPassword by remember { mutableStateOf(settingsManager.allowLanPassword) }
     var fakeIpEnabled by remember { mutableStateOf(settingsManager.fakeIpEnabled) }
+    var dnsNameservers by remember { mutableStateOf(settingsManager.dnsNameservers) }
+    var dnsFallbackServers by remember { mutableStateOf(settingsManager.dnsFallbackServers) }
+    var blockThirdPartyDns by remember { mutableStateOf(settingsManager.blockThirdPartyDns) }
+    var appRoutingDirty by remember { mutableStateOf(false) }
 
     // Tunnel-page settings lifted as observable state: reading the settings store directly
     // inside composition is not reactive, so a flipped switch would instantly snap back.
@@ -181,9 +190,41 @@ fun MainAppScreen(
     var showBackupPasswordDialog by remember { mutableStateOf(false) }
     var showBackupImportPasswordDialog by remember { mutableStateOf(false) }
     var showBackupPlainConfirmDialog by remember { mutableStateOf(false) }
+    var backupImportFailures by remember { mutableStateOf<List<String>>(emptyList()) }
     var backupPassword by remember { mutableStateOf("") }
     var pendingExportUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+
+    fun reloadSettingsState() {
+        tunnelMode = TunnelMode.fromString(settingsManager.tunnelMode)
+        appLanguage = settingsManager.appLanguage
+        visibleShortcuts = settingsManager.visibleShortcuts
+        shortcutOrder = settingsManager.shortcutOrder
+        proxiesViewMode = settingsManager.proxiesViewMode
+        showGroupIcons = settingsManager.showGroupIcons
+        nodeColumns = settingsManager.nodeColumns
+        nodeSortMode = settingsManager.nodeSortMode
+        scriptingEnabled = settingsManager.scriptingEnabled
+        rewriteEnabled = settingsManager.rewriteEnabled
+        perAppMode = settingsManager.perAppProxyMode
+        selectedPackages = settingsManager.selectedPackages
+        tunStack = settingsManager.tunStack
+        bootOnStartup = settingsManager.bootOnStartup
+        allowLan = settingsManager.allowLan
+        ipv6Enabled = settingsManager.ipv6Enabled
+        allowLanPassword = settingsManager.allowLanPassword
+        fakeIpEnabled = settingsManager.fakeIpEnabled
+        dnsNameservers = settingsManager.dnsNameservers
+        dnsFallbackServers = settingsManager.dnsFallbackServers
+        blockThirdPartyDns = settingsManager.blockThirdPartyDns
+        killSwitchEnabled = settingsManager.killSwitchEnabled
+        allowBypassEnabled = settingsManager.allowBypassEnabled
+        allowPrivateSubs = settingsManager.allowPrivateSubscriptionHosts
+        mixedPort = settingsManager.mixedPort
+        tunMtu = settingsManager.tunMtu
+        onThemeModeChanged(settingsManager.themeMode)
+        onAppFontChanged(settingsManager.appFont)
+    }
 
     val settingsScrollState = rememberScrollState()
     val dashboardScrollState = rememberScrollState()
@@ -273,8 +314,15 @@ fun MainAppScreen(
         }
     }
 
-    // Load apps when entering App Routing screen (delayed so the transition completes smoothly)
+    // Load apps when entering App Routing screen (delayed so the transition completes smoothly),
+    // and coalesce VPN restarts when leaving App Routing after any package/mode modification.
     LaunchedEffect(currentSubScreen) {
+        if (currentSubScreen != SubScreen.APP_ROUTING && appRoutingDirty) {
+            appRoutingDirty = false
+            if (vpnStatus == VpnState.Status.RUNNING) {
+                MihomoVpnService.restart(activity)
+            }
+        }
         if (currentSubScreen == SubScreen.APP_ROUTING && installedApps.isEmpty()) {
             isAppsLoading = true
             try {
@@ -321,7 +369,13 @@ fun MainAppScreen(
     }
 
     val handleSubScreenBack: () -> Unit = {
-        currentSubScreen = null
+        val parent = parentSubScreen
+        if (parent != null) {
+            parentSubScreen = null
+            currentSubScreen = parent
+        } else {
+            currentSubScreen = null
+        }
     }
 
     // Handle Android system back button
@@ -335,9 +389,10 @@ fun MainAppScreen(
     fun doExportBackup(uri: android.net.Uri, password: String?) {
         coroutineScope.launch(Dispatchers.IO) {
             val result = runCatching {
-                activity.contentResolver.openOutputStream(uri)?.use { output ->
+                val inner = activity.contentResolver.openOutputStream(uri)?.use { output ->
                     BackupManager.exportBackup(activity, output, password)
                 } ?: error(AppStrings.get("backup_write_failed", settingsManager.appLanguage))
+                inner.getOrThrow()
             }
             kotlinx.coroutines.withContext(Dispatchers.Main) {
                 result.fold(
@@ -359,7 +414,7 @@ fun MainAppScreen(
         coroutineScope.launch(Dispatchers.IO) {
             val result = runCatching {
                 val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
-                    BackupManager.importBackup(
+                    BackupManager.importBackupDetailed(
                         activity,
                         input,
                         AppStrings.get("backup_too_large", settingsManager.appLanguage),
@@ -370,11 +425,21 @@ fun MainAppScreen(
             }
             kotlinx.coroutines.withContext(Dispatchers.Main) {
                 result.fold(
-                    onSuccess = { count ->
+                    onSuccess = { importRes ->
+                        reloadSettingsState()
                         vm.reloadProfiles()
+                        if (coreActive) {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                ClashCore.reloadActiveConfig(activity)
+                                refreshProxiesOnline()
+                            }
+                        }
+                        if (importRes.failures.isNotEmpty()) {
+                            backupImportFailures = importRes.failures
+                        }
                         CupertinoToast.show(
                             AppStrings.get("settings_backup_restored", appLanguage)
-                                .replace("{n}", count.toString())
+                                .replace("{n}", importRes.imported.toString())
                         )
                     },
                     onFailure = {
@@ -441,34 +506,61 @@ fun MainAppScreen(
                         shortcutOrder = shortcutOrder,
                         onToggleVpn = { onToggleVpn() },
                         onModeSelected = { newMode ->
+                            val prevMode = tunnelMode
                             tunnelMode = newMode
                             settingsManager.tunnelMode = newMode.value
-                            if (vpnStatus == VpnState.Status.RUNNING) {
-                                // The REST API switches the running mode without tearing the
-                                // tunnel down; fall back to a full config reload if it fails.
+                            if (vpnStatus == VpnState.Status.RUNNING || coreActive) {
                                 coroutineScope.launch(Dispatchers.IO) {
-                                    val patched = MihomoApi.patchMode(newMode.value)
-                                    if (!patched) {
+                                    val ok = if (vpnStatus == VpnState.Status.RUNNING) {
+                                        MihomoApi.patchMode(newMode.value) || ClashCore.reloadActiveConfig(activity)
+                                    } else {
                                         ClashCore.reloadActiveConfig(activity)
                                     }
-                                    refreshProxiesOnline()
-                                }
-                            } else if (coreActive) {
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    ClashCore.reloadActiveConfig(activity)
-                                    refreshProxiesOnline()
+                                    if (!ok) {
+                                        withContext(Dispatchers.Main) {
+                                            tunnelMode = prevMode
+                                            settingsManager.tunnelMode = prevMode.value
+                                            CupertinoToast.show(
+                                                AppStrings.get("core_reload_failed", appLanguage),
+                                                isDestructive = true
+                                            )
+                                        }
+                                    } else {
+                                        refreshProxiesOnline()
+                                    }
                                 }
                             }
                         },
                         onSelectProxy = { group, proxy -> handleSelectProxy(mainProxyGroupName, proxy) },
                         onHealthCheck = { group -> runSpeedTestForGroup(group) },
-                        onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },
-                        onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
-                        onNavigateToRules = { currentSubScreen = SubScreen.RULES },
-                        onNavigateToRequests = { currentSubScreen = SubScreen.REQUESTS },
-                        onNavigateToDns = { currentSubScreen = SubScreen.DNS },
-                        onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
-                        onNavigateToCore = { currentSubScreen = SubScreen.CORE },
+                        onNavigateToProfiles = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.PROFILES
+                        },
+                        onNavigateToAppRouting = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.APP_ROUTING
+                        },
+                        onNavigateToRules = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.RULES
+                        },
+                        onNavigateToRequests = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.REQUESTS
+                        },
+                        onNavigateToDns = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.DNS
+                        },
+                        onNavigateToNetworkShare = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.NETWORK_SHARE
+                        },
+                        onNavigateToCore = {
+                            parentSubScreen = null
+                            currentSubScreen = SubScreen.CORE
+                        },
                         mixedPort = mixedPort,
                         onUpdateVisibleShortcuts = { updated ->
                             visibleShortcuts = updated
@@ -562,17 +654,45 @@ fun MainAppScreen(
                     fakeIpEnabled = fakeIpEnabled,
                     themeMode = currentThemeMode,
                     onNavigateToScripts = {
+                        parentSubScreen = null
                         currentSubScreen = SubScreen.SCRIPTS
                     },
-                    onNavigateToProfiles = { currentSubScreen = SubScreen.PROFILES },
-                    onNavigateToAppRouting = { currentSubScreen = SubScreen.APP_ROUTING },
-                    onNavigateToLogs = { currentSubScreen = SubScreen.LOGS },
-                    onNavigateToAppearance = { currentSubScreen = SubScreen.APPEARANCE },
-                    onNavigateToDnsSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
-                    onNavigateToCore = { currentSubScreen = SubScreen.CORE },
-                    onNavigateToVpnTunnel = { currentSubScreen = SubScreen.VPN_TUNNEL },
-                    onNavigateToNetworkShare = { currentSubScreen = SubScreen.NETWORK_SHARE },
-                    onNavigateToAbout = { currentSubScreen = SubScreen.ABOUT }
+                    onNavigateToProfiles = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.PROFILES
+                    },
+                    onNavigateToAppRouting = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.APP_ROUTING
+                    },
+                    onNavigateToLogs = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.LOGS
+                    },
+                    onNavigateToAppearance = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.APPEARANCE
+                    },
+                    onNavigateToDnsSettings = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.DNS_SETTINGS
+                    },
+                    onNavigateToCore = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.CORE
+                    },
+                    onNavigateToVpnTunnel = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.VPN_TUNNEL
+                    },
+                    onNavigateToNetworkShare = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.NETWORK_SHARE
+                    },
+                    onNavigateToAbout = {
+                        parentSubScreen = null
+                        currentSubScreen = SubScreen.ABOUT
+                    }
                 )
                 }
             }
@@ -690,32 +810,34 @@ fun MainAppScreen(
                     translationX = if (isRtl) -edgeOffset else edgeOffset
                 }
         ) {
+            val rtlSign = if (isRtl) -1 else 1
             AnimatedContent(
                 targetState = displayedSubScreen,
                 transitionSpec = {
                     fun getDepth(s: SubScreen?): Int = when (s) {
                         null -> 0
+                        SubScreen.QR_SCAN, SubScreen.SCRIPTS -> 2
+                        SubScreen.DNS_SETTINGS -> if (initialState == SubScreen.DNS || targetState == SubScreen.DNS) 2 else 1
                         SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
-                        SubScreen.RULES, SubScreen.DNS, SubScreen.DNS_SETTINGS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
-                        SubScreen.APPEARANCE, SubScreen.CORE, SubScreen.QR_SCAN,
+                        SubScreen.RULES, SubScreen.DNS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
+                        SubScreen.APPEARANCE, SubScreen.CORE,
                         SubScreen.VPN_TUNNEL, SubScreen.ABOUT -> 1
-                        SubScreen.SCRIPTS -> 2
                     }
                     val initialDepth = getDepth(initialState)
                     val targetDepth = getDepth(targetState)
 
                     if (targetDepth > initialDepth) {
-                        (slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                        (slideInHorizontally(initialOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
                                 fadeIn(animationSpec = tween(LoonMotion.normalMs)))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { -it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                slideOutHorizontally(targetOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
                                         fadeOut(animationSpec = tween(LoonMotion.normalMs))
                             ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
                     } else {
-                        (slideInHorizontally(initialOffsetX = { -it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                        (slideInHorizontally(initialOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
                                 fadeIn(animationSpec = tween(LoonMotion.normalMs)))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
+                                slideOutHorizontally(targetOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
                                         fadeOut(animationSpec = tween(LoonMotion.normalMs))
                             ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
                     }
@@ -730,7 +852,7 @@ fun MainAppScreen(
                             ProfilesScreen(
                                 profiles = profiles,
                                 selectedProfileId = selectedProfileId,
-                                onBack = { currentSubScreen = null },
+                                onBack = handleSubScreenBack,
                                 preFillSubscriptionUrl = qrPrefillUrl,
                                 onPreFillConsumed = { qrPrefillUrl = null },
                                 onSelectProfile = { profile ->
@@ -754,6 +876,10 @@ fun MainAppScreen(
                                 onRefreshSubscription = { profile ->
                                     vm.refreshSubscription(profile, coreActive)
                                 },
+                                isUpdatingAll = vm.isRefreshingAll,
+                                onRefreshAllSubscriptions = {
+                                    vm.refreshAllSubscriptions(coreActive)
+                                },
                                 onDeleteProfile = { profile ->
                                     vm.deleteProfile(profile, coreActive)
                                 },
@@ -763,12 +889,15 @@ fun MainAppScreen(
                                 onReorderProfiles = { newOrderList ->
                                     vm.reorderProfiles(newOrderList)
                                 },
-                                onNavigateToQrScan = { currentSubScreen = SubScreen.QR_SCAN }
+                                onNavigateToQrScan = {
+                                    parentSubScreen = SubScreen.PROFILES
+                                    currentSubScreen = SubScreen.QR_SCAN
+                                }
                             )
                         }
                         SubScreen.SCRIPTS -> {
                             ScriptsScreen(
-                                onBack = { currentSubScreen = null },
+                                onBack = handleSubScreenBack,
                                 onScriptsChanged = {
                                     vm.onScriptsChanged(coreActive)
                                 }
@@ -780,13 +909,11 @@ fun MainAppScreen(
                                 selectedPackages = selectedPackages,
                                 apps = installedApps,
                                 isLoading = isAppsLoading,
-                                onBack = { currentSubScreen = null },
+                                onBack = handleSubScreenBack,
                                 onModeChanged = { mode ->
                                     perAppMode = mode
                                     settingsManager.perAppProxyMode = mode
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
+                                    appRoutingDirty = true
                                 },
                                 onTogglePackage = { pkg ->
                                     val updated = if (selectedPackages.contains(pkg)) {
@@ -796,22 +923,18 @@ fun MainAppScreen(
                                     }
                                     selectedPackages = updated
                                     settingsManager.selectedPackages = updated
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
+                                    appRoutingDirty = true
                                 },
                                 onUpdateSelectedPackages = { updated ->
                                     selectedPackages = updated
                                     settingsManager.selectedPackages = updated
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
+                                    appRoutingDirty = true
                                 }
                             )
                         }
                         SubScreen.LOGS -> {
                             LogsScreen(
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.RULES -> {
@@ -819,82 +942,138 @@ fun MainAppScreen(
                                 rules = parsedProfile.rules,
                                 totalRules = parsedProfile.totalRules,
                                 tunnelMode = tunnelMode,
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.DNS -> {
                             DnsScreen(
-                                onNavigateToSettings = { currentSubScreen = SubScreen.DNS_SETTINGS },
-                                onBack = { currentSubScreen = null }
+                                onNavigateToSettings = {
+                                    parentSubScreen = SubScreen.DNS
+                                    currentSubScreen = SubScreen.DNS_SETTINGS
+                                },
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.DNS_SETTINGS -> {
                             DnsSettingsScreen(
                                 fakeIpEnabled = fakeIpEnabled,
                                 onFakeIpEnabledChanged = { enabled ->
+                                    val prev = fakeIpEnabled
                                     fakeIpEnabled = enabled
                                     settingsManager.fakeIpEnabled = enabled
                                     if (coreActive) {
                                         coroutineScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
+                                            val ok = ClashCore.reloadActiveConfig(activity)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    fakeIpEnabled = prev
+                                                    settingsManager.fakeIpEnabled = prev
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("core_reload_failed", appLanguage),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 },
-                                nameservers = settingsManager.dnsNameservers,
-                                fallbackServers = settingsManager.dnsFallbackServers,
-                                blockThirdPartyDns = settingsManager.blockThirdPartyDns,
+                                nameservers = dnsNameservers,
+                                fallbackServers = dnsFallbackServers,
+                                blockThirdPartyDns = blockThirdPartyDns,
                                 onSaveDns = { nameservers, fallback, blockDns ->
+                                    val prevNs = dnsNameservers
+                                    val prevFb = dnsFallbackServers
+                                    val prevBlock = blockThirdPartyDns
+                                    dnsNameservers = nameservers
+                                    dnsFallbackServers = fallback
+                                    blockThirdPartyDns = blockDns
                                     settingsManager.dnsNameservers = nameservers
                                     settingsManager.dnsFallbackServers = fallback
                                     settingsManager.blockThirdPartyDns = blockDns
                                     if (coreActive) {
                                         coroutineScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
+                                            val ok = ClashCore.reloadActiveConfig(activity)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    dnsNameservers = prevNs
+                                                    dnsFallbackServers = prevFb
+                                                    blockThirdPartyDns = prevBlock
+                                                    settingsManager.dnsNameservers = prevNs
+                                                    settingsManager.dnsFallbackServers = prevFb
+                                                    settingsManager.blockThirdPartyDns = prevBlock
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("core_reload_failed", appLanguage),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 },
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.REQUESTS -> {
                             RequestLogsScreen(
                                 vpnStatus = vpnStatus,
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.NETWORK_SHARE -> {
                             NetworkShareScreen(
                                 allowLan = allowLan,
                                 onAllowLanChanged = { enabled ->
+                                    val prev = allowLan
                                     allowLan = enabled
                                     settingsManager.allowLan = enabled
                                     if (coreActive) {
                                         coroutineScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
+                                            val ok = ClashCore.reloadActiveConfig(activity)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    allowLan = prev
+                                                    settingsManager.allowLan = prev
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("core_reload_failed", appLanguage),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 },
                                 allowLanPassword = allowLanPassword,
                                 onAllowLanPasswordChanged = { pwd ->
+                                    val prev = allowLanPassword
                                     allowLanPassword = pwd
                                     settingsManager.allowLanPassword = pwd
                                     // Committed explicitly by the screen; one reload per save.
                                     if (coreActive) {
                                         coroutineScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
+                                            val ok = ClashCore.reloadActiveConfig(activity)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    allowLanPassword = prev
+                                                    settingsManager.allowLanPassword = prev
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("core_reload_failed", appLanguage),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 },
                                 mixedPort = mixedPort,
                                 vpnStatus = vpnStatus,
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.APPEARANCE -> {
                             AppearanceScreen(
                                 themeMode = currentThemeMode,
                                 onThemeModeChanged = onThemeModeChanged,
-                                onBack = { currentSubScreen = null },
+                                onBack = handleSubScreenBack,
                                 appFont = currentAppFont,
                                 onAppFontChanged = onAppFontChanged,
                                 appLanguage = appLanguage,
@@ -906,15 +1085,16 @@ fun MainAppScreen(
                         }
                         SubScreen.CORE -> {
                             CoreScreen(
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.QR_SCAN -> {
                             QrScanScreen(
-                                onBack = { currentSubScreen = null },
+                                onBack = handleSubScreenBack,
                                 onResult = { url ->
                                     qrPrefillUrl = url
                                     CupertinoToast.show(AppStrings.get("qr_scan_result", appLanguage))
+                                    parentSubScreen = null
                                     currentSubScreen = SubScreen.PROFILES
                                 }
                             )
@@ -939,11 +1119,22 @@ fun MainAppScreen(
                                 },
                                 mixedPort = mixedPort,
                                 onMixedPortChanged = { port ->
+                                    val prevPort = mixedPort
                                     mixedPort = port
                                     settingsManager.mixedPort = port
                                     if (coreActive) {
                                         coroutineScope.launch(Dispatchers.IO) {
-                                            ClashCore.reloadActiveConfig(activity)
+                                            val ok = ClashCore.reloadActiveConfig(activity)
+                                            if (!ok) {
+                                                withContext(Dispatchers.Main) {
+                                                    mixedPort = prevPort
+                                                    settingsManager.mixedPort = prevPort
+                                                    CupertinoToast.show(
+                                                        AppStrings.get("core_reload_failed", appLanguage),
+                                                        isDestructive = true
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 },
@@ -981,7 +1172,7 @@ fun MainAppScreen(
                                     bootOnStartup = enabled
                                     settingsManager.bootOnStartup = enabled
                                 },
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack
                             )
                         }
                         SubScreen.ABOUT -> {
@@ -1018,7 +1209,8 @@ fun MainAppScreen(
                                         }
                                     }
                                 },
-                                onBack = { currentSubScreen = null }
+                                onBack = handleSubScreenBack,
+                                onCoreReset = { vm.onCoreReset() }
                             )
                         }
                     }
@@ -1168,5 +1360,16 @@ fun MainAppScreen(
                 visualTransformation = PasswordVisualTransformation()
             )
         }
+    }
+
+    if (backupImportFailures.isNotEmpty()) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("settings_backup_import", appLanguage),
+            message = backupImportFailures.joinToString("\n• ", prefix = "• "),
+            confirmText = AppStrings.get("dialog_ok", appLanguage),
+            dismissText = null,
+            onConfirm = { backupImportFailures = emptyList() },
+            onDismissRequest = { backupImportFailures = emptyList() }
+        )
     }
 }

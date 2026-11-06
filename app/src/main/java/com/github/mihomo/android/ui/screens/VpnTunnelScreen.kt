@@ -4,6 +4,7 @@ package com.github.mihomo.android.ui.screens
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,6 +51,11 @@ fun VpnTunnelScreen(
 ) {
     val lang = LocalAppLanguage.current
     val context = LocalContext.current
+
+    // setBlocking() exists from API 29 only. On 26-28 the switch would silently do
+    // nothing, so it is disabled here and the subtitle says why — never show an "on"
+    // state the system cannot honor.
+    val killSwitchSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     var showTunDialog by remember { mutableStateOf(false) }
     var showMixedPortDialog by remember { mutableStateOf(false) }
@@ -114,14 +120,22 @@ fun VpnTunnelScreen(
                 CupertinoGroupedSection {
                     CupertinoCell(
                         title = AppStrings.get("settings_kill_switch", lang),
+                        subtitle = if (killSwitchSupported) {
+                            AppStrings.get("settings_kill_switch_desc", lang)
+                        } else {
+                            AppStrings.get("settings_kill_switch_unsupported", lang)
+                        },
                         showChevron = false,
                         trailing = {
                             CupertinoSwitch(
-                                checked = killSwitchEnabled,
+                                checked = killSwitchEnabled && killSwitchSupported,
+                                enabled = killSwitchSupported,
                                 onCheckedChange = onKillSwitchChanged
                             )
                         },
-                        onClick = { onKillSwitchChanged(!killSwitchEnabled) }
+                        onClick = {
+                            if (killSwitchSupported) onKillSwitchChanged(!killSwitchEnabled)
+                        }
                     )
                     CupertinoDivider()
                     CupertinoCell(
@@ -168,6 +182,20 @@ fun VpnTunnelScreen(
                         title = AppStrings.get("settings_system_vpn", lang),
                         showChevron = true,
                         onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+                            }
+                        }
+                    )
+                    CupertinoDivider()
+                    CupertinoCell(
+                        title = AppStrings.get("settings_always_on_vpn", lang),
+                        subtitle = AppStrings.get("settings_always_on_vpn_desc", lang),
+                        showChevron = true,
+                        onClick = {
+                            // The system always-on screen is the REAL system-level kill
+                            // switch ("Block connections without VPN"); this app cannot
+                            // grant it for itself, so hand the user to the right toggle.
                             runCatching {
                                 context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                             }
@@ -314,7 +342,10 @@ private fun NumberValueDialog(
             CupertinoTextField(
                 value = input,
                 onValueChange = { newValue -> input = newValue.filter { ch -> ch.isDigit() } },
-                placeholder = "${range.first} - ${range.last}"
+                placeholder = "${range.first} - ${range.last}",
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                )
             )
         }
     )

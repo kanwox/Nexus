@@ -8,5 +8,9 @@ data class DnsRecord(
     val latencyMs: Int = 0,
     val timestamp: Long = System.currentTimeMillis(),
     val type: String = "A",
-    val server: String? = null
-)
+    val server: String? = null,
+    val isCacheHit: Boolean = false
+) {
+    val isResolving: Boolean
+        get() = ip.equals("Resolving...", ignoreCase = true)
+}

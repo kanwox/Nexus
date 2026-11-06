@@ -106,7 +106,7 @@ fun RulesScreen(
             actions = {
                 Box(
                     modifier = Modifier
-                        .height(44.dp)
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                         .clip(RoundedCornerShape(8.dp))
                         .iosPressable {
                             haptic.selection()
@@ -139,7 +139,7 @@ fun RulesScreen(
                 // Rule Tester text action
                 Box(
                     modifier = Modifier
-                        .height(44.dp)
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                         .clip(RoundedCornerShape(8.dp))
                         .iosPressable {
                             haptic.selection()
@@ -431,9 +431,18 @@ fun RulesScreen(
 
     // Rule Tester: live local matching against the parsed rule list
     if (showRuleTester) {
-        val testerQuery = testerInput.trim()
-        val testerMatch = remember(testerQuery, rules) {
-            if (testerQuery.isEmpty()) null else matchRule(testerQuery, rules)
+        var debouncedQuery by remember { mutableStateOf(testerInput.trim()) }
+        LaunchedEffect(testerInput, rules.size) {
+            val trimmed = testerInput.trim()
+            if (trimmed.isEmpty() || rules.size <= 500) {
+                debouncedQuery = trimmed
+            } else {
+                kotlinx.coroutines.delay(150L)
+                debouncedQuery = trimmed
+            }
+        }
+        val testerMatch = remember(debouncedQuery, rules) {
+            if (debouncedQuery.isEmpty()) null else matchRule(debouncedQuery, rules)
         }
 
         CupertinoModalBottomSheet(
@@ -454,7 +463,7 @@ fun RulesScreen(
                     singleLine = true
                 )
 
-                if (testerQuery.isNotEmpty()) {
+                if (debouncedQuery.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(16.dp))
                     if (testerMatch == null) {
                         Text(
@@ -464,7 +473,7 @@ fun RulesScreen(
                             lineHeight = LoonLineHeight.callout,
                         )
                     } else {
-                        val matched = testerMatch
+                        val matched = testerMatch.rule
                         Text(
                             text = AppStrings.get("rules_test_match", lang),
                             fontSize = LoonTypeScale.footnote,
@@ -497,6 +506,21 @@ fun RulesScreen(
                                     matched.target.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
                                     else -> IosBlue
                                 }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            CupertinoDetailRow(
+                                label = AppStrings.get("rules_field_order", lang),
+                                value = AppStrings.get("rules_order_value", lang).replace("{n}", (testerMatch.index + 1).toString())
+                            )
+                        }
+                        if (testerMatch.skippedDynamicRules > 0) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = AppStrings.get("rules_test_skipped_notice", lang)
+                                    .replace("{n}", testerMatch.skippedDynamicRules.toString()),
+                                color = LoonWarningText,
+                                fontSize = LoonTypeScale.footnote,
+                                lineHeight = LoonLineHeight.footnote
                             )
                         }
                     }
@@ -623,29 +647,96 @@ private fun getRuleTypeDescription(type: String, lang: String): String {
     }
 }
 
+internal data class RuleMatchResult(
+    val rule: ParsedRule,
+    val index: Int,
+    val skippedDynamicRules: Int
+)
+
 /**
  * Pure local rule matching for the tester (no core round-trip).
  * DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD match domain input; IP-CIDR / IP-CIDR6 match
- * literal IPv4 / IPv6 input. GEOIP, RULE-SET, PROCESS-NAME and logic rules cannot be
- * evaluated locally and are skipped, so a final MATCH rule acts as the fallback.
+ * literal IPv4 / IPv6 input; DST-PORT / PORT match an explicit port. GEOIP, RULE-SET,
+ * PROCESS-NAME and logic rules cannot be evaluated locally and are counted in
+ * [RuleMatchResult.skippedDynamicRules] so the UI can surface a static-estimation notice.
  */
-private fun matchRule(target: String, rules: List<ParsedRule>): ParsedRule? {
-    val input = target.trim()
-    if (input.isEmpty()) return null
-    val ipBytes = parseIpLiteral(input)
-    val lowerInput = input.lowercase()
+internal fun matchRule(target: String, rules: List<ParsedRule>): RuleMatchResult? {
+    val raw = target.trim()
+    if (raw.isEmpty()) return null
 
-    for (rule in rules) {
+    val (hostPart, portPart) = splitHostAndPort(raw)
+    val ipBytes = if (hostPart.isNotEmpty()) parseIpLiteral(hostPart) else null
+    val lowerHost = hostPart.lowercase()
+    var skippedDynamic = 0
+
+    rules.forEachIndexed { index, rule ->
         when (rule.type.uppercase()) {
-            "DOMAIN" -> if (ipBytes == null && rule.payload.equals(input, ignoreCase = true)) return rule
-            "DOMAIN-SUFFIX" -> if (ipBytes == null && isDomainSuffixMatch(lowerInput, rule.payload.lowercase())) return rule
-            "DOMAIN-KEYWORD" -> if (ipBytes == null && lowerInput.contains(rule.payload.lowercase())) return rule
-            "IP-CIDR", "IP-CIDR6" -> if (ipBytes != null && isIpInCidr(ipBytes, rule.payload)) return rule
-            "MATCH" -> return rule
+            "DOMAIN" -> if (hostPart.isNotEmpty() && ipBytes == null && rule.payload.equals(hostPart, ignoreCase = true)) {
+                return RuleMatchResult(rule, index, skippedDynamic)
+            }
+            "DOMAIN-SUFFIX" -> if (hostPart.isNotEmpty() && ipBytes == null && isDomainSuffixMatch(lowerHost, rule.payload.lowercase())) {
+                return RuleMatchResult(rule, index, skippedDynamic)
+            }
+            "DOMAIN-KEYWORD" -> if (hostPart.isNotEmpty() && ipBytes == null && lowerHost.contains(rule.payload.lowercase())) {
+                return RuleMatchResult(rule, index, skippedDynamic)
+            }
+            "IP-CIDR", "IP-CIDR6" -> if (ipBytes != null && isIpInCidr(ipBytes, rule.payload)) {
+                return RuleMatchResult(rule, index, skippedDynamic)
+            }
+            "DST-PORT", "PORT" -> if (portPart != null && isPortMatch(portPart, rule.payload)) {
+                return RuleMatchResult(rule, index, skippedDynamic)
+            }
+            "MATCH" -> return RuleMatchResult(rule, index, skippedDynamic)
+            "GEOIP", "GEOSITE", "RULE-SET", "PROCESS-NAME", "PROCESS-PATH", "AND", "OR", "NOT", "SUB-RULE" -> {
+                skippedDynamic++
+            }
             else -> Unit
         }
     }
     return null
+}
+
+private fun splitHostAndPort(input: String): Pair<String, Int?> {
+    val purePort = input.toIntOrNull()
+    if (purePort != null && purePort in 1..65535) {
+        return "" to purePort
+    }
+    if (input.startsWith("[")) {
+        val closeIdx = input.indexOf(']')
+        if (closeIdx > 1) {
+            val host = input.substring(1, closeIdx)
+            val rest = input.substring(closeIdx + 1)
+            val port = if (rest.startsWith(":")) rest.substring(1).toIntOrNull()?.takeIf { it in 1..65535 } else null
+            return host to port
+        }
+    }
+    val firstColon = input.indexOf(':')
+    val lastColon = input.lastIndexOf(':')
+    if (firstColon > 0 && firstColon == lastColon) {
+        val maybePort = input.substring(lastColon + 1).toIntOrNull()
+        if (maybePort != null && maybePort in 1..65535) {
+            return input.substring(0, lastColon) to maybePort
+        }
+    }
+    return input to null
+}
+
+private fun isPortMatch(port: Int, payload: String): Boolean {
+    val tokens = payload.split('/', ',')
+    for (rawToken in tokens) {
+        val token = rawToken.trim()
+        if (token.isEmpty()) continue
+        val dashIdx = token.indexOf('-')
+        if (dashIdx > 0) {
+            val start = token.substring(0, dashIdx).trim().toIntOrNull() ?: continue
+            val end = token.substring(dashIdx + 1).trim().toIntOrNull() ?: continue
+            if (port in start..end) return true
+        } else {
+            val exact = token.toIntOrNull() ?: continue
+            if (port == exact) return true
+        }
+    }
+    return false
 }
 
 private fun isDomainSuffixMatch(input: String, suffix: String): Boolean {
