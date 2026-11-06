@@ -380,10 +380,7 @@ fun ProxiesScreen(
                             color = pillBg
                         ) {
                             Row(
-                                modifier = Modifier.padding(
-                                    start = 13.dp,
-                                    end = if (isSelected || isPillTesting) 2.dp else 13.dp
-                                ),
+                                modifier = Modifier.padding(horizontal = 13.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -402,11 +399,9 @@ fun ProxiesScreen(
                                     maxLines = 1
                                 )
                                 if (isSelected || isPillTesting) {
-                                    // UI-A11Y-01: the visual icon stays 14dp, while the touch and
-                                    // semantics boundary expands inside the pill.
                                     Box(
                                         modifier = Modifier
-                                            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = 35.dp)
+                                            .size(20.dp)
                                             .clickable(
                                                 enabled = !isPillTesting,
                                                 interactionSource = remember { MutableInteractionSource() },
@@ -592,7 +587,6 @@ fun ProxiesScreen(
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
                             LoonGroupHeaderCard(
-                                modifier = Modifier.animateItem(),
                                 groupName = groupName,
                                 groupType = group?.type ?: "select",
                                 activeNode = groupNow,
@@ -626,7 +620,6 @@ fun ProxiesScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .animateItem()
                                         .padding(top = if (rowIndex == 0) 6.dp else 0.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
@@ -997,14 +990,16 @@ private fun LoonGroupHeaderCard(
                 AnimatedContent(
                     targetState = isExpanded || isTesting,
                     transitionSpec = {
-                        fadeIn(tween(LoonMotion.normalMs)) togetherWith fadeOut(tween(LoonMotion.fastMs))
+                        (fadeIn(tween(LoonMotion.normalMs)) togetherWith fadeOut(tween(LoonMotion.fastMs)))
+                            .using(SizeTransform(clip = false) { _, _ -> snap() })
                     },
                     label = "group_right_slot"
                 ) { showSpeedTest ->
                     if (showSpeedTest) {
                         Box(
                             modifier = Modifier
-                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+                                .height(24.dp)
+                                .widthIn(min = 34.dp)
                                 .clickable(
                                     enabled = !isTesting,
                                     interactionSource = remember { MutableInteractionSource() },
@@ -1218,9 +1213,6 @@ private fun CupertinoLatencyText(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             ) { onClick() }
-            // UI-A11Y-01: the visual chip keeps its size, but the touch target is the 48dp
-            // accessibility minimum.
-            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
             .semantics {
                 contentDescription = AppStrings.get("proxies_test", lang)
                 role = Role.Button

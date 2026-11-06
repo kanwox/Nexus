@@ -919,7 +919,18 @@ fun <T> CupertinoSegmentedControl(
         items.indexOf(selectedItem)
     }
 
-    BoxWithConstraints(
+    val isRtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
+    val animatedIndex by animateFloatAsState(
+        targetValue = selectedIndex.coerceAtLeast(0).toFloat(),
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = LoonMotion.segmentedDampingRatio, stiffness = LoonMotion.segmentedStiffness)
+        },
+        label = "segmented_thumb_index"
+    )
+
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
@@ -928,27 +939,16 @@ fun <T> CupertinoSegmentedControl(
             .background(LoonTertiaryBg)
             .padding(2.dp)
     ) {
-        val totalWidth = this.maxWidth
-        val segmentWidth = totalWidth / items.size
-
-        // iOS spring sliding indicator (Single physical Thumb)
-        val thumbOffset by animateDpAsState(
-            targetValue = segmentWidth * selectedIndex.coerceAtLeast(0),
-            animationSpec = if (reduceMotion) {
-                snap()
-            } else {
-                spring(dampingRatio = LoonMotion.segmentedDampingRatio, stiffness = LoonMotion.segmentedStiffness)
-            },
-            label = "segmented_thumb_offset"
-        )
-
         // The Sliding White Pill Thumb with subtle iOS shadow & border
         if (selectedIndex >= 0) {
             Box(
                 modifier = Modifier
-                    .offset(x = thumbOffset)
-                    .width(segmentWidth)
+                    .fillMaxWidth(1f / items.size)
                     .fillMaxHeight()
+                    .graphicsLayer {
+                        val dir = if (isRtl) -1f else 1f
+                        translationX = dir * animatedIndex * size.width
+                    }
                     .shadow(
                         elevation = 2.dp,
                         shape = RoundedCornerShape(LoonRadii.segmentedThumb),

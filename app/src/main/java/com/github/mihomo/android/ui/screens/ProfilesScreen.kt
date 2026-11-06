@@ -118,6 +118,7 @@ fun ProfilesScreen(
     onRefreshAllSubscriptions: (() -> Unit)? = null,
     onImportLocalFile: (() -> Unit)? = null,
     onReorderProfiles: ((List<ProfileItem>) -> Unit)? = null,
+    onNavigateToOverride: ((ProfileItem) -> Unit)? = null,
     onNavigateToQrScan: () -> Unit = {},
     preFillSubscriptionUrl: String? = null,
     onPreFillConsumed: () -> Unit = {}
@@ -282,8 +283,8 @@ fun ProfilesScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(LIST_ITEM_SPACING_DP.dp)
         ) {
-            if (profiles.isEmpty()) {
-                item {
+            if (localProfiles.isEmpty()) {
+                item(key = "profiles_empty_placeholder") {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -307,7 +308,7 @@ fun ProfilesScreen(
                     }
                 }
             } else {
-                if (profiles.size > 1) {
+                if (localProfiles.size > 1) {
                     item(key = "profile_reorder_hint") {
                         Text(
                             text = AppStrings.current("profile_reorder_hint"),
@@ -427,6 +428,7 @@ fun ProfilesScreen(
                         Modifier
                     }
 
+                    val isDragActive = isDragging || dragTranslationY.value != 0f
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = LoonCard,
@@ -436,16 +438,22 @@ fun ProfilesScreen(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .zIndex(if (isDragging) 100f else 1f)
-                            .graphicsLayer {
-                                translationY = if (isDragging) dragOffsetY else dragTranslationY.value
-                                val lift = if (isDragging) DRAG_LIFT_SCALE else 1f
-                                scaleX = lift
-                                scaleY = lift
-                                shadowElevation = if (isDragging) DRAG_SHADOW_ELEVATION else 0f
-                                shape = RoundedCornerShape(14.dp)
-                            }
-                            .clip(RoundedCornerShape(14.dp))
+                            .then(
+                                if (isDragActive) {
+                                    Modifier
+                                        .zIndex(100f)
+                                        .graphicsLayer {
+                                            translationY = if (isDragging) dragOffsetY else dragTranslationY.value
+                                            val lift = if (isDragging) DRAG_LIFT_SCALE else 1f
+                                            scaleX = lift
+                                            scaleY = lift
+                                            shadowElevation = if (isDragging) DRAG_SHADOW_ELEVATION else 0f
+                                            shape = RoundedCornerShape(14.dp)
+                                        }
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .then(dragModifier)
                             .iosPressable {
                                 haptic.selection()
@@ -663,6 +671,18 @@ fun ProfilesScreen(
                     }
                 )
             )
+            if (onNavigateToOverride != null) {
+                add(
+                    CupertinoActionSheetItem(
+                        text = AppStrings.get("profile_override", lang),
+                        onClick = {
+                            haptic.selection()
+                            actionSheetProfile = null
+                            onNavigateToOverride(target)
+                        }
+                    )
+                )
+            }
             add(
                 CupertinoActionSheetItem(
                     text = AppStrings.get("profile_delete", lang),
@@ -784,6 +804,7 @@ fun ProfilesScreen(
             isDestructive = true,
             onConfirm = {
                 deletingProfile = null
+                localProfiles = localProfiles.filter { it.id != target.id }
                 onDeleteProfile(target)
             },
             onDismiss = { deletingProfile = null },

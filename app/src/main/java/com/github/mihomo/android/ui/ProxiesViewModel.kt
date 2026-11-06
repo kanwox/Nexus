@@ -235,6 +235,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
         parseJob?.cancel()
         parseJob = viewModelScope.launch(Dispatchers.IO) {
+            if (active == null) {
+                synchronized(liveMapLock) { liveGroupMap = emptyMap() }
+            }
             // The delay cache and the selection map are both profile-scoped: switching the
             // profile must drop stale measurements of the previous profile, and profile
             // selection must be recorded before any speed-test worker can key into the
@@ -265,6 +268,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     grp?.now ?: ""
                 }
                 currentGroupData = grp?.copy(now = effectiveNow)
+            } else {
+                currentGroupData = null
             }
             val mainGrp = parsed.groups[mainProxyGroupName]
             val savedMainNode = savedMap[mainProxyGroupName]
@@ -933,14 +938,17 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             // resurrect for a future profile that happens to reuse a group name.
             settings.clearSelectedNodesForProfile(profile.id)
             cancelSpeedTests()
+            val updatedProfiles = ConfigManager.getProfiles(app())
+            profiles = updatedProfiles
             if (wasSelected) {
-                selectedProfileId = null
-                settings.selectedProfileId = null
-                invalidateDelayCache(null, force = true)
+                val nextId = updatedProfiles.firstOrNull()?.id
+                selectedProfileId = nextId
+                settings.selectedProfileId = nextId
+                invalidateDelayCache(nextId, force = true)
+                synchronized(liveMapLock) { liveGroupMap = emptyMap() }
             }
-            profiles = ConfigManager.getProfiles(app())
             parseActiveProfile()
-            if (wasSelected) {
+            if (wasSelected && updatedProfiles.isNotEmpty()) {
                 reloadCoreAndRefresh(coreActive)
             }
         }
