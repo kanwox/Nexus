@@ -67,6 +67,7 @@ import kotlinx.coroutines.withContext
 
 enum class SubScreen {
     PROFILES,
+    PROFILE_OVERRIDE,
     APP_ROUTING,
     LOGS,
     SCRIPTS,
@@ -126,6 +127,9 @@ fun MainAppScreen(
     }
     var parentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
         mutableStateOf<SubScreen?>(null)
+    }
+    var overrideTargetProfileId by rememberSaveable {
+        mutableStateOf<String?>(null)
     }
 
     // Field-level derived reads: vpnState updates once per second (traffic strings), and
@@ -371,7 +375,7 @@ fun MainAppScreen(
     val handleSubScreenBack: () -> Unit = {
         val parent = parentSubScreen
         if (parent != null) {
-            parentSubScreen = null
+            parentSubScreen = if (parent == SubScreen.PROFILE_OVERRIDE) SubScreen.PROFILES else null
             currentSubScreen = parent
         } else {
             currentSubScreen = null
@@ -816,7 +820,8 @@ fun MainAppScreen(
                 transitionSpec = {
                     fun getDepth(s: SubScreen?): Int = when (s) {
                         null -> 0
-                        SubScreen.QR_SCAN, SubScreen.SCRIPTS -> 2
+                        SubScreen.QR_SCAN, SubScreen.PROFILE_OVERRIDE -> 2
+                        SubScreen.SCRIPTS -> if (initialState == SubScreen.PROFILE_OVERRIDE || targetState == SubScreen.PROFILE_OVERRIDE) 3 else 2
                         SubScreen.DNS_SETTINGS -> if (initialState == SubScreen.DNS || targetState == SubScreen.DNS) 2 else 1
                         SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
                         SubScreen.RULES, SubScreen.DNS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
@@ -850,8 +855,8 @@ fun MainAppScreen(
                     when (subScreen) {
                         SubScreen.PROFILES -> {
                             ProfilesScreen(
-                                profiles = profiles,
-                                selectedProfileId = selectedProfileId,
+                                profiles = vm.profiles,
+                                selectedProfileId = vm.selectedProfileId,
                                 onBack = handleSubScreenBack,
                                 preFillSubscriptionUrl = qrPrefillUrl,
                                 onPreFillConsumed = { qrPrefillUrl = null },
@@ -863,7 +868,7 @@ fun MainAppScreen(
                                 },
                                 onUpdateProfile = { profile ->
                                     vm.reloadProfiles()
-                                    if (selectedProfileId == profile.id) {
+                                    if (vm.selectedProfileId == profile.id) {
                                         parseActiveProfile()
                                         if (coreActive) {
                                             coroutineScope.launch(Dispatchers.IO) {
@@ -892,8 +897,31 @@ fun MainAppScreen(
                                 onNavigateToQrScan = {
                                     parentSubScreen = SubScreen.PROFILES
                                     currentSubScreen = SubScreen.QR_SCAN
+                                },
+                                onNavigateToOverride = { profile ->
+                                    overrideTargetProfileId = profile.id
+                                    parentSubScreen = SubScreen.PROFILES
+                                    currentSubScreen = SubScreen.PROFILE_OVERRIDE
                                 }
                             )
+                        }
+                        SubScreen.PROFILE_OVERRIDE -> {
+                            val targetProfile = vm.profiles.find { it.id == overrideTargetProfileId }
+                                ?: vm.profiles.firstOrNull { it.id == vm.selectedProfileId }
+                                ?: vm.profiles.firstOrNull()
+                            if (targetProfile != null) {
+                                ProfileOverrideScreen(
+                                    profile = targetProfile,
+                                    onBack = handleSubScreenBack,
+                                    onNavigateToScripts = {
+                                        parentSubScreen = SubScreen.PROFILE_OVERRIDE
+                                        currentSubScreen = SubScreen.SCRIPTS
+                                    },
+                                    onProfileUpdated = {
+                                        vm.onProfileMetadataUpdated()
+                                    }
+                                )
+                            }
                         }
                         SubScreen.SCRIPTS -> {
                             ScriptsScreen(
