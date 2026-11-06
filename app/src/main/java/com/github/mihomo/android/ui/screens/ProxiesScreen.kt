@@ -587,6 +587,7 @@ fun ProxiesScreen(
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
                             LoonGroupHeaderCard(
+                                modifier = Modifier.animateItem(placementSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)),
                                 groupName = groupName,
                                 groupType = group?.type ?: "select",
                                 activeNode = groupNow,
@@ -619,6 +620,7 @@ fun ProxiesScreen(
                             ) { rowIndex, rowProxies ->
                                 Row(
                                     modifier = Modifier
+                                        .animateItem(placementSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing))
                                         .fillMaxWidth()
                                         .padding(top = if (rowIndex == 0) 6.dp else 0.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
