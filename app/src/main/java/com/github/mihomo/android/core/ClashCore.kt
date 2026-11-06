@@ -145,7 +145,7 @@ object ClashCore {
             val res = load(configFile, activeProfile?.id)
             if (res.isSuccess) {
                 runCatching {
-                    val allSaved = settings.getAllSelectedNodes()
+                    val allSaved = settings.getSelectedNodesForProfile(activeProfile?.id ?: "")
                     allSaved.forEach { (gName, sNode) ->
                         patchSelector(gName, sNode)
                     }
@@ -440,9 +440,14 @@ object ClashCore {
             val deferred = getOrStartGroupHealthCheck(proxyName)
             try {
                 withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) { deferred.await() }
+            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Throwable) {
             } finally {
-                activeGroupChecks.remove(proxyName, deferred)
+                if (deferred.isCompleted) {
+                    activeGroupChecks.remove(proxyName, deferred)
+                }
             }
             val subGroup = queryGroup(proxyName) ?: return@withContext -2
             val activeProxy = subGroup.proxies.find { it.name == subGroup.now }

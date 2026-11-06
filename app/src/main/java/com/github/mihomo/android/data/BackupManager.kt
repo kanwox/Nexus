@@ -249,6 +249,9 @@ object BackupManager {
         val settings = SettingsManager(context)
 
         val profiles = ConfigManager.getProfiles(context).map { profile ->
+            if (!profile.file.exists()) {
+                error("配置文件不存在：${profile.name}")
+            }
             BackupProfile(
                 name = profile.name,
                 url = profile.url,
@@ -259,12 +262,20 @@ object BackupManager {
                 prependRules = profile.prependRules,
                 hostsEntries = profile.hostsEntries,
                 dnsServersOverride = profile.dnsServersOverride,
-                content = runCatching { profile.file.readText() }.getOrDefault("")
+                content = profile.file.readText()
             )
         }
 
         val scripts = ScriptManager.getScripts(context).map { script ->
             val codeFile = scriptCodeFile(context, script.scriptFile)
+            val code = if (script.scriptFile.isNotBlank()) {
+                if (codeFile == null || !codeFile.exists()) {
+                    error("脚本文件不存在：${script.name}")
+                }
+                codeFile.readText()
+            } else {
+                ""
+            }
             BackupScript(
                 id = script.id,
                 name = script.name,
@@ -275,11 +286,7 @@ object BackupManager {
                 enabled = script.enabled,
                 updatedAt = script.updatedAt,
                 contentHash = script.contentHash,
-                code = if (codeFile != null && codeFile.exists()) {
-                    runCatching { codeFile.readText() }.getOrDefault("")
-                } else {
-                    ""
-                }
+                code = code
             )
         }
 
@@ -498,7 +505,7 @@ object BackupManager {
         map["themeMode"] = settings.themeMode.name
         map["appLanguage"] = settings.appLanguage
         map["appFont"] = settings.appFont.name
-        for ((group, node) in settings.getAllSelectedNodes()) {
+        for ((group, node) in settings.getAllSelectedNodesForBackup()) {
             map["sel_node_$group"] = node
         }
         return map
@@ -564,7 +571,7 @@ object BackupManager {
         map["appFont"]?.let { runCatching { settings.appFont = AppFont.valueOf(it) } }
         for ((key, value) in map) {
             if (key.startsWith("sel_node_") && value.isNotBlank()) {
-                settings.setSelectedNode(key.removePrefix("sel_node_"), value)
+                settings.restoreLegacySelection(key.removePrefix("sel_node_"), value)
             }
         }
     }

@@ -3,17 +3,21 @@ package com.github.mihomo.android.ui.screens
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.ScriptItem
 import com.github.mihomo.android.data.ScriptManager
@@ -55,6 +59,7 @@ fun SettingsScreen(
 
     var scripts by remember { mutableStateOf(emptyList<ScriptItem>()) }
     val installedVersion = remember { UpdateChecker.installedVersion(context) }
+    val availableUpdate by UpdateChecker.availableUpdate.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
@@ -179,12 +184,28 @@ fun SettingsScreen(
                     onClick = onNavigateToAppearance
                 )
                 CupertinoIndentedDivider()
+                val discoveredUpdate = availableUpdate
                 CupertinoCell(
                     title = AppStrings.get("settings_about_page", lang),
-                    value = "v$installedVersion",
+                    value = if (discoveredUpdate != null) {
+                        AppStrings.get("settings_update_available_short", lang)
+                            .replace("{v}", discoveredUpdate.tagName)
+                    } else {
+                        "v$installedVersion"
+                    },
                     icon = Icons.Default.Security,
                     iconBg = IosGreen,
                     showChevron = true,
+                    trailing = if (discoveredUpdate != null) {
+                        {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(IosBlue)
+                            )
+                        }
+                    } else null,
                     onClick = onNavigateToAbout
                 )
             }

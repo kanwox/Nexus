@@ -15,6 +15,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.UUID
@@ -73,6 +75,20 @@ object MihomoApi {
         .connectTimeout(1, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * A SECOND client dedicated to WebSocket connections. The REST client above must keep
+     * its 3s read timeout (a stalled REST call should fail fast), but a WebSocket is a
+     * long-lived read: `readTimeout(0)` disables the per-read timeout, and liveness is
+     * enforced instead by `pingInterval(20)`, which sends protocol-level pings and fails
+     * the socket when a pong does not come back. Sharing one client would either kill the
+     * WS stream every 3 idle seconds or loosen the REST timeouts for every caller.
+     */
+    private val wsClient = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
     private val jsonBody = "application/json; charset=utf-8".toMediaType()
@@ -181,6 +197,33 @@ object MihomoApi {
     fun connections(): ConnectionsSnapshot? {
         val obj = getJson("connections") ?: return null
         return parseConnections(obj)
+    }
+
+    /**
+     * Opens a WebSocket to `ws://127.0.0.1:<port>/connections` (the same endpoint as the
+     * REST poll, upgraded by okhttp's `ws()` call). The core streams a full connections
+     * snapshot roughly once per second, which is what the request log wants.
+     *
+     * Returns null when the controller is not configured (VPN never started in this
+     * process) so the caller can stay on the REST-poll path. The caller owns the socket:
+     * it must `cancel()` it when stopping. Failures are reported through [listener]'s
+     * onFailure/onClosed/onMessage callbacks — this method never throws.
+     */
+    fun newConnectionsWebSocket(listener: WebSocketListener): WebSocket? {
+        if (!ApiController.isReady) return null
+        return runCatching {
+            val url = HttpUrl.Builder()
+                .scheme("http")
+                .host("127.0.0.1")
+                .port(ApiController.port)
+                .addPathSegment("connections")
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer ${ApiController.secret}")
+                .build()
+            wsClient.newWebSocket(request, listener)
+        }.getOrNull()
     }
 
     fun closeConnection(id: String): Boolean {

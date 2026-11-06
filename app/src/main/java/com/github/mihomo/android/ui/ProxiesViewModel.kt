@@ -17,6 +17,7 @@ import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.data.ProfileParser
 import com.github.mihomo.android.data.ParsedProfile
 import com.github.mihomo.android.data.SettingsManager
+import com.github.mihomo.android.data.SpeedTestState
 import com.github.mihomo.android.ui.components.CupertinoToast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -77,26 +78,76 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
      * the authoritative copy is a plain [ConcurrentHashMap] guarded by [delayCacheLock];
      * [delayCache] is the snapshot published to the UI. A [SnapshotStateMap] must never be
      * read from a background thread, so the workers only touch [delayCacheStore].
+     *
+     * Keys are prefixed with the profile id ("p:<profileId>|group:node" / "p:<profileId>|node"):
+     * two subscriptions can ship the same group/node names, and a global key made profile B
+     * show profile A's stale measurements until a fresh test overwrote them. [activeScopeId]
+     * identifies the profile the cache currently serves.
      */
-    private val delayCacheStore = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val delayCacheStore = java.util.concurrent.ConcurrentHashMap<String, SpeedTestState>()
     private val delayCacheLock = Any()
 
+    /** Profile-bound scope of the current delay cache; changes invalidate the cache. */
+    private var activeScopeId: String = ""
+
     /** UI-facing snapshot of [delayCacheStore]; republished on the main thread. */
-    val delayCache = mutableStateMapOf<String, Int>()
+    val delayCache = mutableStateMapOf<String, SpeedTestState>()
+
+    /** Namespaced key for the profile the cache is bound to. */
+    private fun scopedKey(key: String): String = "p:$activeScopeId|$key"
 
     private fun recordDelay(key: String, delay: Int) {
         synchronized(delayCacheLock) {
-            delayCacheStore[key] = delay
+            delayCacheStore[scopedKey(key)] = SpeedTestState.fromNativeDelay(delay)
+        }
+    }
+
+    /** Records an completed active probe result: non-positive or >=65535 values become [SpeedTestState.Timeout]. */
+    private fun recordProbeResult(key: String, delay: Int) {
+        synchronized(delayCacheLock) {
+            delayCacheStore[scopedKey(key)] = if (delay in 1..65534) {
+                SpeedTestState.Success(delay)
+            } else {
+                SpeedTestState.Timeout
+            }
         }
     }
 
     /** Reads a delay without touching snapshot state (safe from any thread). */
-    private fun readDelay(key: String): Int? = delayCacheStore[key]
+    private fun readDelay(key: String): Int? =
+        (delayCacheStore[scopedKey(key)] as? SpeedTestState.Success)?.delayMs
+
+    /**
+     * Drops every cached delay of a profile scope. Called on profile switch, subscription
+     * content update, and core reset: stale cross-profile or cross-version results must
+     * never overwrite the new data (the auto-test cooldown would otherwise keep serving
+     * profile A's latency for profile B's same-named node for up to minutes).
+     *
+     * [force] covers the same-profile content update: the scope id is unchanged but the
+     * measured delays belong to the PREVIOUS config version, so they must go too.
+     */
+    fun invalidateDelayCache(profileId: String?, force: Boolean = false) {
+        synchronized(delayCacheLock) {
+            val newScope = profileId ?: selectedProfileId ?: ""
+            if (newScope == activeScopeId && !force) return
+            activeScopeId = newScope
+            delayCacheStore.clear()
+        }
+        delayCache.clear()
+    }
 
     /** Publishes the current delays to the UI. Must be called on the main thread. */
     private fun publishDelayCache() {
         delayCache.clear()
-        delayCache.putAll(delayCacheStore)
+        synchronized(delayCacheLock) {
+            // Only publish entries of the ACTIVE scope: a worker still writing keys of a
+            // superseded profile (a test that raced a profile switch) must not leak back
+            // into the UI snapshot.
+            val prefix = "p:$activeScopeId|"
+            for ((key, value) in delayCacheStore) {
+                if (key.startsWith(prefix)) delayCache[key.removePrefix(prefix)] = value
+            }
+        }
     }
 
     // Whole-set replacement behind a lock: concurrent speed-test workers mutate it, and
@@ -122,17 +173,47 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     private var parseJob: Job? = null
     private var autoTestJob: Job? = null
 
+    /**
+     * Cancels every in-flight speed test (auto-test sweep and per-group probes whose
+     * delays would land in a superseded cache scope). Called together with
+     * [invalidateDelayCache] on profile switch / content update / core reset.
+     */
+    fun cancelSpeedTests() {
+        autoTestJob?.cancel()
+        autoTestJob = null
+        synchronized(testingNodesLock) { testingNodes = emptySet() }
+    }
+
     // Serializes read-modify-write cycles on the liveGroupMap instance from the concurrent
     // speed-test workers.
     private val liveMapLock = Any()
 
     val mainProxyGroupName: String by derivedStateOf {
-        proxyGroups.firstOrNull { it.equals("节点选择", ignoreCase = true) }
+        // A user-pinned default group for THIS profile wins over name guessing: the
+        // pinned id is part of the same profile scope as the node selections, so two
+        // subscriptions with different group layouts each keep their own home group.
+        preferredGroupName?.takeIf { it in proxyGroups }
+            ?: proxyGroups.firstOrNull { it.equals("节点选择", ignoreCase = true) }
             ?: proxyGroups.firstOrNull { it.equals("PROXY", ignoreCase = true) }
             ?: proxyGroups.firstOrNull { it.equals("Proxies", ignoreCase = true) }
             ?: proxyGroups.firstOrNull { it.equals("Proxy", ignoreCase = true) }
             ?: proxyGroups.firstOrNull { parsedProfile.groups[it]?.hidden != true }
             ?: proxyGroups.firstOrNull() ?: ""
+    }
+
+    /** User-pinned default group of the active profile (see [setPreferredGroupName]). */
+    var preferredGroupName: String? = null
+        private set
+
+    /**
+     * Pins (or clears, with null) the "home" strategy group of the active profile. The
+     * pin is stored per profile scope, so the name-guessing fallback
+     * ("节点选择"/"PROXY"/…) only applies to profiles the user never pinned.
+     */
+    fun setPreferredGroupName(groupName: String?) {
+        preferredGroupName = groupName
+        val id = selectedProfileId ?: return
+        settings.setPreferredGroupName(id, groupName)
     }
 
     private fun app() = getApplication<Application>()
@@ -154,7 +235,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         val active = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
         parseJob?.cancel()
         parseJob = viewModelScope.launch(Dispatchers.IO) {
-            val savedMap = settings.getAllSelectedNodes()
+            // The delay cache and the selection map are both profile-scoped: switching the
+            // profile must drop stale measurements of the previous profile, and profile
+            // selection must be recorded before any speed-test worker can key into the
+            // (possibly new) cache scope.
+            invalidateDelayCache(active?.id)
+            val savedMap = settings.getSelectedNodesForProfile(active?.id ?: "")
+            val pinnedGroup = settings.getPreferredGroupName(active?.id ?: "")
             val parsed = ProfileParser.parse(active?.file, savedMap, app())
             // ProfileParser has no suspension points, so a cancel issued while switching
             // profiles would otherwise be ignored and the stale result would overwrite the
@@ -164,6 +251,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             // Publish the persisted selection map so the UI never has to read
             // SharedPreferences from the composition (see MainAppScreen's derived state).
             selectedNodes = savedMap
+            preferredGroupName = pinnedGroup
             proxyGroups = parsed.groupNames
             if (selectedGroupName.isBlank() || !parsed.groupNames.contains(selectedGroupName)) {
                 selectedGroupName = parsed.groupNames.firstOrNull() ?: ""
@@ -191,38 +279,59 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Optimistic node selection: local state updates instantly, the core is patched
-     * asynchronously when it is running.
+     * asynchronously when it is running. If the core rejects the patch, the selection
+     * is rolled back so UI and core stay consistent.
      */
     fun selectProxy(group: String, proxy: Proxy, dispatchToCore: Boolean) {
-        settings.setSelectedNode(group, proxy.name)
+        val prevNode = selectedNodes[group]
+            ?: liveGroupMap[group]?.now
+            ?: parsedProfile.groups[group]?.now
+            ?: ""
+        applyNodeSelectionState(group, proxy.name)
+
+        if (dispatchToCore) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ok = ClashCore.patchSelector(group, proxy.name)
+                if (!ok) {
+                    withContext(Dispatchers.Main) {
+                        if (selectedNodes[group] == proxy.name && prevNode.isNotBlank()) {
+                            applyNodeSelectionState(group, prevNode)
+                        }
+                        CupertinoToast.show(
+                            AppStrings.get("proxy_select_failed", settings.appLanguage)
+                                .replace("{name}", proxy.name),
+                            isDestructive = true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyNodeSelectionState(group: String, nodeName: String) {
+        settings.setSelectedNode(selectedProfileId ?: "", group, nodeName)
         // Keep the in-memory selection map in sync so the UI never reads SharedPreferences.
-        selectedNodes = selectedNodes + (group to proxy.name)
+        selectedNodes = selectedNodes + (group to nodeName)
         if (group == mainProxyGroupName) {
-            activeNodeName = proxy.name
+            activeNodeName = nodeName
         }
         if (group == selectedGroupName) {
-            currentGroupData = currentGroupData?.copy(now = proxy.name)
+            currentGroupData = currentGroupData?.copy(now = nodeName)
         }
 
         val existingGroup = parsedProfile.groups[group]
         if (existingGroup != null) {
-            val updatedGroup = existingGroup.copy(now = proxy.name)
+            val updatedGroup = existingGroup.copy(now = nodeName)
             val newMap = parsedProfile.groups.toMutableMap()
             newMap[group] = updatedGroup
-            val updatedActiveNode = if (group == mainProxyGroupName) proxy.name else parsedProfile.activeNode
+            val updatedActiveNode = if (group == mainProxyGroupName) nodeName else parsedProfile.activeNode
             parsedProfile = parsedProfile.copy(groups = newMap, activeNode = updatedActiveNode)
         }
 
         synchronized(liveMapLock) {
             val currentLive = liveGroupMap[group] ?: existingGroup
             if (currentLive != null) {
-                liveGroupMap = liveGroupMap + (group to currentLive.copy(now = proxy.name))
-            }
-        }
-
-        if (dispatchToCore) {
-            viewModelScope.launch(Dispatchers.IO) {
-                ClashCore.patchSelector(group, proxy.name)
+                liveGroupMap = liveGroupMap + (group to currentLive.copy(now = nodeName))
             }
         }
     }
@@ -262,7 +371,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                     if (gData.hidden == true) continue
                     groups.add(gName)
                     val mergedProxies = gData.proxies.map { p ->
-                        val cachedDelay = readDelay(p.name) ?: readDelay("$gName:${p.name}")
+                        val cachedDelay = readDelay("$gName:${p.name}") ?: readDelay(p.name)
                         if (cachedDelay != null) {
                             p.copy(delay = cachedDelay)
                         } else if (p.delay >= 65535 || p.delay <= 0) {
@@ -360,9 +469,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
                             val subDelays: Map<String, Int> = if (leafMembers.isNotEmpty()) {
                                 ClashCore.healthCheckGroupNative(subG) { subNodeName, subNodeDelay ->
-                                    if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                        recordDelay(subNodeName, subNodeDelay)
-                                        recordDelay("$subG:$subNodeName", subNodeDelay)
+                                    if (subNodeName !in nestedSubGroups) {
+                                        recordProbeResult(subNodeName, subNodeDelay)
+                                        recordProbeResult("$subG:$subNodeName", subNodeDelay)
                                     }
                                 }
                             } else {
@@ -398,14 +507,12 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                             }
 
                             subDelays.forEach { (subNodeName, subNodeDelay) ->
-                                if (subNodeName !in nestedSubGroups && subNodeDelay in 1..65534) {
-                                    recordDelay(subNodeName, subNodeDelay)
-                                    recordDelay("$subG:$subNodeName", subNodeDelay)
+                                if (subNodeName !in nestedSubGroups) {
+                                    recordProbeResult(subNodeName, subNodeDelay)
+                                    recordProbeResult("$subG:$subNodeName", subNodeDelay)
                                 }
                             }
-                            if (finalSubDelay in 1..65534) {
-                                recordDelay(subG, finalSubDelay)
-                            }
+                            recordProbeResult(subG, finalSubDelay)
                             if (subGroupData != null && subGroupData.now.isNotBlank()) {
                                 updateLiveGroupNow(subG, subGroupData.now)
                             }
@@ -459,12 +566,13 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                         if (leafNodeNames.isNotEmpty()) {
                                             ClashCore.healthCheckGroupNative(g) { pName, delay ->
                                                 val isSubGroup = memberSubGroups.contains(pName)
-                                                if (delay in 1..65534) {
+                                                if (!isSubGroup) {
+                                                    recordProbeResult(pName, delay)
+                                                    recordProbeResult("$g:$pName", delay)
+                                                    removeTesting("$g:$pName")
+                                                } else if (delay in 1..65534) {
                                                     recordDelay(pName, delay)
                                                     recordDelay("$g:$pName", delay)
-                                                }
-                                                if (!isSubGroup) {
-                                                    removeTesting("$g:$pName")
                                                 }
                                             }
                                         } else {
@@ -475,10 +583,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                     val subJobs = memberSubGroups.map { subG ->
                                         async(Dispatchers.IO) {
                                             val finalSubDelay = resolveSubGroupDelay(subG, setOf(g))
-                                            if (finalSubDelay in 1..65534) {
-                                                recordDelay(subG, finalSubDelay)
-                                                recordDelay("$g:$subG", finalSubDelay)
-                                            }
+                                            recordProbeResult(subG, finalSubDelay)
+                                            recordProbeResult("$g:$subG", finalSubDelay)
                                             removeTesting("$g:$subG")
                                         }
                                     }
@@ -488,9 +594,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
 
                                     groupDelays.forEach { (name, delay) ->
                                         val isSubGroup = memberSubGroups.contains(name)
-                                        if (!isSubGroup && delay in 1..65534) {
-                                            recordDelay(name, delay)
-                                            recordDelay("$g:$name", delay)
+                                        if (!isSubGroup) {
+                                            recordProbeResult(name, delay)
+                                            recordProbeResult("$g:$name", delay)
                                         } else if (isSubGroup && delay in 1..65534 && (readDelay(name) ?: -1) !in 1..65534) {
                                             recordDelay(name, delay)
                                             recordDelay("$g:$name", delay)
@@ -511,9 +617,7 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
                                         minValid != null -> minValid
                                         else -> -1
                                     }
-                                    if (finalGroupDelay in 1..65534) {
-                                        recordDelay(g, finalGroupDelay)
-                                    }
+                                    recordProbeResult(g, finalGroupDelay)
 
                                     if (finalGroup != null && finalGroup.now.isNotBlank()) {
                                         updateLiveGroupNow(g, finalGroup.now)
@@ -555,9 +659,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     runSpeedTestForGroup(nodeName, isAutoTest = false).join()
-                    val resolved = readDelay(nodeName)
-                    if (resolved != null && resolved in 1..65534 && !groupName.isNullOrBlank()) {
-                        recordDelay("$groupName:$nodeName", resolved)
+                    val resolved = readDelay(nodeName) ?: -1
+                    if (!groupName.isNullOrBlank()) {
+                        recordProbeResult("$groupName:$nodeName", resolved)
                     }
                 } finally {
                     removeTesting(scopedKey)
@@ -586,10 +690,8 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 ClashCore.ensureCoreLoaded(app())
                 val singleDelay = ClashCore.testProxyDelayNative(nodeName, targetGroup)
-                if (singleDelay in 1..65534) {
-                    recordDelay(nodeName, singleDelay)
-                    recordDelay(targetScopedKey, singleDelay)
-                }
+                recordProbeResult(nodeName, singleDelay)
+                recordProbeResult(targetScopedKey, singleDelay)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -647,6 +749,9 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     // Profile mutations (subscription download / update / delete / import)
     // ------------------------------------------------------------------
 
+    var isRefreshingAll by mutableStateOf(false)
+        private set
+
     private fun reloadCoreAndRefresh(coreActive: Boolean) {
         if (coreActive) {
             viewModelScope.launch(Dispatchers.IO) {
@@ -659,6 +764,12 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
     fun selectProfile(profile: ProfileItem, coreActive: Boolean) {
         selectedProfileId = profile.id
         settings.selectedProfileId = profile.id
+        // Drop the previous profile's delay cache and in-flight probes before the reparse
+        // republishes state; their results would otherwise land in the new scope or keep
+        // stale keys alive. parseActiveProfile() also invalidates, this call covers the
+        // coreActive reload path where refreshProxiesOnline() runs before the parse job.
+        cancelSpeedTests()
+        invalidateDelayCache(profile.id)
         parseActiveProfile()
         reloadCoreAndRefresh(coreActive)
         CupertinoToast.show(
@@ -687,9 +798,41 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val res = ConfigManager.updateSubscription(app(), profile.id, profile.name, url)
             if (res.isSuccess) {
+                // The profile content changed under the same id: measured delays of the
+                // previous config version must not bleed into the refreshed one.
+                cancelSpeedTests()
+                invalidateDelayCache(profile.id, force = true)
                 reloadProfiles()
                 if (selectedProfileId == profile.id) {
-                    reloadCoreAndRefresh(coreActive)
+                    if (coreActive) {
+                        // Complete the update transaction: a hot reload that fails on the
+                        // NEW payload must automatically roll the profile file back, so the
+                        // running tunnel and the on-disk config never disagree for long.
+                        val reloaded = ClashCore.reloadActiveConfig(app())
+                        if (!reloaded) {
+                            val rolledBack = ConfigManager.rollbackSubscriptionUpdate(app(), profile.id)
+                            if (rolledBack) {
+                                reloadProfiles()
+                                ClashCore.reloadActiveConfig(app())
+                                CupertinoToast.show(
+                                    AppStrings.get("subscription_rolled_back", settings.appLanguage),
+                                    isDestructive = true
+                                )
+                            } else {
+                                CupertinoToast.show(
+                                    AppStrings.get("subscription_reload_failed", settings.appLanguage)
+                                        .replace("{msg}", AppStrings.get("unknown_error", settings.appLanguage)),
+                                    isDestructive = true
+                                )
+                            }
+                            return@launch
+                        } else {
+                            // The NEW payload is proven loadable: archive the replaced one
+                            // into the versioned history ring for manual recovery.
+                            ConfigManager.archiveKnownGoodVersion(app(), profile.id)
+                            refreshProxiesOnline()
+                        }
+                    }
                 }
                 CupertinoToast.show(AppStrings.get("subscription_updated", settings.appLanguage))
             } else {
@@ -702,13 +845,98 @@ class ProxiesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun refreshAllSubscriptions(coreActive: Boolean) {
+        if (isRefreshingAll) return
+        val remoteSubs = profiles.filter { !it.url.isNullOrBlank() }
+        if (remoteSubs.isEmpty()) return
+        isRefreshingAll = true
+
+        viewModelScope.launch {
+            try {
+                val semaphore = Semaphore(3)
+                val outcomes = coroutineScope {
+                    remoteSubs.map { profile ->
+                        async(Dispatchers.IO) {
+                            semaphore.withPermit {
+                                val url = profile.url.orEmpty()
+                                profile.id to ConfigManager.updateSubscription(app(), profile.id, profile.name, url).isSuccess
+                            }
+                        }
+                    }.awaitAll()
+                }
+                val okCount = outcomes.count { it.second }
+                val failCount = outcomes.size - okCount
+                val activeUpdated = outcomes.any { (id, ok) -> ok && id == selectedProfileId }
+
+                if (okCount > 0) {
+                    cancelSpeedTests()
+                    if (activeUpdated) {
+                        invalidateDelayCache(selectedProfileId, force = true)
+                    }
+                    reloadProfiles()
+                    if (activeUpdated && coreActive) {
+                        val activeId = selectedProfileId ?: ""
+                        val reloaded = ClashCore.reloadActiveConfig(app())
+                        if (!reloaded) {
+                            val rolledBack = ConfigManager.rollbackSubscriptionUpdate(app(), activeId)
+                            if (rolledBack) {
+                                reloadProfiles()
+                                ClashCore.reloadActiveConfig(app())
+                                CupertinoToast.show(
+                                    AppStrings.get("subscription_rolled_back", settings.appLanguage),
+                                    isDestructive = true
+                                )
+                            } else {
+                                CupertinoToast.show(
+                                    AppStrings.get("subscription_reload_failed", settings.appLanguage)
+                                        .replace("{msg}", AppStrings.get("unknown_error", settings.appLanguage)),
+                                    isDestructive = true
+                                )
+                            }
+                            return@launch
+                        } else {
+                            ConfigManager.archiveKnownGoodVersion(app(), activeId)
+                            refreshProxiesOnline()
+                        }
+                    }
+                }
+
+                if (failCount == 0) {
+                    CupertinoToast.show(AppStrings.get("subscription_updated", settings.appLanguage))
+                } else {
+                    CupertinoToast.show(
+                        AppStrings.get("scripts_update_summary", settings.appLanguage)
+                            .replace("{ok}", okCount.toString())
+                            .replace("{fail}", failCount.toString()),
+                        isDestructive = okCount == 0
+                    )
+                }
+            } finally {
+                isRefreshingAll = false
+            }
+        }
+    }
+
+    /** Clears speed-test jobs, delay caches, and live group state after a core reset. */
+    fun onCoreReset() {
+        cancelSpeedTests()
+        invalidateDelayCache(selectedProfileId, force = true)
+        synchronized(liveMapLock) { liveGroupMap = emptyMap() }
+        parseActiveProfile()
+    }
+
     fun deleteProfile(profile: ProfileItem, coreActive: Boolean) {
         val wasSelected = selectedProfileId == profile.id
         viewModelScope.launch(Dispatchers.IO) {
             ConfigManager.deleteProfile(app(), profile.id)
+            // The profile is gone; its scoped selections and measured delays must not
+            // resurrect for a future profile that happens to reuse a group name.
+            settings.clearSelectedNodesForProfile(profile.id)
+            cancelSpeedTests()
             if (wasSelected) {
                 selectedProfileId = null
                 settings.selectedProfileId = null
+                invalidateDelayCache(null, force = true)
             }
             profiles = ConfigManager.getProfiles(app())
             parseActiveProfile()

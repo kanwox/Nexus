@@ -34,20 +34,37 @@ class SubscriptionUpdateWorker(
             val result = ConfigManager.updateSubscription(context, profile.id, profile.name, profile.url!!)
             result.fold(
                 onSuccess = {
-                    // The level is "warning" ON PURPOSE: LogRepository drops every
-                    // non-error/warning line while the screen is off, so an "info" entry
-                    // left NO trace at all of a successful background update — only the
-                    // failures survived. "warning" is the level that persists, and the
-                    // message text is phrased so it does not read like a problem.
-                    LogRepository.addLog("warning", "自动更新订阅成功: ${profile.name}")
+                    LogRepository.addLog("info", "自动更新订阅成功: ${profile.name}", forcePersist = true)
                     if (profile.id == settings.selectedProfileId &&
                         MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
                     ) {
                         val reloaded = ClashCore.reloadActiveConfig(context)
                         if (reloaded) {
-                            LogRepository.addLog("warning", "已热重载运行中配置: ${profile.name}")
+                            // The NEW payload is proven loadable: archive the replaced one
+                            // into the versioned history ring for manual recovery.
+                            ConfigManager.archiveKnownGoodVersion(context, profile.id)
+                            LogRepository.addLog("info", "已热重载运行中配置: ${profile.name}", forcePersist = true)
                         } else {
-                            LogRepository.addLog("warning", "热重载运行中配置失败: ${profile.name}")
+                            // Complete the update transaction: the new payload cannot be
+                            // loaded by the core, so restore the previous one. The tunnel
+                            // keeps running on the in-memory old config until the rollback
+                            // reload succeeds — never on a config the core rejected.
+                            val rolledBack = ConfigManager.rollbackSubscriptionUpdate(context, profile.id)
+                            if (rolledBack) {
+                                val rollbackReload = ClashCore.reloadActiveConfig(context)
+                                LogRepository.addLog(
+                                    if (rollbackReload) "warning" else "error",
+                                    if (rollbackReload) "已自动回滚并恢复运行: ${profile.name}"
+                                    else "已自动回滚订阅文件，但恢复运行失败: ${profile.name}",
+                                    forcePersist = true
+                                )
+                            } else {
+                                LogRepository.addLog(
+                                    "error",
+                                    "热重载失败且无可用回滚版本: ${profile.name}",
+                                    forcePersist = true
+                                )
+                            }
                         }
                     }
                 },

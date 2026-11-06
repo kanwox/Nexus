@@ -1,7 +1,13 @@
 package com.github.mihomo.android.data
 
 import android.content.Context
+import android.os.Build
+import com.github.mihomo.android.service.MihomoVpnService
+import com.github.mihomo.android.service.VpnState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -21,6 +27,18 @@ object UpdateChecker {
 
     private const val RELEASES_API =
         "https://api.github.com/repos/kanwox/Nexus/releases/latest"
+
+    /** Minimum interval between automatic background update checks (24 hours). */
+    private const val AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
+
+    private val _availableUpdate = MutableStateFlow<UpdateInfo?>(null)
+
+    /**
+     * Most recent newer release discovered during this process lifetime, or null when the
+     * installed build is up to date (or no check has succeeded yet). Observed by the Settings
+     * and About screens to render a non-intrusive badge without modal popups on startup.
+     */
+    val availableUpdate: StateFlow<UpdateInfo?> = _availableUpdate.asStateFlow()
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -45,6 +63,18 @@ object UpdateChecker {
             .build()
     }
 
+    /**
+     * Ordered list of HTTP clients to try for GitHub API / asset requests.
+     * Because the app's own UID is excluded from the TUN interface to prevent routing loops,
+     * direct sockets bypass the tunnel. When the tunnel is RUNNING, routing through the local
+     * mixed port first avoids a 10s TCP timeout on networks where GitHub is unreachable directly,
+     * while still falling back to direct if the proxy port fails. When the tunnel is stopped,
+     * only the direct client is used so a closed local port does not mask real HTTP/network errors.
+     */
+    fun candidateClients(mixedPort: Int, vpnRunning: Boolean): List<OkHttpClient> =
+        if (vpnRunning) listOf(localProxyClient(mixedPort), httpClient)
+        else listOf(httpClient)
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /** One downloadable release artifact (GitHub release asset). */
@@ -68,6 +98,14 @@ object UpdateChecker {
          * install path instead of opening the browser. Null when the release ships no apk.
          */
         val apkAsset: ReleaseAsset? = null,
+        /**
+         * Name of the selected apk asset (e.g. "Nexus-arm64-v8a-release.apk") so the UI
+         * can tell the user exactly which artifact is about to be downloaded. Null when
+         * the release ships no apk.
+         */
+        val apkName: String? = null,
+        /** SHA256SUMS asset when the release ships one — enables download verification. */
+        val sumsAsset: ReleaseAsset? = null,
         /** Whether the latest release is newer than the installed version */
         val isNewer: Boolean
     )
@@ -88,13 +126,43 @@ object UpdateChecker {
     }
 
     /**
+     * Installed versionCode as a Long regardless of API level (the Int versionCode is
+     * deprecated in favor of longVersionCode since API 28). The pre-install gate in the
+     * update flow uses it to reject an archive older than what is already on the device;
+     * -1 means the installed version could not be read, which the gate treats as
+     * "cannot prove downgrade" and allows (a downgrade is not a security risk, a
+     * hijacked package name is — and that is checked separately by signature).
+     */
+    fun installedVersionCode(context: Context): Long = runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
+    }.getOrDefault(-1L)
+
+    /**
+     * Silent startup check: runs [checkForUpdate] at most once every 24 hours when the user
+     * has enabled automatic update checks. Network failures are ignored so startup is never
+     * interrupted by a modal or toast.
+     */
+    suspend fun checkIfDue(context: Context) {
+        val settings = SettingsManager(context)
+        if (!settings.autoCheckUpdate) return
+        val now = System.currentTimeMillis()
+        if (now - settings.lastUpdateCheckTime < AUTO_CHECK_INTERVAL_MS) return
+        checkForUpdate(context)
+    }
+
+    /**
      * Fetches the latest release from GitHub and compares against the installed version.
-     * Tries direct connection first; falls back to the local mixed proxy if direct connection fails.
+     * Routes through the local mixed port first when the tunnel is active (since the app's own
+     * UID bypasses TUN), falling back to direct connection; uses direct only when stopped.
      * Must be called from a coroutine (runs on [Dispatchers.IO] internally).
      */
     suspend fun checkForUpdate(context: Context): CheckResult = withContext(Dispatchers.IO) {
         val currentVersion = installedVersion(context)
-        val mixedPort = SettingsManager(context).mixedPort
+        val settings = SettingsManager(context)
+        val mixedPort = settings.mixedPort
+        val vpnRunning = MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
 
         fun tryFetch(client: OkHttpClient): String? {
             val request = Request.Builder()
@@ -110,13 +178,10 @@ object UpdateChecker {
         }
 
         try {
-            // 1. Try direct connection first
-            var body = tryFetch(httpClient)
-
-            // 2. If direct fails (e.g. GitHub blocked/polluted while app traffic bypasses VPN),
-            // retry via local mixed port proxy if available
-            if (body == null) {
-                body = tryFetch(localProxyClient(mixedPort))
+            var body: String? = null
+            for (client in candidateClients(mixedPort, vpnRunning)) {
+                body = tryFetch(client)
+                if (body != null) break
             }
 
             if (body == null) {
@@ -126,27 +191,43 @@ object UpdateChecker {
             val obj = json.parseToJsonElement(body).jsonObject
             val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
             val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
-            val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(1000)
+            val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(2000)
             val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
-            val apkAsset = obj["assets"]?.let { assetsElement ->
+            val assetsList: List<ReleaseAsset> = obj["assets"]?.let { assetsElement ->
                 runCatching {
                     json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
                 }.getOrDefault(emptyList())
-            }?.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+            } ?: emptyList()
+            // ABI-aware selection: the device's own SUPPORTED_ABIS order (best-first)
+            // picks the exact per-ABI artifact instead of whatever asset happens to be
+            // listed first on the release page — installing the wrong architecture
+            // fails far away from the cause. Degrades to the first .apk asset when the
+            // release does not follow the Nexus-<abi>-release.apk naming.
+            val apkAsset = UpdateVerifier.selectApkAsset(
+                assetsList.map { it.name to it.browserDownloadUrl },
+                Build.SUPPORTED_ABIS.toList()
+            )?.let { (name, url) -> ReleaseAsset(name = name, browserDownloadUrl = url) }
+            // A sums asset turns on integrity verification for the download path.
+            val sumsAsset = assetsList.firstOrNull {
+                it.name.startsWith("SHA256SUMS", ignoreCase = true)
+            }
 
             val latestVersion = tagName.trimStart('v', 'V')
             val isNewer = isVersionNewer(latestVersion, currentVersion)
 
-            CheckResult.Success(
-                UpdateInfo(
-                    tagName = tagName,
-                    releaseName = releaseName,
-                    releaseNotes = releaseNotes,
-                    htmlUrl = htmlUrl,
-                    apkAsset = apkAsset,
-                    isNewer = isNewer
-                )
+            val info = UpdateInfo(
+                tagName = tagName,
+                releaseName = releaseName,
+                releaseNotes = releaseNotes,
+                htmlUrl = htmlUrl,
+                apkAsset = apkAsset,
+                apkName = apkAsset?.name,
+                sumsAsset = sumsAsset,
+                isNewer = isNewer
             )
+            _availableUpdate.value = if (isNewer) info else null
+            settings.lastUpdateCheckTime = System.currentTimeMillis()
+            CheckResult.Success(info)
         } catch (e: Exception) {
             CheckResult.Error(e.message ?: "Unknown error")
         }

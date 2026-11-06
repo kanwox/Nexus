@@ -90,9 +90,10 @@ object LogRepository {
         addLog(level, msg)
     }
 
-    fun addLog(level: String, message: String) {
+    fun addLog(level: String, message: String, forcePersist: Boolean = false) {
         val normalizedLevel = level.lowercase()
-        if (isScreenOff && normalizedLevel != "error" && normalizedLevel != "warning") return
+        val shouldPersist = forcePersist || normalizedLevel == "error" || normalizedLevel == "warning"
+        if (isScreenOff && !shouldPersist) return
         var appendedNewEntry = false
         synchronized(this) {
             val lookbackFrom = (logList.size - DEDUP_LOOKBACK).coerceAtLeast(0)
@@ -126,7 +127,7 @@ object LogRepository {
                 DnsRepository.parseFromLog(message)
             }
         }
-        if (appendedNewEntry && (normalizedLevel == "error" || normalizedLevel == "warning")) {
+        if (appendedNewEntry && shouldPersist) {
             persistDiagnostic(normalizedLevel, message)
         }
     }

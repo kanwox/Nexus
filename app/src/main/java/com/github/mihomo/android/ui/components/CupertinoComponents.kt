@@ -8,6 +8,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -152,10 +153,12 @@ fun Modifier.iosFocusRing(
         .then(if (focused) Modifier.border(2.dp, ring, shape) else Modifier)
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun Modifier.iosPressable(
     enabled: Boolean = true,
     pressedScale: Float = LoonMotion.pressScale,
     focusShape: Shape? = null,
+    onLongClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {
     val interactionSource = remember { MutableInteractionSource() }
@@ -182,7 +185,15 @@ fun Modifier.iosPressable(
         }
         .then(if (focusShape != null) Modifier.iosFocusRing(focusShape) else Modifier)
         .then(
-            if (onClick != null) {
+            if (onClick != null && onLongClick != null) {
+                Modifier.combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    enabled = enabled,
+                    onLongClick = onLongClick,
+                    onClick = onClick
+                )
+            } else if (onClick != null) {
                 Modifier.clickable(
                     interactionSource = interactionSource,
                     indication = null,
@@ -662,7 +673,7 @@ fun CupertinoNavBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(LoonSizes.navBarHeight)
+                    .heightIn(min = LoonSizes.navBarHeight)
                     .padding(horizontal = LoonSpacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -832,7 +843,8 @@ fun CupertinoActionSheet(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
+                                .heightIn(min = 56.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
                                 .iosHighlightPressable {
                                     haptic.selection()
                                     onDismissRequest()
@@ -861,14 +873,17 @@ fun CupertinoActionSheet(
                 border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .heightIn(min = 56.dp)
                     .iosHighlightPressable {
                         haptic.lightTick()
                         onDismissRequest()
                     }
             ) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -907,7 +922,8 @@ fun <T> CupertinoSegmentedControl(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(32.dp)
+            .height(IntrinsicSize.Min)
+            .heightIn(min = 32.dp)
             .clip(RoundedCornerShape(LoonRadii.segmented))
             .background(LoonTertiaryBg)
             .padding(2.dp)
@@ -992,7 +1008,8 @@ fun <T> CupertinoSegmentedControl(
                                         onItemSelected(item)
                                     }
                                 }
-                            ),
+                            )
+                            .padding(vertical = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -1048,6 +1065,8 @@ fun CupertinoAlertDialog(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
                         .padding(
                             start = 18.dp,
                             end = 18.dp,
@@ -1087,7 +1106,8 @@ fun CupertinoAlertDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(LoonSizes.touchTargetMin),
+                            .height(IntrinsicSize.Min)
+                            .heightIn(min = LoonSizes.touchTargetMin),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Dismiss button (Cancel)
@@ -1095,6 +1115,8 @@ fun CupertinoAlertDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
+                                .heightIn(min = LoonSizes.touchTargetMin)
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
                                 .iosHighlightPressable {
                                     haptic.lightTick()
                                     onDismiss()
@@ -1104,7 +1126,8 @@ fun CupertinoAlertDialog(
                             Text(
                                 text = dismissText,
                                 color = LoonInfoText,
-                                style = LoonTextStyles.button()
+                                style = LoonTextStyles.button(),
+                                textAlign = TextAlign.Center
                             )
                         }
 
@@ -1121,6 +1144,8 @@ fun CupertinoAlertDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
+                                .heightIn(min = LoonSizes.touchTargetMin)
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
                                 .iosHighlightPressable {
                                     haptic.lightTick()
                                     onConfirm()
@@ -1130,7 +1155,8 @@ fun CupertinoAlertDialog(
                             Text(
                                 text = confirmText,
                                 color = if (isDestructive) LoonDangerText else LoonInfoText,
-                                style = LoonTextStyles.button()
+                                style = LoonTextStyles.button(),
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
@@ -1139,7 +1165,8 @@ fun CupertinoAlertDialog(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(LoonSizes.touchTargetMin)
+                            .heightIn(min = LoonSizes.touchTargetMin)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
                             .iosHighlightPressable {
                                 haptic.lightTick()
                                 onConfirm()
@@ -1149,7 +1176,8 @@ fun CupertinoAlertDialog(
                         Text(
                             text = confirmText,
                             color = if (isDestructive) LoonDangerText else LoonInfoText,
-                            style = LoonTextStyles.button()
+                            style = LoonTextStyles.button(),
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -1175,14 +1203,15 @@ fun CupertinoSearchBar(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(38.dp),
+            .heightIn(min = 38.dp),
         shape = RoundedCornerShape(10.dp),
         color = LoonTertiaryBg
     ) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp),
+                .fillMaxWidth()
+                .heightIn(min = 38.dp)
+                .padding(start = 10.dp, end = if (value.isNotEmpty()) 0.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -1195,7 +1224,9 @@ fun CupertinoSearchBar(
             Spacer(modifier = Modifier.width(7.dp))
 
             Box(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 6.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 if (value.isEmpty()) {
@@ -1223,21 +1254,30 @@ fun CupertinoSearchBar(
             if (value.isNotEmpty()) {
                 Box(
                     modifier = Modifier
-                        .size(20.dp)
-                        .clip(CircleShape)
-                        .background(LoonTextSecondary.copy(alpha = 0.6f))
-                        .clickable {
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = 38.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
                             haptic.lightTick()
                             onValueChange("")
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Clear,
-                        contentDescription = AppStrings.get("clear", LocalAppLanguage.current),
-                        tint = LoonOnAccent,
-                        modifier = Modifier.size(12.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(LoonTextSecondary.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = AppStrings.get("clear", LocalAppLanguage.current),
+                            tint = LoonOnAccent,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1257,6 +1297,7 @@ fun CupertinoTextField(
     singleLine: Boolean = true,
     maxLines: Int = 1,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    keyboardOptions: androidx.compose.foundation.text.KeyboardOptions = androidx.compose.foundation.text.KeyboardOptions.Default,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null
 ) {
@@ -1294,6 +1335,7 @@ fun CupertinoTextField(
                     singleLine = singleLine,
                     maxLines = maxLines,
                     visualTransformation = visualTransformation,
+                    keyboardOptions = keyboardOptions,
                     textStyle = LocalTextStyle.current.copy(
                         color = LoonTextPrimary,
                         fontSize = LoonTypeScale.subheadLarge,
@@ -1516,8 +1558,15 @@ object CupertinoToast {
         )
     }
 
-    fun dismiss() {
-        _currentToast.value = null
+    fun dismiss(id: Long? = null) {
+        if (id == null) {
+            _currentToast.value = null
+        } else {
+            val cur = _currentToast.value
+            if (cur != null && cur.id == id) {
+                _currentToast.compareAndSet(cur, null)
+            }
+        }
     }
 }
 
@@ -1544,7 +1593,7 @@ fun CupertinoToastHost(
         val current = toastData ?: return@LaunchedEffect
         haptic.lightTick()
         delay(current.durationMs.milliseconds)
-        CupertinoToast.dismiss()
+        CupertinoToast.dismiss(current.id)
     }
 
     androidx.compose.animation.AnimatedVisibility(

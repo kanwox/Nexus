@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.zIndex
 import com.github.kr328.clash.core.model.Proxy
 import com.github.mihomo.android.core.model.TunnelMode
+import com.github.mihomo.android.data.SpeedTestState
 import com.github.mihomo.android.service.VpnState
 import androidx.compose.ui.tooling.preview.Preview
 import com.github.mihomo.android.ui.components.*
@@ -75,7 +76,7 @@ fun DashboardScreen(
     activeProfileName: String,
     mainGroupName: String,
     mainGroupProxies: List<Proxy>,
-    delayCache: Map<String, Int> = emptyMap(),
+    delayCache: Map<String, SpeedTestState> = emptyMap(),
     activeNodeName: String,
     totalNodes: Int,
     totalRules: Int,
@@ -678,9 +679,13 @@ fun DashboardScreen(
                                     Spacer(modifier = Modifier.width(10.dp))
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        val nodeDelay = delayCache["$mainGroupName:${proxy.name}"]
-                                            ?: delayCache[proxy.name]
-                                            ?: proxy.delay
+                                        // Structured speed-test state: a Success shows the ms
+                                        // value, a Timeout/Failed shows nothing extra here (the
+                                        // proxies page carries the explicit marker).
+                                        val nodeDelay = (
+                                            delayCache["$mainGroupName:${proxy.name}"]
+                                                ?: delayCache[proxy.name]
+                                            )?.toLegacyDelay() ?: proxy.delay
                                         if (isTestingQuickNodes) {
                                             CupertinoActivityIndicator(
                                                 modifier = Modifier.size(13.dp),

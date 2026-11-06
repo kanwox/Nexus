@@ -923,6 +923,8 @@ private fun BottomNavItem(
             .iosFocusRing(RoundedCornerShape(LoonRadii.control))
             .selectable(
                 selected = isSelected,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
                 role = Role.Tab,
                 onClick = {
                     haptic.navTabSelection()
@@ -964,10 +966,15 @@ fun rememberBounceOverscrollConnection(
     val coroutineScope = rememberCoroutineScope()
     val overscrollOffset = remember { mutableFloatStateOf(0f) }
     var springJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val reduceMotion = LocalReduceMotion.current
+    val maxPullPx = with(density) { 110.dp.toPx() }.coerceAtLeast(1f)
+    val dampingZonePx = with(density) { 250.dp.toPx() }.coerceAtLeast(1f)
 
-    val connection = remember(allowTop, allowBottom) {
+    val connection = remember(allowTop, allowBottom, maxPullPx, dampingZonePx, reduceMotion) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (reduceMotion) return Offset.Zero
                 val current = overscrollOffset.floatValue
                 if (current == 0f) return Offset.Zero
                 // Scroll back toward zero synchronously before passing delta to the list
@@ -990,6 +997,7 @@ fun rememberBounceOverscrollConnection(
                 available: Offset,
                 source: NestedScrollSource
             ): Offset {
+                if (reduceMotion) return Offset.Zero
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
                     // available.y > 0 → pulling down past top edge (top overscroll)
                     // available.y < 0 → pushing up past bottom edge (bottom overscroll)
@@ -1003,9 +1011,9 @@ fun rememberBounceOverscrollConnection(
                     }
                     springJob?.cancel()
                     val current = overscrollOffset.floatValue
-                    val resistance = (1f - (kotlin.math.abs(current) / 500f).coerceIn(0f, 0.85f)) * 0.42f
+                    val resistance = (1f - (kotlin.math.abs(current) / dampingZonePx).coerceIn(0f, 0.85f)) * 0.42f
                     val delta = available.y * resistance
-                    overscrollOffset.floatValue = (current + delta).coerceIn(-220f, 220f)
+                    overscrollOffset.floatValue = (current + delta).coerceIn(-maxPullPx, maxPullPx)
                     return Offset(0f, available.y)
                 }
                 return Offset.Zero
@@ -1015,6 +1023,10 @@ fun rememberBounceOverscrollConnection(
                 val startValue = overscrollOffset.floatValue
                 if (startValue == 0f) return
                 springJob?.cancel()
+                if (reduceMotion) {
+                    overscrollOffset.floatValue = 0f
+                    return
+                }
                 springJob = coroutineScope.launch {
                     animate(
                         initialValue = startValue,
@@ -1052,6 +1064,7 @@ fun Modifier.bounceOverscroll(
     allowTop: Boolean = true,
     allowBottom: Boolean = true
 ): Modifier = composed {
+    if (LocalReduceMotion.current) return@composed this
     val (connection, offsetState) = rememberBounceOverscrollConnection(allowTop, allowBottom)
     this
         .clipToBounds()

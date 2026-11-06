@@ -88,11 +88,13 @@ class LogRepositoryTest {
         try {
             LogRepository.isScreenOff = true
             LogRepository.addLog("info", "dropped info")
+            LogRepository.addLog("info", "persisted background info", forcePersist = true)
             LogRepository.addLog("warning", "kept warning")
             LogRepository.addLog("error", "kept error")
 
             val logs = LogRepository.logsFlow.value
-            assertEquals(listOf("warning", "error"), logs.map { it.level })
+            assertEquals(listOf("info", "warning", "error"), logs.map { it.level })
+            assertEquals("persisted background info", logs.first().message)
         } finally {
             LogRepository.isScreenOff = original
         }

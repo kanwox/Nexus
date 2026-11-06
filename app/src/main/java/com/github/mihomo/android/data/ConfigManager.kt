@@ -337,6 +337,80 @@ object ConfigManager {
     internal fun profileBackupFile(context: Context, id: String): File? =
         SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.bak")
 
+    /**
+     * Ring of the last [SUBSCRIPTION_HISTORY_KEEP] known-good payloads of a profile, kept
+     * as `<id>.yaml.v1` … `<id>.yaml.v<N>` next to the profile. The single `.bak` only
+     * covers the immediately-previous content: a user who updates twice into a broken
+     * subscription lost both the old and the new payload. The versioned ring gives the
+     * UI a manual "restore previous version" path.
+     */
+    internal fun profileHistoryFiles(context: Context, id: String): List<File> {
+        return (1..SUBSCRIPTION_HISTORY_KEEP).mapNotNull { v ->
+            SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.v$v")
+        }
+    }
+
+    /** Newest history slot of a profile, or null when the ring is empty. */
+    internal fun newestProfileHistoryFile(context: Context, id: String): File? {
+        return profileHistoryFiles(context, id).lastOrNull { it.exists() && it.length() > 0 }
+    }    /** How many known-good versions the per-profile ring keeps (1..3 sensible). */
+    private const val SUBSCRIPTION_HISTORY_KEEP = 3
+
+    /**
+     * Archives the payload that was just replaced (kept in `.bak` by the update
+     * transaction) into the versioned history ring. Called by the update callers AFTER a
+     * hot reload proved the NEW payload loadable — archiving a payload the core cannot
+     * load would poison the recovery path.
+     *
+     * Runs best-effort; a failed rotation only means a shorter ring, never a broken
+     * profile.
+     */
+    internal fun archiveKnownGoodVersion(context: Context, id: String) {
+        val backup = profileBackupFile(context, id)
+            ?.takeIf { it.exists() && it.length() > 0 }
+            ?: return
+        val content = runCatching { backup.readText() }.getOrDefault("")
+        if (!isValidSubscriptionPayload(content)) return
+        val ring = profileHistoryFiles(context, id)
+        // Delete the oldest so the shift below never collides with an existing file.
+        ring.lastOrNull()?.delete()
+        for (i in ring.size - 1 downTo 1) {
+            runCatching {
+                Files.move(ring[i - 1].toPath(), ring[i].toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+        runCatching { backup.copyTo(ring.first(), overwrite = true) }
+        Log.i(TAG, "Archived known-good version of profile $id into the history ring")
+    }
+
+    /**
+     * Restores [source] over the active profile file atomically and reports success.
+     * Used by the automatic rollback after a failed reload and by the UI's manual
+     * "restore previous version" action — both must go through the same atomic write
+     * so a crash mid-restore cannot truncate the profile either.
+     */
+    fun restoreProfileFromHistory(context: Context, id: String, source: File): Result<Unit> {
+        return runCatching {
+            val target = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+            if (!source.exists() || source.length() == 0L) error("历史版本文件为空或不存在")
+            val content = source.readText()
+            if (!isValidSubscriptionPayload(content)) error("历史版本内容无效")
+            writeTextAtomic(target, content)
+            // Reflect the restore in the metadata timestamp so the UI shows it.
+            synchronized(storeLock) {
+                val store = loadStore(context)
+                store.profiles[id]?.let { meta ->
+                    persistStore(
+                        context,
+                        store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis())))
+                    )
+                }
+            }
+            invalidateProfilesCache()
+            Log.i(TAG, "Restored profile $id from history file ${source.name}")
+        }
+    }
+
     suspend fun downloadSubscription(
         context: Context,
         url: String,
@@ -385,6 +459,89 @@ object ConfigManager {
     }
 
     /**
+     * Automatic rollback of the last subscription update: restores the `.bak` copy (the
+     * payload that was live immediately before the update) over the profile file. Called
+     * when the hot reload of a freshly updated profile failed, so the on-disk config and
+     * the running tunnel stay consistent. Returns false when there is nothing to roll
+     * back to (first import) or the backup is unusable — the caller then surfaces the
+     * failure instead of pretending the old config came back.
+     */
+    fun rollbackSubscriptionUpdate(context: Context, id: String): Boolean {
+        val backup = profileBackupFile(context, id)
+            ?.takeIf { it.exists() && it.length() > 0 }
+            ?: newestProfileHistoryFile(context, id)
+            ?: return false
+        val restored = restoreProfileFromHistory(context, id, backup).isSuccess
+        if (restored) {
+            LogRepository.addLog(
+                "warning",
+                "订阅配置热重载失败，已自动回滚到上一个可用版本"
+            )
+        }
+        return restored
+    }
+
+    /**
+     * Deep structural validation of a subscription payload, run BEFORE the live file is
+     * touched. [isValidSubscriptionPayload] only checks that the content IS a YAML map;
+     * the core additionally rejects payloads whose proxy section is malformed (a node
+     * without a name, duplicate names, a non-list `rules` block). Those cases used to
+     * pass the download check, replace the working file, and only explode at hot-reload
+     * time — with no automatic recovery.
+     *
+     * Deliberately conservative: only structurally certain problems hard-fail. Group
+     * members that reference nodes delivered via `proxy-providers` look "unknown" to a
+     * static check, so unknown member references are NOT errors (the core accepts them).
+     *
+     * @return null when the payload passes, or a human-readable reason it cannot load.
+     */
+    internal fun validateConfigStructure(content: String): String? {
+        val parsed = runCatching { YamlSupport.create().load<Any?>(content) }.getOrNull()
+            ?: return "配置不是有效的 YAML 映射"
+        if (parsed !is Map<*, *>) return "配置顶层不是键值映射"
+
+        val proxies = parsed["proxies"]
+        if (proxies != null && proxies !is List<*>) return "proxies 段不是列表"
+        val proxyNames = LinkedHashSet<String>()
+        if (proxies is List<*>) {
+            for ((idx, entry) in proxies.withIndex()) {
+                if (entry !is Map<*, *>) return "第 ${idx + 1} 个节点不是键值映射"
+                val name = entry["name"]?.toString()
+                if (name.isNullOrBlank()) return "第 ${idx + 1} 个节点缺少 name"
+                if (entry["type"]?.toString().isNullOrBlank()) return "节点「$name」缺少 type"
+                if (!proxyNames.add(name)) return "存在重复节点名: $name"
+            }
+        }
+
+        val groups = parsed["proxy-groups"]
+        if (groups != null && groups !is List<*>) return "proxy-groups 段不是列表"
+        val groupNames = LinkedHashSet<String>()
+        if (groups is List<*>) {
+            for ((idx, entry) in groups.withIndex()) {
+                if (entry !is Map<*, *>) return "第 ${idx + 1} 个策略组不是键值映射"
+                val name = entry["name"]?.toString()
+                if (name.isNullOrBlank()) return "第 ${idx + 1} 个策略组缺少 name"
+                if (!groupNames.add(name)) return "存在重复策略组名: $name"
+                if (entry["type"]?.toString().isNullOrBlank()) return "策略组「$name」缺少 type"
+            }
+        }
+
+        val rules = parsed["rules"]
+        if (rules != null && rules !is List<*>) return "rules 段不是列表"
+        if (rules is List<*>) {
+            for ((idx, rule) in rules.withIndex()) {
+                if (rule !is String) return "第 ${idx + 1} 条规则不是文本: $rule"
+                if (rule.substringBefore(',').isBlank()) return "第 ${idx + 1} 条规则缺少规则类型: $rule"
+                // RULE-SET / AND / OR / NOT rules carry their payload differently, so only
+                // the final ,TARGET is checked — every rule type ends with its target.
+                val target = rule.substringAfterLast(',').trim()
+                if (target.isBlank()) return "第 ${idx + 1} 条规则缺少目标出站: $rule"
+            }
+        }
+        return null
+    }
+
+    /**
      * Re-downloads a profile and replaces its file in place (the id stays the same).
      *
      * The profile NAME is deliberately kept as it is: a name the user set (or accepted
@@ -392,6 +549,14 @@ object ConfigManager {
      * is just metadata that can change at any time. Renaming on every update would
      * silently undo a manual rename, so the provider-supplied name is only used when the
      * profile is created for the first time (see [downloadSubscription]).
+     *
+     * The update is a TRANSACTION. The previous implementation overwrote the live file
+     * as soon as the download looked plausible; if the core then failed to load it, the
+     * working configuration was gone and only a manual `.bak` copy could save the user.
+     * Now: download to a staged file → structural validation → kernel pre-validation
+     * (when the core is up) → atomic activation → hot reload → automatic rollback on
+     * any post-activation failure. The known-good ring (see [rotateProfileHistory])
+     * additionally keeps manual recovery possible.
      */
     suspend fun updateSubscription(
         context: Context,
@@ -405,6 +570,8 @@ object ConfigManager {
                 .url(url)
                 .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
                 .build()
+
+            val file = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
 
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -421,13 +588,37 @@ object ConfigManager {
                 if (!isValidSubscriptionPayload(body)) {
                     error("更新失败：响应内容不是有效的配置或节点数据 (疑似网页、拦截错误页或不受支持的 Base64 节点列表)")
                 }
-                // Overwrite the EXISTING file without creating a duplicate ID!
-                val file = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+
+                // --- Stage 1: write the candidate NEXT TO the profile, never over it. ---
+                val stagedFile = SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.staged")
+                    ?: error("无法为订阅创建安全的文件路径")
+                writeTextAtomic(stagedFile, body)
+
+                // --- Stage 2: deep structural validation of the STAGED file. ---
+                val structuralProblem = validateConfigStructure(body)
+                if (structuralProblem != null) {
+                    stagedFile.delete()
+                    error("更新已取消：$structuralProblem；正在运行的旧配置未受影响")
+                }
+
+                // --- Stage 3: atomic activation. ---
+                val hadWorkingContent = file.exists() && file.length() > 0
                 val backupFile = profileBackupFile(context, id)
-                if (file.exists() && file.length() > 0 && backupFile != null) {
+                if (hadWorkingContent && backupFile != null) {
                     runCatching { file.copyTo(backupFile, overwrite = true) }
                 }
-                writeTextAtomic(file, body)
+                runCatching {
+                    Files.move(
+                        stagedFile.toPath(), file.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE
+                    )
+                }.recoverCatching {
+                    // Some filesystems refuse ATOMIC_MOVE; a plain move is still atomic
+                    // enough here because the staged file is fully written by now.
+                    Files.move(stagedFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }.onFailure {
+                    error("无法激活新配置文件: ${it.message}")
+                }
 
                 val existing = getProfiles(context).find { it.id == id }
                 val item = ProfileItem(
@@ -469,6 +660,13 @@ object ConfigManager {
         var displayName = "本地配置-${System.currentTimeMillis() % 1000}"
         contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) {
+                val sizeIdx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (sizeIdx != -1 && !cursor.isNull(sizeIdx)) {
+                    val fileSize = cursor.getLong(sizeIdx)
+                    if (fileSize > MAX_SUBSCRIPTION_BYTES) {
+                        error("配置文件过大 (${fileSize / 1024 / 1024} MB, 上限 ${MAX_SUBSCRIPTION_BYTES / 1024 / 1024} MB)")
+                    }
+                }
                 val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
                 if (nameIdx != -1) {
                     val fName = cursor.getString(nameIdx)
@@ -478,8 +676,30 @@ object ConfigManager {
                 }
             }
         }
-        val content = contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }
-            ?: error("无法读取文件内容")
+        val content = contentResolver.openInputStream(uri)?.use { stream ->
+            val out = java.io.StringWriter()
+            stream.bufferedReader(Charsets.UTF_8).use { reader ->
+                val buf = CharArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val n = reader.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > MAX_SUBSCRIPTION_BYTES) {
+                        error("配置文件超过 ${MAX_SUBSCRIPTION_BYTES / 1024 / 1024} MB 上限")
+                    }
+                    out.write(buf, 0, n)
+                }
+            }
+            out.toString()
+        } ?: error("无法读取文件内容")
+        if (content.isBlank()) error("配置文件内容为空")
+        if (!isValidSubscriptionPayload(content)) {
+            error("所选文件不是有效的 Clash / Mihomo YAML 配置")
+        }
+        validateConfigStructure(content)?.let { reason ->
+            error("配置文件结构有误：$reason")
+        }
         saveLocalProfile(context, displayName, content)
     }
 

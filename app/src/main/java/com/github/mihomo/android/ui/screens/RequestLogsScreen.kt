@@ -93,7 +93,11 @@ fun RequestLogsScreen(
     var showFilterActionSheet by remember { mutableStateOf(false) }
     var showAppFilterSheet by remember { mutableStateOf(false) }
     var showClearActionSheet by remember { mutableStateOf(false) }
-    var activeDetailRecord by remember { mutableStateOf<RequestRecord?>(null) }
+    var activeDetailRecordId by remember { mutableStateOf<Long?>(null) }
+    val activeDetailRecord = remember(records, activeDetailRecordId) {
+        val id = activeDetailRecordId ?: return@remember null
+        records.firstOrNull { it.id == id }
+    }
     val coroutineScope = rememberCoroutineScope()
 
     // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
@@ -167,7 +171,7 @@ fun RequestLogsScreen(
                     // Filter Action Button
                     Box(
                         modifier = Modifier
-                            .height(44.dp)
+                            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                             .clip(RoundedCornerShape(8.dp))
                             .iosPressable {
                                 haptic.selection()
@@ -200,7 +204,7 @@ fun RequestLogsScreen(
                     if (records.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .height(44.dp)
+                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                                 .clip(RoundedCornerShape(8.dp))
                                 .iosPressable {
                                     haptic.selection()
@@ -317,7 +321,7 @@ fun RequestLogsScreen(
                         formattedTime = formattedTime,
                         onClick = {
                             haptic.lightTick()
-                            activeDetailRecord = record
+                            activeDetailRecordId = record.id
                         }
                     )
                 }
@@ -327,13 +331,13 @@ fun RequestLogsScreen(
 
     // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRecord != null) {
-        val rec = activeDetailRecord!!
+        val rec = activeDetailRecord
         val formattedDetailTime = remember(rec.timestamp) {
             detailTimeFormat.format(Instant.ofEpochMilli(rec.timestamp))
         }
 
         CupertinoModalBottomSheet(
-            onDismissRequest = { activeDetailRecord = null },
+            onDismissRequest = { activeDetailRecordId = null },
             title = AppStrings.get("requests_detail_title", lang),
             trailingAction = {
                 if (rec.isActive) {
@@ -394,12 +398,13 @@ fun RequestLogsScreen(
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    val formattedEndpoint = formatHostPort(rec.destinationIp, rec.destinationPort)
                     CupertinoDetailRow(
                         label = AppStrings.get("requests_field_endpoint", lang),
-                        value = "${rec.destinationIp}:${rec.destinationPort}",
+                        value = formattedEndpoint,
                         showCopy = true,
                         onCopy = {
-                            copyToClipboard("${rec.destinationIp}:${rec.destinationPort}")
+                            copyToClipboard(formattedEndpoint)
                             CupertinoToast.show(AppStrings.get("copied_endpoint_toast", lang))
                         }
                     )
@@ -510,16 +515,16 @@ fun RequestLogsScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(46.dp)
+                            .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(RedDanger.copy(alpha = 0.12f))
                             .iosPressable {
                                 haptic.impact()
                                 val recordId = rec.id
-                                activeDetailRecord = null
                                 coroutineScope.launch {
                                     val closed = RequestRepository.closeConnection(recordId)
                                     if (closed) {
+                                        activeDetailRecordId = null
                                         CupertinoToast.show(AppStrings.get("requests_close_success", lang))
                                     } else {
                                         CupertinoToast.show(
@@ -676,6 +681,13 @@ fun RequestLogsScreen(
     }
 }
 
+internal fun formatHostPort(host: String, port: Int): String {
+    val cleanHost = host.trim()
+    if (cleanHost.isEmpty()) return ""
+    val bracketed = if (cleanHost.contains(':') && !cleanHost.startsWith("[")) "[$cleanHost]" else cleanHost
+    return if (port > 0) "$bracketed:$port" else bracketed
+}
+
 /**
  * Pure, high signal-to-noise ratio Request Record Row.
  * Preserves full width for domains, linear typography with middots, zero rectangular tag noise.
@@ -694,7 +706,7 @@ private fun RequestRecordCell(
     }
 
     val displayHost = if ((record.destinationPort != 443) && (record.destinationPort != 80)) {
-        "${record.host}:${record.destinationPort}"
+        formatHostPort(record.host, record.destinationPort)
     } else {
         record.host
     }

@@ -40,9 +40,20 @@ fun DnsSettingsScreen(
     var currentIpv6 by remember { mutableStateOf(settingsManager.dnsIpv6Enabled) }
     var currentBlockThirdParty by remember(blockThirdPartyDns) { mutableStateOf(blockThirdPartyDns) }
 
-    fun reloadCore() {
-        coroutineScope.launch(Dispatchers.IO) {
-            runCatching { ClashCore.reloadActiveConfig(context) }
+    fun reloadIpv6Setting(prevValue: Boolean) {
+        coroutineScope.launch {
+            if (com.github.mihomo.android.service.MihomoVpnService.vpnState.value.status ==
+                com.github.mihomo.android.service.VpnState.Status.RUNNING
+            ) {
+                val ok = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    runCatching { ClashCore.reloadActiveConfig(context) }.getOrDefault(false)
+                }
+                if (!ok) {
+                    settingsManager.dnsIpv6Enabled = prevValue
+                    currentIpv6 = prevValue
+                    CupertinoToast.show(AppStrings.get("core_reload_failed", lang), isDestructive = true)
+                }
+            }
         }
     }
 
@@ -77,7 +88,6 @@ fun DnsSettingsScreen(
                                     currentFakeIp = checked
                                     settingsManager.fakeIpEnabled = checked
                                     onFakeIpEnabledChanged?.invoke(checked)
-                                    reloadCore()
                                 }
                             )
                         }
@@ -90,9 +100,10 @@ fun DnsSettingsScreen(
                             CupertinoSwitch(
                                 checked = currentIpv6,
                                 onCheckedChange = { checked ->
+                                    val prev = currentIpv6
                                     currentIpv6 = checked
                                     settingsManager.dnsIpv6Enabled = checked
-                                    reloadCore()
+                                    reloadIpv6Setting(prev)
                                 }
                             )
                         }
@@ -114,7 +125,6 @@ fun DnsSettingsScreen(
                                     currentBlockThirdParty = checked
                                     settingsManager.blockThirdPartyDns = checked
                                     onSaveDns(nameservers, fallbackServers, checked)
-                                    reloadCore()
                                 }
                             )
                         }

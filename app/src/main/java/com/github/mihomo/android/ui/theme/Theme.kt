@@ -255,24 +255,27 @@ fun MihomoTheme(
         typography.bodyMedium.merge(TextStyle(fontFamily = activeFontFamily))
     }
 
-    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     CompositionLocalProvider(
         LocalLoonColors provides loonColors,
         LocalAppFont provides appFont,
         LocalAppFontFamily provides activeFontFamily,
         LocalReduceMotion provides reduceMotion,
-        LocalWindowWidthClass provides windowWidthClass,
-        // Compose 1.8 replaced LocalOverscrollConfiguration with LocalOverscrollFactory;
-        // providing a null factory is how the stretch overscroll effect is disabled now.
-        androidx.compose.foundation.LocalOverscrollFactory provides null,
-        androidx.compose.foundation.LocalIndication provides NoIndication
+        LocalWindowWidthClass provides windowWidthClass
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,
             shapes = IosContinuousShapes
         ) {
-            ProvideTextStyle(value = defaultTextStyle, content = content)
+            @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+            CompositionLocalProvider(
+                // Placed INSIDE MaterialTheme so Material 3's internal LocalIndication (ripple)
+                // is overridden with NoIndication across the entire app.
+                androidx.compose.foundation.LocalOverscrollFactory provides null,
+                androidx.compose.foundation.LocalIndication provides NoIndication
+            ) {
+                ProvideTextStyle(value = defaultTextStyle, content = content)
+            }
         }
     }
 }

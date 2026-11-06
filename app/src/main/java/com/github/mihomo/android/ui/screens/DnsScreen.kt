@@ -46,7 +46,10 @@ fun DnsScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var showClearActionSheet by remember { mutableStateOf(false) }
-    var activeDetailRecord by remember { mutableStateOf<DnsRecord?>(null) }
+    var activeDetailRecordId by remember { mutableStateOf<Long?>(null) }
+    val activeDetailRecord = remember(records, activeDetailRecordId) {
+        activeDetailRecordId?.let { id -> records.find { it.id == id } }
+    }
 
     // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
     // The locale comes from LocalConfiguration, which is observable — reading
@@ -83,7 +86,7 @@ fun DnsScreen(
                     if (onNavigateToSettings != null) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
+                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
                                 .clip(CircleShape)
                                 .iosPressable {
                                     haptic.lightTick()
@@ -103,7 +106,7 @@ fun DnsScreen(
                     if (records.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .height(44.dp)
+                                .heightIn(min = LoonSizes.touchTargetMin)
                                 .clip(RoundedCornerShape(8.dp))
                                 .iosPressable {
                                     haptic.selection()
@@ -196,7 +199,7 @@ fun DnsScreen(
                         formattedTime = formattedTime,
                         onClick = {
                             haptic.lightTick()
-                            activeDetailRecord = record
+                            activeDetailRecordId = record.id
                         }
                     )
                 }
@@ -206,11 +209,11 @@ fun DnsScreen(
 
     // Detail Inspector: Pure iOS CupertinoModalBottomSheet
     if (activeDetailRecord != null) {
-        val rec = activeDetailRecord!!
+        val rec = activeDetailRecord
         val formattedTime = remember(rec.timestamp) { timeFormat.format(Instant.ofEpochMilli(rec.timestamp)) }
 
         CupertinoModalBottomSheet(
-            onDismissRequest = { activeDetailRecord = null },
+            onDismissRequest = { activeDetailRecordId = null },
             title = AppStrings.get("dns_detail_title", lang)
         ) {
             Column(
@@ -350,11 +353,17 @@ fun DnsScreen(
                     }
                     Column {
                         Text(text = AppStrings.get("dns_latency_label", lang), fontSize = LoonTypeScale.caption, color = LoonTextSecondary)
+                        val (latencyText, latencyColor) = when {
+                            rec.isResolving -> AppStrings.get("dns_resolving", lang) to LoonTextSecondary
+                            rec.isCacheHit -> AppStrings.get("dns_cache_hit", lang) to LoonSuccessText
+                            rec.latencyMs > 0 -> "${rec.latencyMs}ms" to LoonTextPrimary
+                            else -> "--" to LoonTextSecondary
+                        }
                         Text(
-                            text = if (rec.latencyMs <= 0) AppStrings.get("dns_cache_hit", lang) else "${rec.latencyMs}ms",
+                            text = latencyText,
                             fontSize = LoonTypeScale.callout,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (rec.latencyMs <= 0) LoonSuccessText else LoonTextPrimary
+                            color = latencyColor
                         )
                     }
                     Column {
@@ -427,20 +436,39 @@ private fun DnsRecordCell(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            if (record.latencyMs <= 0) {
-                Text(
-                    text = AppStrings.get("dns_cache_badge", lang),
-                    color = LoonSuccessText,
-                    fontSize = LoonTypeScale.footnote,
-                    fontWeight = FontWeight.Medium
-                )
-            } else {
-                Text(
-                    text = "${record.latencyMs}ms",
-                    color = if (record.latencyMs > 100) LoonWarningText else LoonTextSecondary,
-                    fontSize = LoonTypeScale.footnote,
-                    fontWeight = FontWeight.Normal
-                )
+            when {
+                record.isResolving -> {
+                    Text(
+                        text = AppStrings.get("dns_resolving", lang),
+                        color = LoonTextMuted,
+                        fontSize = LoonTypeScale.footnote,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+                record.isCacheHit -> {
+                    Text(
+                        text = AppStrings.get("dns_cache_badge", lang),
+                        color = LoonSuccessText,
+                        fontSize = LoonTypeScale.footnote,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                record.latencyMs > 0 -> {
+                    Text(
+                        text = "${record.latencyMs}ms",
+                        color = if (record.latencyMs > 100) LoonWarningText else LoonTextSecondary,
+                        fontSize = LoonTypeScale.footnote,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+                else -> {
+                    Text(
+                        text = record.type,
+                        color = LoonTextSecondary,
+                        fontSize = LoonTypeScale.footnote,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
             }
         }
 

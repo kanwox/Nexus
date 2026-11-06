@@ -44,6 +44,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.kr328.clash.core.util.trafficString
 import com.github.mihomo.android.core.ClashCore
+import com.github.mihomo.android.data.DiagnosticsExporter
+import com.github.mihomo.android.data.GeoDataManager
+import com.github.mihomo.android.data.GeoFile
+import com.github.mihomo.android.data.GeoFileInfo
 import com.github.mihomo.android.data.MihomoApi
 import com.github.mihomo.android.data.RequestRepository
 import com.github.mihomo.android.service.MihomoVpnService
@@ -94,8 +98,20 @@ fun CoreScreen(onBack: () -> Unit) {
     var ruleProviders by remember { mutableStateOf<List<MihomoApi.ApiProvider>>(emptyList()) }
     val updatingNames = remember { mutableStateListOf<String>() }
 
+    // Geo database maintenance + diagnostics export (suggestion 9): sizes/mtimes are read
+    // once on entry; the export and geo updates run in the page scope on IO.
+    var geoFiles by remember { mutableStateOf<List<GeoFileInfo>>(emptyList()) }
+    var updatingGeo by remember { mutableStateOf<String?>(null) }
+    var exportingDiagnostics by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    fun refreshGeoFiles() {
+        scope.launch(Dispatchers.IO) { geoFiles = GeoDataManager.geoFiles(context) }
+    }
+
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { fallbackVersion = ClashCore.getCoreVersion() }
+        refreshGeoFiles()
     }
 
     LaunchedEffect(isRunning) {
@@ -175,6 +191,82 @@ fun CoreScreen(onBack: () -> Unit) {
                     UptimeInfoRow(startedAtMs = startedAtMs, isRunning = isRunning, lang = lang)
                     CupertinoDivider()
                     TotalTrafficInfoRow(totalTraffic)
+                }
+            }
+
+            item {
+                CupertinoGroupedSection(title = AppStrings.current("geo_update")) {
+                    if (geoFiles.isEmpty()) {
+                        InfoRow(AppStrings.current("core_provider_empty"), "")
+                    } else {
+                        geoFiles.forEachIndexed { index, info ->
+                            if (index > 0) CupertinoDivider()
+                            GeoFileRow(
+                                info = info,
+                                updating = updatingGeo == info.fileName,
+                                onUpdate = {
+                                    val which = GeoFile.all.firstOrNull { it.fileName == info.fileName }
+                                        ?: return@GeoFileRow
+                                    scope.launch {
+                                        updatingGeo = info.fileName
+                                        val result = withContext(Dispatchers.IO) {
+                                            GeoDataManager.updateGeoFile(context, which)
+                                        }
+                                        updatingGeo = null
+                                        result.fold(
+                                            onSuccess = {
+                                                refreshGeoFiles()
+                                                CupertinoToast.show(
+                                                    AppStrings.get("geo_update_success", lang)
+                                                        .replace("{name}", which.displayName)
+                                                        .replace("{size}", trafficString(info.sizeBytes))
+                                                )
+                                            },
+                                            onFailure = {
+                                                CupertinoToast.show(
+                                                    AppStrings.get("geo_update_failed", lang)
+                                                        .replace("{msg}", it.message ?: ""),
+                                                    isDestructive = true
+                                                )
+                                            }
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                        CupertinoDivider()
+                        // One-click diagnostics export. The file path shown in the toast is
+                        // already inside the app sandbox; the share flow is a follow-up.
+                        CupertinoCell(
+                            title = AppStrings.current("diagnostics_export"),
+                            value = if (exportingDiagnostics) "…" else "",
+                            showChevron = false,
+                            onClick = {
+                                if (!exportingDiagnostics) {
+                                    exportingDiagnostics = true
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) {
+                                            DiagnosticsExporter.exportDiagnostics(context)
+                                        }
+                                        exportingDiagnostics = false
+                                        when (result) {
+                                            is DiagnosticsExporter.DiagnosticsExportResult.Success ->
+                                                CupertinoToast.show(
+                                                    AppStrings.get("diagnostics_export_success", lang)
+                                                        .replace("{path}", result.file.name)
+                                                )
+                                            is DiagnosticsExporter.DiagnosticsExportResult.Failure ->
+                                                CupertinoToast.show(
+                                                    AppStrings.get("diagnostics_export_failed", lang)
+                                                        .replace("{msg}", result.message),
+                                                    isDestructive = true
+                                                )
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
             }
 
@@ -335,6 +427,57 @@ private fun InfoRow(label: String, value: String) {
     ) {
         Text(text = label, color = LoonTextPrimary, fontSize = LoonTypeScale.body)
         Text(text = value, color = LoonTextSecondary, fontSize = LoonTypeScale.subhead)
+    }
+}
+
+/** One geo database row: name + size/mtime, tappable to trigger a MANUAL update. */
+@Composable
+private fun GeoFileRow(
+    info: GeoFileInfo,
+    updating: Boolean,
+    onUpdate: () -> Unit
+) {
+    val lang = com.github.mihomo.android.i18n.LocalAppLanguage.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !updating, onClick = onUpdate)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = info.fileName,
+                color = LoonTextPrimary,
+                fontSize = LoonTypeScale.body,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = AppStrings.get("geo_last_updated", lang).replace(
+                    "{time}",
+                    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+                        .format(java.util.Date(info.lastModifiedMs))
+                ) + " · " + trafficString(info.sizeBytes),
+                color = LoonTextSecondary,
+                fontSize = LoonTypeScale.footnote,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (updating) {
+            com.github.mihomo.android.ui.components.CupertinoActivityIndicator(
+                modifier = Modifier.sizeIn(minWidth = 24.dp),
+                color = IosBlue
+            )
+        } else {
+            Text(
+                text = AppStrings.current("geo_update"),
+                color = IosBlue,
+                fontSize = LoonTypeScale.subhead
+            )
+        }
     }
 }
 

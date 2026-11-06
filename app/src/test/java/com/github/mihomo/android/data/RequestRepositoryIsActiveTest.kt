@@ -137,4 +137,20 @@ class RequestRepositoryIsActiveTest {
         assertTrue(record.uploadBytes == 30L)
         assertTrue(record.downloadBytes == 40L)
     }
+
+    @Test
+    fun `activeCountFlow excludes rejected connections`() {
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(
+                    conn("c1", rule = "DomainSuffix"),
+                    conn("c2", rule = "Reject"),
+                    conn("c3", chains = listOf("REJECT"))
+                ),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+        org.junit.Assert.assertEquals(1, RequestRepository.activeCountFlow.value)
+    }
 }
