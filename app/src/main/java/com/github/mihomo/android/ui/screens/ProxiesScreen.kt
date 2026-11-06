@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.github.kr328.clash.core.model.Proxy
@@ -587,7 +588,7 @@ fun ProxiesScreen(
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
                             LoonGroupHeaderCard(
-                                modifier = Modifier.animateItem(placementSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)),
+                                modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = tween(LoonMotion.fastMs), placementSpec = groupListPlacementSpec),
                                 groupName = groupName,
                                 groupType = group?.type ?: "select",
                                 activeNode = groupNow,
@@ -620,7 +621,7 @@ fun ProxiesScreen(
                             ) { rowIndex, rowProxies ->
                                 Row(
                                     modifier = Modifier
-                                        .animateItem(placementSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing))
+                                        .animateItem(fadeInSpec = tween(LoonMotion.normalMs, delayMillis = 60), fadeOutSpec = tween(LoonMotion.fastMs), placementSpec = groupListPlacementSpec)
                                         .fillMaxWidth()
                                         .padding(top = if (rowIndex == 0) 6.dp else 0.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -896,6 +897,13 @@ private fun IosEmptyProxiesPlaceholder(message: String) {
 // Collapsed right side: Standard English Group Type (SELECT / URL-TEST / ...)
 // Expanded right side: Type disappears and that exact position becomes Speed Test
 // =============================================================================
+/** Critically damped, unhurried placement so rows below an expanding group glide instead of snapping. */
+private val groupListPlacementSpec = spring<IntOffset>(
+    dampingRatio = Spring.DampingRatioNoBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+    visibilityThreshold = IntOffset.VisibilityThreshold
+)
+
 @Composable
 private fun LoonGroupHeaderCard(
     groupName: String,

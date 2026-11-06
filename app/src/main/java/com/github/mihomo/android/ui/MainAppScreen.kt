@@ -732,11 +732,11 @@ fun MainAppScreen(
             enter = slideInHorizontally(
                 initialOffsetX = { if (isRtl) -it else it },
                 animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)
-            ) + fadeIn(animationSpec = tween(LoonMotion.normalMs)),
+            ),
             exit = slideOutHorizontally(
                 targetOffsetX = { if (isRtl) -it else it },
                 animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
-            ) + fadeOut(animationSpec = tween(LoonMotion.fastMs)),
+            ),
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(20f)
@@ -832,19 +832,15 @@ fun MainAppScreen(
                     val targetDepth = getDepth(targetState)
 
                     if (targetDepth > initialDepth) {
-                        (slideInHorizontally(initialOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
-                                fadeIn(animationSpec = tween(LoonMotion.normalMs)))
+                        slideInHorizontally(initialOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
-                                        fadeOut(animationSpec = tween(LoonMotion.normalMs))
+                                slideOutHorizontally(targetOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
                             ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
                     } else {
-                        (slideInHorizontally(initialOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
-                                fadeIn(animationSpec = tween(LoonMotion.normalMs)))
+                        slideInHorizontally(initialOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
                             .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)) +
-                                        fadeOut(animationSpec = tween(LoonMotion.normalMs))
-                            ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
+                                slideOutHorizontally(targetOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
+                            ).using(SizeTransform(clip = false) { _, _ -> tween(0) }).apply { targetContentZIndex = -1f }
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
