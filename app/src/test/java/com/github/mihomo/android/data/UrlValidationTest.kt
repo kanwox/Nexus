@@ -1,9 +1,19 @@
 package com.github.mihomo.android.data
 
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ServerSocket
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class UrlValidationTest {
 
@@ -110,5 +120,204 @@ class UrlValidationTest {
         assertFalse(isPrivateNetworkHost("example.com"))
         assertFalse(isPrivateNetworkHost("172.15.0.1"))
         assertFalse(isPrivateNetworkHost("192.169.0.1"))
+    }
+
+    @Test
+    fun `non-standard numeric IP literals are always rejected`() {
+        val obfuscated = listOf(
+            "http://0177.0.0.1/sub",
+            "http://017.0.0.1/sub",
+            "http://0x7f000001/sub",
+            "http://0x7f.0.0.1/sub",
+            "http://2130706433/sub",
+            "http://127.1/sub",
+            "http://0xa9fea9fe/latest/meta-data"
+        )
+        for (url in obfuscated) {
+            assertThrows(SsrfBlockedException::class.java) {
+                requireSecureRemoteUrl(url, allowPrivateHosts = true)
+            }
+            assertThrows(SsrfBlockedException::class.java) {
+                requireSecureRemoteUrl(url, allowPrivateHosts = false)
+            }
+        }
+    }
+
+    @Test
+    fun `embedded private IPv4 inside IPv6 transition literals is rejected`() {
+        val mapped = listOf(
+            "http://[::ffff:127.0.0.1]/sub",
+            "http://[::ffff:7f00:1]/sub",
+            "http://[::ffff:169.254.169.254]/latest/meta-data",
+            "http://[::ffff:192.168.1.10]/sub",
+            "http://[::127.0.0.1]/sub",
+            "http://[::169.254.169.254]/latest/meta-data",
+            "http://[64:ff9b::169.254.169.254]/sub",
+            "http://[2002:7f00:0001::]/sub"
+        )
+        for (url in mapped) {
+            assertThrows(SsrfBlockedException::class.java) {
+                requireSecureRemoteUrl(url, allowPrivateHosts = true)
+            }
+        }
+    }
+
+    @Test
+    fun `unparseable and backslash-confused URLs fail closed`() {
+        val malformed = listOf(
+            "http://example.com\\@169.254.169.254/sub",
+            "http://example.com:99999/sub",
+            "http://[::1/sub",
+            "http:///sub",
+            "http:///127.0.0.1/sub",
+            "http://:8080/sub",
+            "http://user@/sub",
+            "http://",
+            "http://example.com\n127.0.0.1/sub"
+        )
+        for (url in malformed) {
+            assertThrows("expected failure for $url", SsrfBlockedException::class.java) {
+                requireSecureRemoteUrl(url, allowPrivateHosts = true)
+            }
+        }
+        assertThrows(SsrfBlockedException::class.java) {
+            requireSecureRemoteUrl("http://127.0.0.1:80#@evil.com", allowPrivateHosts = false)
+        }
+    }
+
+    @Test
+    fun `redactUrl never leaks credentials even for malformed URLs`() {
+        val redacted = redactUrl("http://user:SUPER_SECRET@127.0.0.1:badport/api/sub?token=LEAK")
+        assertFalse(redacted.contains("SUPER_SECRET"))
+        assertFalse(redacted.contains("LEAK"))
+    }
+
+    @Test
+    fun `validateResolvedAddresses blocks forbidden IPs and honors allowPrivateHosts`() {
+        assertThrows(UnknownHostException::class.java) {
+            validateResolvedAddresses(
+                "rebind.example.com",
+                listOf(InetAddress.getByName("169.254.169.254")),
+                allowPrivateHosts = true
+            )
+        }
+        assertThrows(UnknownHostException::class.java) {
+            validateResolvedAddresses(
+                "rebind.example.com",
+                listOf(InetAddress.getByName("0.1.2.3")),
+                allowPrivateHosts = true
+            )
+        }
+        assertThrows(UnknownHostException::class.java) {
+            validateResolvedAddresses(
+                "rebind.example.com",
+                listOf(InetAddress.getByName("127.0.0.1")),
+                allowPrivateHosts = false
+            )
+        }
+        assertThrows(UnknownHostException::class.java) {
+            validateResolvedAddresses(
+                "rebind.example.com",
+                listOf(InetAddress.getByName("100.64.0.1")),
+                allowPrivateHosts = false
+            )
+        }
+        // Public resolution passes cleanly
+        validateResolvedAddresses(
+            "example.com",
+            listOf(InetAddress.getByName("93.184.216.34")),
+            allowPrivateHosts = false
+        )
+    }
+
+    @Test
+    fun `withSsrfProtection blocks HTTP 302 redirect to link-local metadata endpoint`() {
+        val redirectResponse =
+            "HTTP/1.1 302 Found\r\n" +
+                "Location: http://169.254.169.254/latest/meta-data\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n\r\n"
+        withHttpServer(listOf(redirectResponse)) { port ->
+            val client = OkHttpClient.Builder()
+                .callTimeout(5, TimeUnit.SECONDS)
+                .withSsrfProtection(allowPrivateSupplier = { true }, validateDns = true)
+                .build()
+            assertThrows(SsrfBlockedException::class.java) {
+                client.newCall(Request.Builder().url("http://127.0.0.1:$port/start").build())
+                    .execute()
+                    .close()
+            }
+        }
+    }
+
+    @Test
+    fun `withSsrfProtection on proxy client blocks 302 redirect to loopback when private hosts disabled`() {
+        val redirectResponse =
+            "HTTP/1.1 302 Found\r\n" +
+                "Location: http://127.0.0.1:9090/configs\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n\r\n"
+        withHttpServer(listOf(redirectResponse)) { port ->
+            val client = OkHttpClient.Builder()
+                .callTimeout(5, TimeUnit.SECONDS)
+                .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
+                .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = false)
+                .build()
+            assertThrows(SsrfBlockedException::class.java) {
+                client.newCall(Request.Builder().url("http://example.com/script.js").build())
+                    .execute()
+                    .close()
+            }
+        }
+    }
+
+    @Test
+    fun `withSsrfProtection still follows valid same-origin redirects`() {
+        val hop1 =
+            "HTTP/1.1 302 Found\r\n" +
+                "Location: /final\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n\r\n"
+        val hop2 =
+            "HTTP/1.1 200 OK\r\n" +
+                "Content-Length: 2\r\n" +
+                "Connection: close\r\n\r\nok"
+        withHttpServer(listOf(hop1, hop2)) { port ->
+            val client = OkHttpClient.Builder()
+                .callTimeout(5, TimeUnit.SECONDS)
+                .withSsrfProtection(allowPrivateSupplier = { true }, validateDns = true)
+                .build()
+            client.newCall(Request.Builder().url("http://127.0.0.1:$port/start").build()).execute().use { resp ->
+                assertEquals(200, resp.code)
+                assertEquals("ok", resp.body.string())
+            }
+        }
+    }
+
+    private fun withHttpServer(responses: List<String>, block: (port: Int) -> Unit) {
+        ServerSocket(0, 5, InetAddress.getByName("127.0.0.1")).use { server ->
+            server.soTimeout = 5_000
+            val worker = thread(isDaemon = true) {
+                for (reply in responses) {
+                    runCatching {
+                        server.accept().use { socket ->
+                            socket.soTimeout = 5_000
+                            val reader = socket.getInputStream().bufferedReader()
+                            var line = reader.readLine()
+                            while (!line.isNullOrEmpty()) {
+                                line = reader.readLine()
+                            }
+                            socket.getOutputStream().write(reply.toByteArray(Charsets.US_ASCII))
+                            socket.getOutputStream().flush()
+                        }
+                    }
+                }
+            }
+            try {
+                block(server.localPort)
+            } finally {
+                worker.join(5_000)
+            }
+        }
     }
 }

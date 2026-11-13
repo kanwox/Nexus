@@ -74,6 +74,15 @@
             </intent-filter>
         </service>
 
+        <!-- Transparent trampoline Activity for launching VPN safely from Quick Settings Tile -->
+        <activity
+            android:name=".service.TileVpnLaunchActivity"
+            android:autoRemoveFromRecents="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Boot Completed Receiver -->
         <receiver
             android:name=".receiver.BootReceiver"

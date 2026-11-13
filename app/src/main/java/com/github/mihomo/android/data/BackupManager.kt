@@ -197,15 +197,36 @@ object BackupManager {
         backupLanPassword: String?,
         currentPassword: String
     ): LanRestoreDecision {
-        if (!wantsLan) return LanRestoreDecision(allowLan = false, password = backupLanPassword?.trim())
-        val effective = backupLanPassword?.trim()?.takeIf { it.isNotEmpty() }
-            ?: currentPassword.trim().takeIf { it.isNotEmpty() }
-        return if (effective.isNullOrEmpty()) {
-            LanRestoreDecision(allowLan = false, password = null, rejected = true)
-        } else {
-            LanRestoreDecision(allowLan = true, password = effective)
+        val cleanBackupPw = ConfigSanitizer.sanitizeSingleLineScalar(backupLanPassword)
+        val cleanCurrentPw = ConfigSanitizer.sanitizeSingleLineScalar(currentPassword)
+        val effective = cleanBackupPw ?: cleanCurrentPw
+        return when {
+            !wantsLan -> LanRestoreDecision(allowLan = false, password = cleanBackupPw)
+            effective == null -> LanRestoreDecision(allowLan = false, password = null, rejected = true)
+            else -> LanRestoreDecision(allowLan = true, password = effective)
         }
     }
+
+    internal fun sanitizeRestoredOverrides(
+        prependRules: List<String>,
+        hostsEntries: List<String>,
+        dnsServersOverride: List<String>
+    ): SanitizedOverrides {
+        val safePrepend = ConfigSanitizer.sanitizePrependRules(prependRules)
+        val safeHosts = ConfigSanitizer.sanitizeHostsEntries(hostsEntries)
+        val safeDns = ConfigSanitizer.sanitizeDnsServerEntries(dnsServersOverride)
+        val dropped = safePrepend.size < prependRules.size ||
+            safeHosts.size < hostsEntries.size ||
+            safeDns.size < dnsServersOverride.size
+        return SanitizedOverrides(safePrepend, safeHosts, safeDns, dropped)
+    }
+
+    internal data class SanitizedOverrides(
+        val prependRules: List<String>,
+        val hostsEntries: List<String>,
+        val dnsServersOverride: List<String>,
+        val hadDroppedEntries: Boolean
+    )
 
     /** The outcome of [decideLanRestore]. */
     internal data class LanRestoreDecision(
@@ -413,6 +434,14 @@ object BackupManager {
                         null
                     }
                 }
+                val restoredOverrides = sanitizeRestoredOverrides(
+                    prependRules = profile.prependRules,
+                    hostsEntries = profile.hostsEntries,
+                    dnsServersOverride = profile.dnsServersOverride
+                )
+                if (restoredOverrides.hadDroppedEntries) {
+                    failures += "订阅「${profile.name}」包含无效覆写条目，已自动过滤"
+                }
                 val created = ConfigManager.saveLocalProfile(context, profile.name, profile.content)
                 val updated = created.copy(
                     url = restoredUrl,
@@ -421,9 +450,9 @@ object BackupManager {
                     // Without a URL there is nothing to update, so auto-update stays off.
                     autoUpdate = profile.autoUpdate && restoredUrl != null,
                     autoUpdateInterval = profile.autoUpdateInterval,
-                    prependRules = profile.prependRules,
-                    hostsEntries = profile.hostsEntries,
-                    dnsServersOverride = profile.dnsServersOverride
+                    prependRules = restoredOverrides.prependRules,
+                    hostsEntries = restoredOverrides.hostsEntries,
+                    dnsServersOverride = restoredOverrides.dnsServersOverride
                 )
                 ConfigManager.updateProfile(context, updated)
                 imported++
@@ -544,8 +573,12 @@ object BackupManager {
         map["fakeIpEnabled"]?.let { settings.fakeIpEnabled = it == "true" }
         map["ipv6Enabled"]?.let { settings.ipv6Enabled = it == "true" }
         map["dnsIpv6Enabled"]?.let { settings.dnsIpv6Enabled = it == "true" }
-        map["dnsNameservers"]?.let { settings.dnsNameservers = it }
-        map["dnsFallbackServers"]?.let { settings.dnsFallbackServers = it }
+        map["dnsNameservers"]?.let {
+            settings.dnsNameservers = ConfigSanitizer.sanitizeDnsServerListSetting(it)
+        }
+        map["dnsFallbackServers"]?.let {
+            settings.dnsFallbackServers = ConfigSanitizer.sanitizeDnsServerListSetting(it)
+        }
         map["mixedPort"]?.let { value -> value.toIntOrNull()?.let { settings.mixedPort = it } }
         map["tunMtu"]?.let { value -> value.toIntOrNull()?.let { settings.tunMtu = it } }
         map["killSwitchEnabled"]?.let { settings.killSwitchEnabled = it == "true" }

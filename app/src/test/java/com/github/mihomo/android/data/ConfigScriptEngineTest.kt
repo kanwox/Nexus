@@ -237,4 +237,45 @@ class ConfigScriptEngineTest {
             )
         }
     }
+
+    @Test
+    fun `anyToJsonElement and normalizeYamlData reject deep nesting and cycles cleanly`() {
+        var deepMap: Map<String, Any?> = mapOf("leaf" to 1)
+        for (i in 0 until 70) {
+            deepMap = mapOf("k$i" to deepMap)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.anyToJsonElement(deepMap)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.normalizeYamlData(deepMap)
+        }
+
+        val cyclicList = mutableListOf<Any?>()
+        cyclicList.add(cyclicList)
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.anyToJsonElement(cyclicList)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.normalizeYamlData(cyclicList)
+        }
+    }
+
+    @Test
+    fun `exponential alias DAG under alias cap is aborted by node budget`() {
+        val dagYaml = buildString {
+            append("a0: &a0 [\"leaf\"]\n")
+            for (level in 1..20) {
+                append("a").append(level).append(": &a").append(level)
+                    .append(" [*a").append(level - 1).append(", *a").append(level - 1).append("]\n")
+            }
+        }
+        val parsed = YamlSupport.create().load<Any?>(dagYaml)
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.anyToJsonElement(parsed)
+        }
+        assertThrows(IllegalStateException::class.java) {
+            ConfigScriptEngine.normalizeYamlData(parsed)
+        }
+    }
 }

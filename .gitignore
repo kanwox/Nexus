@@ -47,5 +47,9 @@ Thumbs.db
 old_canvas.txt
 *.bak
 
+# Backup archives
+backup-*.zip
+*.zip
+
 # Tooling scratch
 .zcode/

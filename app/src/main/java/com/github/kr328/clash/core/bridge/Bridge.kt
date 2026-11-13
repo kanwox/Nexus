@@ -16,14 +16,14 @@ object Bridge {
     private var isInitialized = false
 
     // Completed once the geo database assets have been extracted to the clash home directory.
-    // Extraction is tens of MB on first launch and runs off the main thread; config loading
-    // (the first consumer of these files) awaits it via assetsReady().
-    // The reference is volatile because a failed init can be retried, which replaces it.
+    // Extraction runs off the main thread; config loading (the first consumer of these files)
+    // awaits it via assetsReady(). The reference is volatile because a failed extraction can be
+    // retried on a subsequent init(), which replaces it with a fresh deferred.
     @Volatile
     private var assetsExtracted = kotlinx.coroutines.CompletableDeferred<Unit>()
 
-    // Guards against starting the extraction thread twice when init() is retried.
-    @Volatile
+    // Guards against starting the extraction thread twice and allows retrying after failure.
+    private val extractionLock = Any()
     private var assetsExtractionStarted = false
 
     /**
@@ -43,9 +43,11 @@ object Bridge {
 
     @Synchronized
     fun init(context: Context) {
+        val app = context.applicationContext as android.app.Application
+        Global.init(app)
+        startAssetsExtractionIfNeeded(app)
         if (isInitialized) return
         try {
-            Global.init(context.applicationContext as android.app.Application)
             // The Go core lives in libclash.so and libbridge.so links against it. If libclash
             // cannot be loaded, every native call below would run against a missing core and
             // fail in obscure ways much later, so treat a missing library as fatal.
@@ -54,53 +56,19 @@ object Bridge {
 
             // Deliberately keep an open fd to the APK: the native core locates the package through
             // /proc/self/fd during nativeInit. Removing this broke native startup.
-            try {
-                packageFd = ParcelFileDescriptor.open(File(context.packageCodePath), ParcelFileDescriptor.MODE_READ_ONLY)
-            } catch (e: Throwable) {
-                Log.w(TAG, "open packageCodePath: ${e.message}")
+            if (packageFd == null) {
+                try {
+                    packageFd = ParcelFileDescriptor.open(File(context.packageCodePath), ParcelFileDescriptor.MODE_READ_ONLY)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "open packageCodePath: ${e.message}")
+                }
             }
 
             val homeDir = context.filesDir.resolve("clash").apply { mkdirs() }
-            // nativeInit only takes the home path and does not read the geo databases, so the
-            // extraction can proceed on a background thread while the (fast) native init stays
-            // on the calling thread.
-            if (!assetsExtractionStarted) {
-                assetsExtractionStarted = true
-                val extraction = assetsExtracted
-                Thread {
-                    runCatching { extractAssets(context, homeDir) }
-                        .onFailure {
-                            Log.w(TAG, "Asset extraction failed: ${it.message}")
-                            // Completing with an exception makes assetsReady() fail loudly instead
-                            // of letting the core start with missing geo databases and fail later
-                            // with an unrelated error.
-                            extraction.completeExceptionally(
-                                ClashException("Failed to extract the geo database assets", it)
-                            )
-                            return@Thread
-                        }
-                        .onSuccess { failed ->
-                            if (failed.isNotEmpty()) {
-                                Log.w(TAG, "Could not extract geo assets: $failed")
-                                extraction.completeExceptionally(
-                                    ClashException(
-                                        "Failed to extract the geo database assets: ${failed.joinToString(", ")}"
-                                    )
-                                )
-                                return@Thread
-                            }
-                        }
-                    extraction.complete(Unit)
-                }.apply {
-                    name = "geo-assets-extract"
-                    isDaemon = true
-                    start()
-                }
-            }
             val home = homeDir.absolutePath
             val versionName = try {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.0"
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 "1.0.0"
             }
             val sdkVersion = Build.VERSION.SDK_INT
@@ -120,6 +88,61 @@ object Bridge {
         }
     }
 
+    private fun startAssetsExtractionIfNeeded(context: Context) {
+        val extraction: CompletableDeferred<Unit>
+        synchronized(extractionLock) {
+            if (assetsExtractionStarted) return
+            if (assetsExtracted.isCompleted) {
+                assetsExtracted = CompletableDeferred()
+            }
+            assetsExtractionStarted = true
+            extraction = assetsExtracted
+        }
+        val homeDir = context.filesDir.resolve("clash").apply { mkdirs() }
+        // nativeInit only takes the home path and does not read the geo databases, so the
+        // extraction can proceed on a background thread while the (fast) native init stays
+        // on the calling thread.
+        Thread {
+            runCatching { extractAssets(context, homeDir) }
+                .onFailure {
+                    Log.w(TAG, "Asset extraction failed: ${it.message}")
+                    synchronized(extractionLock) {
+                        if (assetsExtracted === extraction) {
+                            assetsExtractionStarted = false
+                        }
+                    }
+                    // Completing with an exception makes assetsReady() fail loudly instead
+                    // of letting the core start with missing geo databases and fail later
+                    // with an unrelated error.
+                    extraction.completeExceptionally(
+                        ClashException("Failed to extract the geo database assets", it)
+                    )
+                    return@Thread
+                }
+                .onSuccess { failed ->
+                    if (failed.isNotEmpty()) {
+                        Log.w(TAG, "Could not extract geo assets: $failed")
+                        synchronized(extractionLock) {
+                            if (assetsExtracted === extraction) {
+                                assetsExtractionStarted = false
+                            }
+                        }
+                        extraction.completeExceptionally(
+                            ClashException(
+                                "Failed to extract the geo database assets: ${failed.joinToString(", ")}"
+                            )
+                        )
+                        return@Thread
+                    }
+                }
+            extraction.complete(Unit)
+        }.apply {
+            name = "geo-assets-extract"
+            isDaemon = true
+            start()
+        }
+    }
+
     /**
      * Extracts the geo database assets into the clash home directory.
      *
@@ -131,7 +154,7 @@ object Bridge {
      * @return the names of the assets that could not be extracted (empty on success).
      */
     private fun extractAssets(context: Context, targetDir: File): List<String> {
-        val assetFiles = listOf("geoip.metadb", "Country.mmdb", "geosite.dat")
+        val assetFiles = listOf("geoip.metadb", "geosite.dat")
         val failed = mutableListOf<String>()
         val versionMarker = targetDir.resolve(".bundled_geo_version")
         val currentApkVersion = runCatching {
@@ -157,7 +180,7 @@ object Bridge {
                 val tmpFile = targetDir.resolve("$fileName.tmp")
                 context.assets.open(fileName).use { input ->
                     tmpFile.outputStream().use { output ->
-                        input.copyTo(output)
+                        input.copyTo(output, bufferSize = 65_536)
                     }
                 }
                 check(tmpFile.length() > 0L) { "extracted file is empty" }
@@ -168,6 +191,17 @@ object Bridge {
                 targetDir.resolve("$fileName.tmp").delete()
                 Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
                 failed += fileName
+            }
+        }
+        // Clean up legacy Country.mmdb once geoip.metadb is present so the Go core's
+        // directory scan cannot accidentally pick up an outdated MMDB alphabetically.
+        val geoIpFile = targetDir.resolve("geoip.metadb")
+        val legacyMmdb = targetDir.resolve("Country.mmdb")
+        if (geoIpFile.exists() && geoIpFile.length() > 0L && legacyMmdb.exists()) {
+            runCatching {
+                if (legacyMmdb.delete()) {
+                    Log.i(TAG, "Removed legacy Country.mmdb in favor of geoip.metadb")
+                }
             }
         }
         if (failed.isEmpty() && currentApkVersion > 0L) {

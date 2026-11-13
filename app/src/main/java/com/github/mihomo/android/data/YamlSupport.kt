@@ -25,6 +25,7 @@ import org.yaml.snakeyaml.resolver.Resolver
  */
 internal object YamlSupport {
     private const val CODE_POINT_LIMIT = 100 * 1024 * 1024
+    private const val MAX_ALIASES_FOR_COLLECTIONS = 64
 
     /** Block style + two-space indent; wide lines so long rules/URLs are never folded. */
     fun dumperOptions(): DumperOptions = DumperOptions().apply {
@@ -40,9 +41,10 @@ internal object YamlSupport {
     fun create(): Yaml {
         val loaderOptions = LoaderOptions().apply {
             codePointLimit = CODE_POINT_LIMIT
-            // Configs that use YAML anchors for shared proxy templates can legitimately
-            // exceed SnakeYAML's default alias cap of 50.
-            maxAliasesForCollections = 1_000
+            // Tightened from 1000 to 64 to block Billion-Laughs YAML alias bombs while still
+            // permitting modest shared proxy template anchors; DAG traversal limits in
+            // ConfigScriptEngine provide a second cap against exponential fan-out.
+            maxAliasesForCollections = MAX_ALIASES_FOR_COLLECTIONS
         }
         val dumperOptions = dumperOptions()
         return Yaml(

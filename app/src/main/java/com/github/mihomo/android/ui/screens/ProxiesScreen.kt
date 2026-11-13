@@ -75,34 +75,59 @@ fun AnimatedSpeedTestIcon(
     }
 }
 
-private fun sortProxies(
+internal data class IndexedProxy(
+    val proxy: Proxy,
+    val occurrenceIndex: Int
+) {
+    val stableKey: String
+        get() = "$occurrenceIndex:${proxy.name}"
+}
+
+internal fun indexProxiesWithOccurrences(proxies: List<Proxy>): List<IndexedProxy> {
+    if (proxies.isEmpty()) return emptyList()
+    val seenCounts = HashMap<String, Int>(proxies.size)
+    return proxies.map { proxy ->
+        val occurrence = seenCounts[proxy.name] ?: 0
+        seenCounts[proxy.name] = occurrence + 1
+        IndexedProxy(proxy = proxy, occurrenceIndex = occurrence)
+    }
+}
+
+internal fun sortIndexedProxies(
     proxies: List<Proxy>,
     sortMode: String,
     delayCache: Map<String, SpeedTestState> = emptyMap(),
     groupName: String = ""
-): List<Proxy> {
+): List<IndexedProxy> {
+    val indexed = indexProxiesWithOccurrences(proxies)
     return when (sortMode) {
-        "DELAY" -> proxies.sortedWith(
-            compareBy<Proxy> { proxy ->
-                val state = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name]
+        "DELAY" -> indexed.sortedWith(
+            compareBy<IndexedProxy> { item ->
+                val state = delayCache["$groupName:${item.proxy.name}"] ?: delayCache[item.proxy.name]
                 // Legacy Int semantics: a Success is sortable, a failure sinks to the
                 // bottom, untested entries stay in the middle tier.
-                val d = state?.toLegacyDelay() ?: proxy.delay
+                val d = state?.toLegacyDelay() ?: item.proxy.delay
                 when {
                     d in 1..65534 -> 0
                     state is SpeedTestState.Timeout || state is SpeedTestState.Failed || d == -2 || d >= 65535 -> 2
                     else -> 1
                 }
-            }.thenBy { proxy ->
-                val state = delayCache["$groupName:${proxy.name}"] ?: delayCache[proxy.name]
-                val d = state?.toLegacyDelay() ?: proxy.delay
+            }.thenBy { item ->
+                val state = delayCache["$groupName:${item.proxy.name}"] ?: delayCache[item.proxy.name]
+                val d = state?.toLegacyDelay() ?: item.proxy.delay
                 if (d in 1..65534) d else Int.MAX_VALUE
             }
         )
-        "NAME" -> proxies.sortedBy { it.name.lowercase() }
-        else -> proxies
+        "NAME" -> indexed.sortedBy { it.proxy.name.lowercase() }
+        else -> indexed
     }
 }
+
+internal fun proxyGridRowKey(
+    groupName: String,
+    cols: Int,
+    firstItem: IndexedProxy
+): String = "row_${groupName.length}_${groupName}_${cols}_${firstItem.stableKey}"
 
 private fun formatStandardGroupType(rawType: String): String {
     return when (rawType.lowercase().replace("_", "-").trim()) {
@@ -150,7 +175,7 @@ fun ProxiesScreen(
 
     val isListMode = currentViewMode == "LIST"
     val visibleGroups = remember(groups, groupMap) {
-        groups.filter { gName -> groupMap[gName]?.hidden != true }
+        groups.distinct().filter { gName -> groupMap[gName]?.hidden != true }
     }
     // Stable membership signature: groupMap gets a new instance on every delay refresh, and
     // keying the scroll effect on the list identity would re-run the scroll animation (and
@@ -468,7 +493,7 @@ fun ProxiesScreen(
                 val rawProxies = targetGroup?.proxies ?: emptyList()
                 val delaySnapshot = if (nodeSortMode == "DELAY") delayCache.toMap() else emptyMap()
                 val proxies = remember(rawProxies, nodeSortMode, targetGroupName, delaySnapshot) {
-                    sortProxies(rawProxies, nodeSortMode, delaySnapshot, targetGroupName)
+                    sortIndexedProxies(rawProxies, nodeSortMode, delaySnapshot, targetGroupName)
                 }
                 val groupState = if (targetGroupName.isNotBlank()) {
                     perGroupTabStates.getOrPut(targetGroupName) { LazyListState() }
@@ -505,37 +530,41 @@ fun ProxiesScreen(
                             items = chunkedRows,
                             // Row identity must not depend on rowIndex: under DELAY sorting the
                             // order shifts as results arrive, and index-based keys would
-                            // discard and recompose every node card.
-                            key = { _, row -> "${targetGroupName}_grid_${cols}_${row.first().name}" }
+                            // discard and recompose every node card. Per-name occurrence
+                            // ordinals keep keys deterministic and collision-free.
+                            key = { _, row -> proxyGridRowKey(targetGroupName, cols, row.first()) }
                         ) { _, rowProxies ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                for (proxy in rowProxies) {
-                                    Box(modifier = Modifier.weight(1f)) {
-                                        val isItemTesting = testingNodes.contains("$targetGroupName:${proxy.name}")
-                                        val delayState = delayCache["$targetGroupName:${proxy.name}"]
-                                            ?: delayCache[proxy.name]
-                                            ?: SpeedTestState.fromNativeDelay(proxy.delay)
-                                        LoonProxyItemCard(
-                                            proxy = proxy,
-                                            delayState = delayState,
-                                            isSelected = proxy.name == currentNow,
-                                            columns = cols,
-                                            isTesting = isItemTesting,
-                                            onClick = {
-                                                haptic.selection()
-                                                onSelectProxy(targetGroupName, proxy)
-                                            },
-                                            onTestSingleNode = {
-                                                haptic.lightTick()
-                                                onTestSingleNode(targetGroupName, proxy.name)
-                                            },
-                                            onLongPress = {
-                                                nodeDetailTarget = targetGroupName to proxy.name
-                                            }
-                                        )
+                                for (item in rowProxies) {
+                                    key(item.stableKey) {
+                                        val proxy = item.proxy
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            val isItemTesting = testingNodes.contains("$targetGroupName:${proxy.name}")
+                                            val delayState = delayCache["$targetGroupName:${proxy.name}"]
+                                                ?: delayCache[proxy.name]
+                                                ?: SpeedTestState.fromNativeDelay(proxy.delay)
+                                            LoonProxyItemCard(
+                                                proxy = proxy,
+                                                delayState = delayState,
+                                                isSelected = proxy.name == currentNow,
+                                                columns = cols,
+                                                isTesting = isItemTesting,
+                                                onClick = {
+                                                    haptic.selection()
+                                                    onSelectProxy(targetGroupName, proxy)
+                                                },
+                                                onTestSingleNode = {
+                                                    haptic.lightTick()
+                                                    onTestSingleNode(targetGroupName, proxy.name)
+                                                },
+                                                onLongPress = {
+                                                    nodeDetailTarget = targetGroupName to proxy.name
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                                 val remainder = cols - rowProxies.size
@@ -584,7 +613,7 @@ fun ProxiesScreen(
                         // LazyListScope lambda): the list scope re-runs on every
                         // ProxiesScreen recomposition, which is what the delay results
                         // trigger.
-                        val sortedProxies = sortProxies(rawProxies, nodeSortMode, delayCache, groupName)
+                        val sortedProxies = sortIndexedProxies(rawProxies, nodeSortMode, delayCache, groupName)
 
                         item(key = "grp_header_$groupName", contentType = "group_header") {
                             LoonGroupHeaderCard(
@@ -615,8 +644,9 @@ fun ProxiesScreen(
                             itemsIndexed(
                                 items = chunkedRows,
                                 // Identity must not depend on the row index: under DELAY sorting
-                                // the order shifts as results arrive.
-                                key = { _, row -> "${groupName}_grid_${cols}_${row.first().name}" },
+                                // the order shifts as results arrive; per-name occurrence ordinals
+                                // prevent duplicate-key crashes when a group repeats node names.
+                                key = { _, row -> proxyGridRowKey(groupName, cols, row.first()) },
                                 contentType = { _, _ -> "group_node_row" }
                             ) { rowIndex, rowProxies ->
                                 Row(
@@ -626,30 +656,33 @@ fun ProxiesScreen(
                                         .padding(top = if (rowIndex == 0) 6.dp else 0.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    for (proxy in rowProxies) {
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
-                                            val delayState = delayCache["$groupName:${proxy.name}"]
-                                                ?: delayCache[proxy.name]
-                                                ?: SpeedTestState.fromNativeDelay(proxy.delay)
-                                            LoonProxyItemCard(
-                                                proxy = proxy,
-                                                delayState = delayState,
-                                                isSelected = proxy.name == groupNow,
-                                                columns = cols,
-                                                isTesting = isItemTesting,
-                                                onClick = {
-                                                    haptic.selection()
-                                                    onSelectProxy(groupName, proxy)
-                                                },
-                                                onTestSingleNode = {
-                                                    haptic.lightTick()
-                                                    onTestSingleNode(groupName, proxy.name)
-                                                },
-                                                onLongPress = {
-                                                    nodeDetailTarget = groupName to proxy.name
-                                                }
-                                            )
+                                    for (item in rowProxies) {
+                                        key(item.stableKey) {
+                                            val proxy = item.proxy
+                                            Box(modifier = Modifier.weight(1f)) {
+                                                val isItemTesting = testingNodes.contains("$groupName:${proxy.name}")
+                                                val delayState = delayCache["$groupName:${proxy.name}"]
+                                                    ?: delayCache[proxy.name]
+                                                    ?: SpeedTestState.fromNativeDelay(proxy.delay)
+                                                LoonProxyItemCard(
+                                                    proxy = proxy,
+                                                    delayState = delayState,
+                                                    isSelected = proxy.name == groupNow,
+                                                    columns = cols,
+                                                    isTesting = isItemTesting,
+                                                    onClick = {
+                                                        haptic.selection()
+                                                        onSelectProxy(groupName, proxy)
+                                                    },
+                                                    onTestSingleNode = {
+                                                        haptic.lightTick()
+                                                        onTestSingleNode(groupName, proxy.name)
+                                                    },
+                                                    onLongPress = {
+                                                        nodeDetailTarget = groupName to proxy.name
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
                                     val remainder = cols - rowProxies.size

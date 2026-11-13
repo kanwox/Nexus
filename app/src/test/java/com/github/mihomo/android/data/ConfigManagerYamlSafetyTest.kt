@@ -3,8 +3,10 @@ package com.github.mihomo.android.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.yaml.snakeyaml.error.YAMLException
 
 /**
  * Regression tests for the YAML hardening in [YamlSupport]:
@@ -76,5 +78,22 @@ class ConfigManagerYamlSafetyTest {
         val out = ConfigManager.sanitizeUserConfig("rules:\n  - $longRule\n")
         val parsed = YamlSupport.create().load<Map<String, Any?>>(out)!!
         assertEquals(longRule, (parsed["rules"] as List<*>).first())
+    }
+
+    @Test
+    fun `excessive YAML aliases above hardened cap are rejected safely`() {
+        val bomb = buildString {
+            append("base: &a [\"x\"]\n")
+            append("proxies:\n")
+            for (i in 0 until 80) {
+                append("  - *a\n")
+            }
+        }
+        assertThrows(YAMLException::class.java) {
+            YamlSupport.create().load<Any?>(bomb)
+        }
+        assertNotNull(ConfigManager.validateConfigStructure(bomb))
+        val sanitized = ConfigManager.sanitizeUserConfig(bomb)
+        assertTrue(sanitized.contains("proxies:"))
     }
 }

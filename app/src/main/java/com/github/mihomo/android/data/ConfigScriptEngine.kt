@@ -6,6 +6,7 @@ import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.QuickJsInterruptedException
 import com.dokar.quickjs.binding.define
 import com.dokar.quickjs.binding.function
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -19,6 +20,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.yaml.snakeyaml.Yaml
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Outcome of running a chain of config-rewrite scripts.
@@ -151,20 +154,88 @@ object ConfigScriptEngine {
         return Triple(proxies?.size ?: 0, groups?.size ?: 0, rules?.size ?: 0)
     }
 
-    /** SnakeYAML produces plain Java collections; scripts consume JSON, so bridge the two. */
-    private fun anyToJsonElement(value: Any?): JsonElement = when (value) {
-        null -> JsonNull
-        is Map<*, *> -> buildJsonObject {
-            for ((k, v) in value) {
-                if (k != null) put(k.toString(), anyToJsonElement(v))
+    private const val MAX_YAML_TRAVERSAL_DEPTH = 64
+    private const val MAX_YAML_TRAVERSAL_NODES = 1_000_000
+
+    private class TraversalBudget(
+        private val maxDepth: Int = MAX_YAML_TRAVERSAL_DEPTH,
+        private val maxNodes: Int = MAX_YAML_TRAVERSAL_NODES
+    ) {
+        private var visitedNodes = 0
+        private val ancestors = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+
+        fun enter(node: Any, depth: Int) {
+            if (depth > maxDepth) {
+                error("YAML 结构嵌套过深（超过 $maxDepth 层）")
+            }
+            countScalar()
+            if (!ancestors.add(node)) {
+                error("检测到循环引用的 YAML 结构")
             }
         }
-        is List<*> -> buildJsonArray {
-            for (item in value) add(anyToJsonElement(item))
+
+        fun countScalar() {
+            visitedNodes++
+            if (visitedNodes > maxNodes) {
+                error("YAML 节点展开数量超过上限（$maxNodes）")
+            }
         }
-        is Boolean -> JsonPrimitive(value)
-        is Number -> JsonPrimitive(value)
-        else -> JsonPrimitive(value.toString())
+
+        fun exit(node: Any) {
+            ancestors.remove(node)
+        }
+    }
+
+    private inline fun <T> withEnteredNode(
+        node: Any,
+        depth: Int,
+        budget: TraversalBudget,
+        block: () -> T
+    ): T {
+        budget.enter(node, depth)
+        return try {
+            block()
+        } finally {
+            budget.exit(node)
+        }
+    }
+
+    /** SnakeYAML produces plain Java collections; scripts consume JSON, so bridge the two. */
+    @JvmOverloads
+    internal fun anyToJsonElement(
+        value: Any?,
+        maxDepth: Int = MAX_YAML_TRAVERSAL_DEPTH,
+        maxNodes: Int = MAX_YAML_TRAVERSAL_NODES
+    ): JsonElement = anyToJsonElementInternal(value, 0, TraversalBudget(maxDepth, maxNodes))
+
+    private fun anyToJsonElementInternal(
+        value: Any?,
+        depth: Int,
+        budget: TraversalBudget
+    ): JsonElement = when (value) {
+        is Map<*, *> -> withEnteredNode(value, depth, budget) {
+            buildJsonObject {
+                for ((k, v) in value) {
+                    if (k != null) put(k.toString(), anyToJsonElementInternal(v, depth + 1, budget))
+                }
+            }
+        }
+        is List<*> -> withEnteredNode(value, depth, budget) {
+            buildJsonArray {
+                for (item in value) add(anyToJsonElementInternal(item, depth + 1, budget))
+            }
+        }
+        else -> scalarToJsonElement(value, budget)
+    }
+
+    private fun scalarToJsonElement(value: Any?, budget: TraversalBudget): JsonElement {
+        budget.countScalar()
+        return when (value) {
+            null -> JsonNull
+            is Boolean -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            else -> JsonPrimitive(value.toString())
+        }
     }
 
     /**
@@ -388,6 +459,8 @@ object ConfigScriptEngine {
                     afterRules = afterR
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             val elapsed = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
             logs.add("[ERROR] ${e.message ?: e.javaClass.simpleName}")
@@ -428,7 +501,7 @@ object ConfigScriptEngine {
     ): ScriptExecutionResult = withContext(Dispatchers.IO) {
         if (targetScriptIds.isNullOrEmpty()) return@withContext ScriptExecutionResult(rawYaml, 0, emptyList())
         val allScripts = ScriptManager.getScripts(context)
-        val scripts = allScripts.filter { targetScriptIds.contains(it.id) }
+        val scripts = allScripts.filter { targetScriptIds.contains(it.id) && it.enabled }
         if (scripts.isEmpty()) return@withContext ScriptExecutionResult(rawYaml, 0, emptyList())
 
         var currentYaml = rawYaml
@@ -461,6 +534,8 @@ object ConfigScriptEngine {
                         // script error — there is no second engine to fall back to.
                         val resultJson: String? = try {
                             executeWithQuickJS(code, jsonStr, script.name)
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Throwable) {
                             throw Exception("QuickJS: ${e.message ?: e.javaClass.simpleName}")
                         }
@@ -544,10 +619,12 @@ object ConfigScriptEngine {
                     }
                     failed += script.name
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 Log.e(TAG, "Error executing script ${script.name}", e)
                 if (logToRepo) {
-                    LogRepository.addLog("warning", "执行脚本 [${script.name}] 失败: ${e.message}")
+                    LogRepository.addLog("warning", "执行脚本 [${script.name}] 失败: ${e.message ?: e.javaClass.simpleName}")
                 }
                 failed += script.name
             }
@@ -670,23 +747,39 @@ object ConfigScriptEngine {
             runCatching { quickJs.close() }
         }
     }
-    internal fun normalizeYamlData(data: Any?): Any? {
-        return when (data) {
-            is Map<*, *> -> {
-                val result = LinkedHashMap<String, Any?>()
-                for ((key, value) in data) {
-                    val kStr = key?.toString() ?: ""
-                    var normVal = normalizeYamlData(value)
-                    if (kStr == "expected-status") {
-                        if (normVal is Number) {
-                            normVal = normVal.toLong().toString()
-                        }
-                    }
-                    result[kStr] = normVal
+    @JvmOverloads
+    internal fun normalizeYamlData(
+        data: Any?,
+        maxDepth: Int = MAX_YAML_TRAVERSAL_DEPTH,
+        maxNodes: Int = MAX_YAML_TRAVERSAL_NODES
+    ): Any? = normalizeYamlDataInternal(data, 0, TraversalBudget(maxDepth, maxNodes))
+
+    private fun normalizeYamlDataInternal(
+        data: Any?,
+        depth: Int,
+        budget: TraversalBudget
+    ): Any? = when (data) {
+        is Map<*, *> -> withEnteredNode(data, depth, budget) {
+            val result = LinkedHashMap<String, Any?>()
+            for ((key, value) in data) {
+                val kStr = key?.toString() ?: ""
+                var normVal = normalizeYamlDataInternal(value, depth + 1, budget)
+                if (kStr == "expected-status" && normVal is Number) {
+                    normVal = normVal.toLong().toString()
                 }
-                result
+                result[kStr] = normVal
             }
-            is List<*> -> data.map { normalizeYamlData(it) }
+            result
+        }
+        is List<*> -> withEnteredNode(data, depth, budget) {
+            data.map { normalizeYamlDataInternal(it, depth + 1, budget) }
+        }
+        else -> normalizeScalarValue(data, budget)
+    }
+
+    private fun normalizeScalarValue(data: Any?, budget: TraversalBudget): Any? {
+        budget.countScalar()
+        return when (data) {
             is Double -> {
                 if (data % 1.0 == 0.0 && data >= Long.MIN_VALUE && data <= Long.MAX_VALUE) {
                     data.toLong()
@@ -694,13 +787,7 @@ object ConfigScriptEngine {
                     data
                 }
             }
-            is Float -> {
-                if (data % 1.0f == 0.0f) {
-                    data.toLong()
-                } else {
-                    data
-                }
-            }
+            is Float -> if (data % 1.0f == 0.0f) data.toLong() else data
             else -> data
         }
     }

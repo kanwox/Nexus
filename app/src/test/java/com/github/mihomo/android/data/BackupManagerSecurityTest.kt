@@ -154,4 +154,55 @@ class BackupManagerSecurityTest {
         )
         assertFalse(decision.allowLan)
     }
+
+    @Test
+    fun `lan restore rejects passwords containing newlines or control characters`() {
+        val enabledMalicious = BackupManager.decideLanRestore(
+            wantsLan = true,
+            backupLanPassword = "pw\nallow-lan: false\nsecret: evil",
+            currentPassword = ""
+        )
+        assertFalse(enabledMalicious.allowLan)
+        assertTrue(enabledMalicious.rejected)
+        assertNull(enabledMalicious.password)
+
+        val disabledMalicious = BackupManager.decideLanRestore(
+            wantsLan = false,
+            backupLanPassword = "pw\r\nallow-lan: true",
+            currentPassword = ""
+        )
+        assertFalse(disabledMalicious.allowLan)
+        assertNull(disabledMalicious.password)
+    }
+
+    @Test
+    fun `blank password plaintext backup remains readable`() {
+        val plain = """{"version":2,"profiles":[]}"""
+        val raw = plain.toByteArray(Charsets.UTF_8)
+        assertFalse(BackupManager.isEncrypted(raw))
+        assertEquals(plain, BackupManager.decrypt(raw, null))
+        assertEquals(plain, BackupManager.decrypt(raw, ""))
+    }
+
+    @Test
+    fun `sanitizeRestoredOverrides filters multiline rules and injected dns lines`() {
+        val cleaned = BackupManager.sanitizeRestoredOverrides(
+            prependRules = listOf("DOMAIN-SUFFIX,example.com,DIRECT", "MATCH,DIRECT\nallow-lan: true"),
+            hostsEntries = listOf("router.local: 192.168.1.1", "evil.local: 1.2.3.4\r\nsecret: x"),
+            dnsServersOverride = listOf(
+                "https://223.5.5.5/dns-query",
+                "8.8.8.8\nauthentication: []",
+                "external-controller: 0.0.0.0:9090"
+            )
+        )
+        assertTrue(cleaned.hadDroppedEntries)
+        assertEquals(listOf("DOMAIN-SUFFIX,example.com,DIRECT"), cleaned.prependRules)
+        assertEquals(listOf("router.local: 192.168.1.1"), cleaned.hostsEntries)
+        assertEquals(listOf("https://223.5.5.5/dns-query"), cleaned.dnsServersOverride)
+
+        val sanitizedSetting = ConfigSanitizer.sanitizeDnsServerListSetting(
+            "223.5.5.5\nallow-lan: true\nexternal-controller: 0.0.0.0:9090\nhttps://1.1.1.1/dns-query"
+        )
+        assertEquals("223.5.5.5\nhttps://1.1.1.1/dns-query", sanitizedSetting)
+    }
 }

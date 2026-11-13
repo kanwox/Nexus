@@ -1,10 +1,16 @@
 package com.github.mihomo.android.service
 
-import android.net.VpnService
+import android.annotation.SuppressLint
+import android.app.PendingIntent
+import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import android.util.Log
+import com.github.mihomo.android.R
 import com.github.mihomo.android.data.SettingsManager
+import com.github.mihomo.android.i18n.AppStrings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,10 +36,6 @@ class MihomoTileService : TileService() {
                     updateTileState(status)
                 }
         }
-        // The service may have been killed while the tunnel was still running: the
-        // persisted intent flag knows that, the in-memory state does not. Ask the service
-        // to bring the tunnel back up so the tile does not show a lie.
-        MihomoVpnService.resumeIfIntentActive(this)
     }
 
     override fun onStopListening() {
@@ -49,8 +51,7 @@ class MihomoTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val current = MihomoVpnService.vpnState.value.status
-        when (current) {
+        when (MihomoVpnService.vpnState.value.status) {
             VpnState.Status.RUNNING, VpnState.Status.STARTING -> {
                 // RUNNING || STARTING means "stop", exactly like MainActivity.handleToggleVpn.
                 // Treating STARTING as a no-op made the tile look broken: the user tapped and
@@ -58,30 +59,14 @@ class MihomoTileService : TileService() {
                 MihomoVpnService.stop(this)
             }
             VpnState.Status.STOPPED -> {
-                // The tile shows ACTIVE when the persisted intent says the tunnel should be
-                // running (it may still be running after a process kill). A tap on an ACTIVE
-                // tile must therefore stop the tunnel instead of starting a second one.
+                // MihomoVpnService runs in the same process, so STOPPED is authoritative:
+                // clear any stale persisted intent flag without issuing a background startService.
                 if (persistedIntentActive()) {
-                    MihomoVpnService.stop(this)
-                    return
+                    MihomoVpnService.clearPersistedIntent(this)
                 }
-                val vpnIntent = VpnService.prepare(this)
-                if (vpnIntent == null) {
-                    MihomoVpnService.start(this)
-                } else {
-                    vpnIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        val pendingIntent = android.app.PendingIntent.getActivity(
-                            this,
-                            0,
-                            vpnIntent,
-                            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
-                        )
-                        startActivityAndCollapse(pendingIntent)
-                    } else {
-                        @Suppress("DEPRECATED")
-                        @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
-                        startActivityAndCollapse(vpnIntent)
+                unlockAndRun {
+                    if (MihomoVpnService.vpnState.value.status == VpnState.Status.STOPPED) {
+                        launchTileVpnActivity()
                     }
                 }
             }
@@ -94,43 +79,63 @@ class MihomoTileService : TileService() {
         }
     }
 
+    private fun launchTileVpnActivity() {
+        val intent = Intent(this, TileVpnLaunchActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val pendingIntent = PendingIntent.getActivity(
+                    this,
+                    REQUEST_CODE_TILE_LAUNCH,
+                    intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                startActivityAndCollapse(pendingIntent)
+            } else {
+                startActivityAndCollapseLegacy(intent)
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to launch VPN trampoline activity from tile", error)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun startActivityAndCollapseLegacy(intent: Intent) {
+        startActivityAndCollapse(intent)
+    }
+
     private fun updateTileState(status: VpnState.Status) {
         val tile = qsTile ?: return
-        tile.icon = android.graphics.drawable.Icon.createWithResource(this, com.github.mihomo.android.R.drawable.ic_qs_tile)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_tile)
         when (status) {
             VpnState.Status.RUNNING -> {
                 tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_connected"))
+                setSubtitle(tile, AppStrings.get("tile_connected"))
             }
             VpnState.Status.STARTING -> {
                 // The tunnel is on its way up: show it as active so the tile matches what a
                 // tap would do (stop), and say so in the subtitle.
                 tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_connecting"))
+                setSubtitle(tile, AppStrings.get("tile_connecting"))
             }
             VpnState.Status.STOPPING -> {
                 // The tunnel is on its way down: a tap is ignored, but the subtitle must
                 // say that instead of leaving the previous state on screen.
                 tile.state = Tile.STATE_INACTIVE
-                setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_disconnecting"))
+                setSubtitle(tile, AppStrings.get("tile_disconnecting"))
             }
             VpnState.Status.STOPPED -> {
-                // The in-memory state is process-local: after a process kill it resets to
-                // STOPPED even though the tunnel may still be running. The persisted
-                // intent flag is the authoritative answer in that case.
-                if (persistedIntentActive()) {
-                    tile.state = Tile.STATE_ACTIVE
-                    setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_connected"))
-                } else {
-                    tile.state = Tile.STATE_INACTIVE
-                    setSubtitle(tile, com.github.mihomo.android.i18n.AppStrings.get("tile_disconnected"))
-                }
+                // In-memory STOPPED is authoritative within this process; never display ACTIVE
+                // or resurrect the foreground service from background tile callbacks.
+                tile.state = Tile.STATE_INACTIVE
+                setSubtitle(tile, AppStrings.get("tile_disconnected"))
             }
         }
         tile.updateTile()
     }
 
-    /** True when the persisted intent says the tunnel was supposed to be running. */
+    /** True when the persisted intent says the tunnel was previously left active. */
     private fun persistedIntentActive(): Boolean =
         runCatching { SettingsManager(this).vpnIntentActive }.getOrDefault(false)
 
@@ -139,5 +144,10 @@ class MihomoTileService : TileService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = subtitle
         }
+    }
+
+    private companion object {
+        private const val TAG = "MihomoTileService"
+        private const val REQUEST_CODE_TILE_LAUNCH = 1002
     }
 }

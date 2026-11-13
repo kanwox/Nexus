@@ -26,9 +26,6 @@ sealed class GeoFile(val fileName: String, val displayName: String) {
     /** The domain→category database (protobuf format). */
     object GeoSiteDat : GeoFile("geosite.dat", "GeoSite")
 
-    /** Legacy MaxMind database kept for configs that still reference it. */
-    object CountryMmdb : GeoFile("Country.mmdb", "Country.mmdb")
-
     val downloadUrl: String get() = "$RELEASE_BASE$fileName"
 
     /** Where the core expects the file to live. */
@@ -37,7 +34,9 @@ sealed class GeoFile(val fileName: String, val displayName: String) {
     companion object {
         const val RELEASE_BASE = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/"
 
-        val all: List<GeoFile> = listOf(GeoIpMetadb, GeoSiteDat, CountryMmdb)
+        // Lazy initialization avoids the JVM sealed-class/object <clinit> cycle where
+        // accessing GeoIpMetadb first used to capture a null INSTANCE inside Companion.all.
+        val all: List<GeoFile> by lazy { listOf(GeoIpMetadb, GeoSiteDat) }
     }
 }
 

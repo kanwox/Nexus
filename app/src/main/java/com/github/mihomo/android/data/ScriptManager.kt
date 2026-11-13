@@ -3,11 +3,13 @@ package com.github.mihomo.android.data
 import android.content.Context
 import android.util.Log
 import androidx.core.content.edit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -43,6 +45,10 @@ data class RewriteRule(
 object ScriptManager {
     private const val TAG = "ScriptManager"
     private const val MAX_SCRIPT_BYTES = 5L * 1024 * 1024
+    private const val MIN_VALID_PORT = 1
+    private const val MAX_VALID_PORT = 65535
+    private const val GITHUB_RAW_HOST = "raw.githubusercontent.com"
+    private const val BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
     // Serializes read-modify-write cycles on the scripts/rewrites lists; without it a
     // background download and a user toggle could both start from the same snapshot and
@@ -51,11 +57,54 @@ object ScriptManager {
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
 
-    private fun sha256(content: String): String {
+    internal fun sha256(content: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         return digest.digest(content.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
     }
+
+    internal data class RemoteScriptDownloadTrust(
+        val enabled: Boolean,
+        val contentHash: String
+    )
+
+    internal fun resolveRemoteScriptDownloadTrust(
+        body: String,
+        fromMirror: Boolean
+    ): RemoteScriptDownloadTrust = if (fromMirror) {
+        RemoteScriptDownloadTrust(enabled = false, contentHash = "")
+    } else {
+        RemoteScriptDownloadTrust(enabled = true, contentHash = sha256(body))
+    }
+
+    internal fun canAcceptRemoteUpdate(
+        existingContentHash: String,
+        newHash: String,
+        fromMirror: Boolean
+    ): Boolean = !fromMirror || (existingContentHash.isNotBlank() && existingContentHash == newHash)
+
+    /**
+     * Returns the encoded path (+ query) when [url] has an exact `raw.githubusercontent.com` host
+     * and `http`/`https` scheme; otherwise null so mirror fallbacks cannot be abused by host
+     * confusion (`https://evil.com/?raw.githubusercontent.com` or `raw.githubusercontent.com.evil.com`).
+     */
+    internal fun extractGithubRawPath(url: String): String? {
+        val parsed = url.trim().toHttpUrlOrNull() ?: return null
+        val isGithubHost = parsed.host.equals(GITHUB_RAW_HOST, ignoreCase = true)
+        val isHttpScheme = parsed.scheme == "https" || parsed.scheme == "http"
+        return if (isGithubHost && isHttpScheme) {
+            val path = parsed.encodedPath.trimStart('/')
+            val query = parsed.encodedQuery?.let { "?$it" }.orEmpty()
+            (path + query).takeIf { it.isNotEmpty() }
+        } else {
+            null
+        }
+    }
+
+    private fun allowPrivateHosts(): Boolean =
+        runCatching {
+            SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts
+        }.getOrDefault(true)
 
     // GitHub mirror prefixes to try when raw.githubusercontent.com is unreachable
     private val GITHUB_MIRRORS = listOf(
@@ -69,10 +118,7 @@ object ScriptManager {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
-        .addInterceptor(createSafeRedirectInterceptor {
-            runCatching { SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts }
-                .getOrDefault(true)
-        })
+        .withSsrfProtection(allowPrivateSupplier = ::allowPrivateHosts, validateDns = true)
         .build()
 
     // Client that routes through the local mixed-port proxy (port is user-configurable).
@@ -87,6 +133,8 @@ object ScriptManager {
         proxyClients[port]?.let { return it }
         synchronized(proxyClients) {
             proxyClients[port]?.let { return it }
+            // Keep validateDns = false on the proxy client so connecting to 127.0.0.1:mixedPort
+            // is unaffected, while followRedirects(false) + redirect check still validates hop targets.
             val client = OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
@@ -97,6 +145,7 @@ object ScriptManager {
                         java.net.InetSocketAddress("127.0.0.1", port)
                     )
                 )
+                .withSsrfProtection(allowPrivateSupplier = ::allowPrivateHosts, validateDns = false)
                 .build()
             // Evict the clients of the previous ports and release their resources.
             val stale = proxyClients.keys.filter { it != port }
@@ -119,6 +168,57 @@ object ScriptManager {
         }.onFailure { Log.d(TAG, "Failed to release a stale proxy client: ${it.message}") }
     }
 
+    private fun executeRequestOrNull(client: OkHttpClient, url: String): String? {
+        return try {
+            val req = Request.Builder().url(url)
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) readScriptBody(resp) else null
+            }
+        } catch (e: SsrfBlockedException) {
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun fetchFromMirrors(originalUrl: String, rawPath: String): ScriptFetch? {
+        for (mirror in GITHUB_MIRRORS) {
+            val mirrorUrl = mirror + rawPath
+            requireSecureRemoteUrl(mirrorUrl, allowPrivateHosts = false)
+            val body = executeRequestOrNull(httpClient, mirrorUrl)
+            if (body != null) {
+                Log.w(TAG, "Mirror fetch succeeded for ${redactUrl(originalUrl)}; payload from third-party mirror")
+                LogRepository.addLog(
+                    "warning",
+                    "脚本内容来自第三方镜像（原始地址不可达），未自动信任执行，请先核验内容"
+                )
+                return ScriptFetch(body, fromMirror = true)
+            }
+        }
+        return null
+    }
+
+    private fun fetchGithubRawOrNull(url: String, rawPath: String, mixedPort: Int): ScriptFetch? {
+        val viaProxy = if (mixedPort in MIN_VALID_PORT..MAX_VALID_PORT) {
+            executeRequestOrNull(localProxyClient(mixedPort), url)
+        } else {
+            null
+        }
+        if (viaProxy != null) return ScriptFetch(viaProxy, fromMirror = false)
+        Log.d(TAG, "Local proxy failed for ${redactUrl(url)}")
+
+        val direct = executeRequestOrNull(httpClient, url)
+        return if (direct != null) {
+            ScriptFetch(direct, fromMirror = false)
+        } else {
+            fetchFromMirrors(url, rawPath)
+        }
+    }
+
     /**
      * Attempt to fetch a URL, with special handling for raw.githubusercontent.com:
      * 1. First try through the local mixed-port proxy - works when the core is running
@@ -126,73 +226,13 @@ object ScriptManager {
      * 3. Finally fall back to mirror URLs
      */
     private fun fetchUrl(url: String, mixedPort: Int): ScriptFetch {
-        val isGithubRaw = url.contains("raw.githubusercontent.com")
-
-        if (isGithubRaw) {
-            // Strategy 1: Local proxy (covers the case where VPN is on but app bypasses it).
-            // This is the ORIGINAL source, so its payload is trusted as the baseline.
-            val viaProxy = runCatching {
-                val req = Request.Builder().url(url)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .build()
-                localProxyClient(mixedPort).newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        readScriptBody(resp)
-                    } else {
-                        null
-                    }
-                }
-            }.getOrNull()
-            if (viaProxy != null) {
-                return ScriptFetch(viaProxy, fromMirror = false)
-            }
-            Log.d(TAG, "Local proxy failed for ${redactUrl(url)}")
-
-            // Strategy 2: the direct raw.githubusercontent.com URL. The mirror is only used
-            // when the ORIGINAL source cannot be reached, so the pinned hash is taken
-            // from the original whenever possible.
-            val direct = runCatching {
-                val req = Request.Builder().url(url)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .build()
-                httpClient.newCall(req).execute().use { resp ->
-                    if (resp.isSuccessful) readScriptBody(resp) else null
-                }
-            }.getOrNull()
-            if (direct != null) {
-                return ScriptFetch(direct, fromMirror = false)
-            }
-
-            // Strategy 3: Mirror URLs (direct connection, mirrors bypass the GFW).
-            // A mirror is a third party that can alter the payload, and the returned code
-            // is executed with full JS privileges. The fetch therefore only happens when
-            // the original source failed, and the fact is recorded so it can be reported
-            // and so later divergence from the pinned hash is detected.
-            val rawPath = url.removePrefix("https://raw.githubusercontent.com/")
-            for (mirror in GITHUB_MIRRORS) {
-                val mirrorUrl = mirror + rawPath
-                val body = runCatching {
-                    val req = Request.Builder().url(mirrorUrl)
-                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        .build()
-                    httpClient.newCall(req).execute().use { resp ->
-                        if (resp.isSuccessful) readScriptBody(resp) else null
-                    }
-                }.getOrNull()
-                if (body != null) {
-                    Log.w(TAG, "Mirror fetch succeeded for ${redactUrl(url)}; the payload did not come from the original source")
-                    LogRepository.addLog(
-                        "warning",
-                        "脚本内容来自第三方镜像（原始地址不可达），其指纹已记录，后续内容变化将被检测"
-                    )
-                    return ScriptFetch(body, fromMirror = true)
-                }
-            }
-        }
+        val rawPath = extractGithubRawPath(url)
+        val githubFetch = rawPath?.let { fetchGithubRawOrNull(url, it, mixedPort) }
+        if (githubFetch != null) return githubFetch
 
         // Strategy 4 (or primary for non-GitHub URLs): Direct download
         val req = Request.Builder().url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header("User-Agent", BROWSER_USER_AGENT)
             .build()
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP 错误: ${resp.code} ${resp.message}")
@@ -234,7 +274,7 @@ object ScriptManager {
             val cleanUrl = url.trim()
             requireSecureRemoteUrl(cleanUrl, allowPrivateHosts)
             fetchUrl(cleanUrl, mixedPort).body
-        }
+        }.onFailure { if (it is CancellationException) throw it }
     }
 
     fun saveScript(
@@ -304,16 +344,14 @@ object ScriptManager {
         type: String
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
-            requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
-            val fetched = fetchUrl(url, SettingsManager(context).mixedPort)
+            val settings = SettingsManager(context)
+            requireSecureRemoteUrl(url, settings.allowPrivateSubscriptionHosts)
+            val fetched = fetchUrl(url, settings.mixedPort)
             val body = fetched.body
+            val trust = resolveRemoteScriptDownloadTrust(body, fetched.fromMirror)
 
             val id = java.util.UUID.randomUUID().toString()
             val fileName = "$id.js"
-            val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
-                ?: error("无法为脚本创建安全的文件路径")
-            ConfigManager.writeTextAtomic(file, body)
-
             val item = ScriptItem(
                 id = id,
                 name = name.ifBlank { url.substringAfterLast("/").substringBefore("?") },
@@ -321,19 +359,26 @@ object ScriptManager {
                 pattern = pattern,
                 type = type,
                 scriptFile = fileName,
-                enabled = true,
+                enabled = trust.enabled,
                 updatedAt = System.currentTimeMillis(),
-                contentHash = sha256(body)
+                contentHash = trust.contentHash
             )
 
             synchronized(ioLock) {
+                val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
+                    ?: error("无法为脚本创建安全的文件路径")
+                ConfigManager.writeTextAtomic(file, body)
                 val current = getScripts(context).toMutableList()
                 current.add(0, item)
                 saveScripts(context, current)
             }
-            Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
+            if (fetched.fromMirror) {
+                Log.w(TAG, "Downloaded script ${item.name} from mirror; keeping disabled without trusted hash")
+            } else {
+                Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
+            }
             item
-        }
+        }.onFailure { if (it is CancellationException) throw it }
     }
 
     fun saveLocalScript(
@@ -383,28 +428,31 @@ object ScriptManager {
     }
 
     /**
-     * True when the on-disk script content still matches the pinned fingerprint (or the entry
-     * predates fingerprinting and has nothing to compare against). A mismatch means the file
-     * was altered outside the app's editors and the script must not auto-execute.
+     * Fails closed: returns `true` only when the script carries a non-blank SHA-256 fingerprint
+     * and the on-disk script matches it. Unverified mirror downloads or tampered files return `false`.
      */
+    internal fun verifyScriptIntegrityCode(script: ScriptItem, code: String): Boolean =
+        script.contentHash.isNotBlank() && code.isNotEmpty() && sha256(code) == script.contentHash
+
     fun verifyScriptIntegrity(context: Context, script: ScriptItem): Boolean {
-        if (script.contentHash.isBlank()) return true
-        val code = readScriptCode(context, script)
-        return sha256(code) == script.contentHash
+        if (script.contentHash.isBlank()) return false
+        return verifyScriptIntegrityCode(script, readScriptCode(context, script))
     }
 
     fun updateScriptCode(context: Context, script: ScriptItem, newCode: String) {
-        val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile) ?: return
-        ConfigManager.writeTextAtomic(file, newCode)
         synchronized(ioLock) {
-            val current = getScripts(context).toMutableList()
-            val idx = current.indexOfFirst { it.id == script.id }
-            if (idx >= 0) {
-                current[idx] = current[idx].copy(
-                    updatedAt = System.currentTimeMillis(),
-                    contentHash = sha256(newCode)
-                )
-                saveScripts(context, current)
+            val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile)
+            if (file != null) {
+                ConfigManager.writeTextAtomic(file, newCode)
+                val current = getScripts(context).toMutableList()
+                val idx = current.indexOfFirst { it.id == script.id }
+                if (idx >= 0) {
+                    current[idx] = current[idx].copy(
+                        updatedAt = System.currentTimeMillis(),
+                        contentHash = sha256(newCode)
+                    )
+                    saveScripts(context, current)
+                }
             }
         }
     }
@@ -412,41 +460,40 @@ object ScriptManager {
     suspend fun updateScriptFromRemote(context: Context, script: ScriptItem): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runCatching {
             if (script.url.isBlank()) error("无远程更新链接")
-            requireSecureRemoteUrl(script.url, SettingsManager(context).allowPrivateSubscriptionHosts)
-            val fetched = fetchUrl(script.url, SettingsManager(context).mixedPort)
+            val settings = SettingsManager(context)
+            requireSecureRemoteUrl(script.url, settings.allowPrivateSubscriptionHosts)
+            val fetched = fetchUrl(script.url, settings.mixedPort)
             val body = fetched.body
-
             val newHash = sha256(body)
-            if (script.contentHash.isNotBlank() && script.contentHash != newHash) {
-                // Expected for a genuine update, but if the content came from a third-party
-                // mirror this is also the fingerprint of a possible tampered payload; the new
-                // hash is pinned either way, so any later divergence becomes detectable.
-                Log.i(TAG, "Script ${script.name} content changed after remote update")
-            }
-            if (fetched.fromMirror) {
-                // A mirror's payload is never silently trusted as the new baseline: the
-                // origin is surfaced and the hash is pinned so a later divergence shows up.
-                Log.w(TAG, "Script ${script.name} was updated from a third-party mirror")
-            }
 
-            val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile)
-                ?: error("无法为脚本创建安全的文件路径")
-            ConfigManager.writeTextAtomic(file, body)
-
-            val updated = script.copy(
-                updatedAt = System.currentTimeMillis(),
-                contentHash = newHash
-            )
             synchronized(ioLock) {
                 val current = getScripts(context).toMutableList()
                 val idx = current.indexOfFirst { it.id == script.id }
+                val latest = if (idx >= 0) current[idx] else script
+                if (!canAcceptRemoteUpdate(latest.contentHash, newHash, fetched.fromMirror)) {
+                    Log.w(TAG, "Rejected mirror script update for ${latest.name}: hash mismatch or missing baseline")
+                    LogRepository.addLog(
+                        "warning",
+                        "已拒绝脚本「${latest.name}」的镜像更新：镜像内容与已校验指纹不一致或缺少基准指纹"
+                    )
+                    error("第三方镜像内容与已校验指纹不一致，已拒绝覆盖（请直连或经代理从原始地址更新）")
+                }
+
+                val file = SafeFileName.resolveChild(getScriptsDir(context), latest.scriptFile)
+                    ?: error("无法为脚本创建安全的文件路径")
+                ConfigManager.writeTextAtomic(file, body)
+
+                val updated = latest.copy(
+                    updatedAt = System.currentTimeMillis(),
+                    contentHash = newHash
+                )
                 if (idx >= 0) {
                     current[idx] = updated
                     saveScripts(context, current)
                 }
+                updated
             }
-            updated
-        }
+        }.onFailure { if (it is CancellationException) throw it }
     }
 
     fun toggleScript(context: Context, id: String, enabled: Boolean) {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.core.content.edit
 import com.github.mihomo.android.core.TunConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -74,10 +75,15 @@ object ConfigManager {
         // A server that drips one byte per read timeout would otherwise stall an auto-update
         // channel indefinitely; cap the total call duration as well.
         .callTimeout(60, TimeUnit.SECONDS)
-        .addInterceptor(createSafeRedirectInterceptor {
-            runCatching { SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts }
-                .getOrDefault(true)
-        })
+        .withSsrfProtection(
+            allowPrivateSupplier = {
+                runCatching {
+                    val app = com.github.kr328.clash.common.Global.application
+                    SettingsManager(app).allowPrivateSubscriptionHosts
+                }.getOrDefault(true)
+            },
+            validateDns = true
+        )
         .build()
 
     /**
@@ -1005,14 +1011,16 @@ object ConfigManager {
                 sanitized["rules"] = listOf(buildDnsRejectRule()) + existingRules
             }
 
-            if (overrides.prependRules.isNotEmpty()) {
+            val cleanPrependRules = ConfigSanitizer.sanitizePrependRules(overrides.prependRules)
+            if (cleanPrependRules.isNotEmpty()) {
                 val existingRules = (sanitized["rules"] as? List<*>) ?: emptyList<Any>()
-                sanitized["rules"] = overrides.prependRules + existingRules
+                sanitized["rules"] = cleanPrependRules + existingRules
             }
 
-            if (overrides.hostsEntries.isNotEmpty()) {
+            val cleanHostsEntries = ConfigSanitizer.sanitizeHostsEntries(overrides.hostsEntries)
+            if (cleanHostsEntries.isNotEmpty()) {
                 val hosts = LinkedHashMap<String, Any?>()
-                for (entry in overrides.hostsEntries) {
+                for (entry in cleanHostsEntries) {
                     val domain = entry.substringBefore(':').trim()
                     val target = entry.substringAfter(':', "").trim()
                     if (domain.isNotBlank() && target.isNotBlank()) {
@@ -1031,6 +1039,8 @@ object ConfigManager {
             }
 
             yaml.dump(sanitized)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             Log.w(TAG, "Structural config sanitization failed, falling back to text filter", e)
             // The text fallback cannot apply the structured overrides (prepend rules, hosts),
@@ -1139,6 +1149,9 @@ object ConfigManager {
         val apiSecret: String? = null
     )
 
+    private const val MAX_LISTEN_PORT = 65535
+    private const val MIN_MIXED_PORT = 1024
+
     /**
      * LAN sharing with an access password: HTTP/SOCKS clients must authenticate, while
      * loopback stays exempt so the phone itself is never prompted. These keys are in
@@ -1148,15 +1161,19 @@ object ConfigManager {
      * which computes its common indent AFTER interpolation (same trick as the DNS lists).
      */
     internal fun buildLanAuthBlock(allowLan: Boolean, lanPassword: String): String {
-        if (!allowLan || lanPassword.isBlank()) return ""
-        val safePassword = lanPassword.replace("\\", "\\\\").replace("\"", "\\\"")
-        return listOf(
-            "authentication:",
-            "  - \"nexus:$safePassword\"",
-            "skip-auth-prefixes:",
-            "  - 127.0.0.1",
-            "  - ::1"
-        ).joinToString("\n") { "            $it" } + "\n"
+        val cleanPassword = ConfigSanitizer.stripControlAndLineBreaks(lanPassword)
+        return if (!allowLan || cleanPassword.isBlank()) {
+            ""
+        } else {
+            val safePassword = ConfigSanitizer.escapeYamlDoubleQuoted(cleanPassword)
+            listOf(
+                "authentication:",
+                "  - \"nexus:$safePassword\"",
+                "skip-auth-prefixes:",
+                "  - 127.0.0.1",
+                "  - ::1"
+            ).joinToString("\n") { "            $it" } + "\n"
+        }
     }
 
     internal fun buildRuntimeHeader(
@@ -1176,10 +1193,18 @@ object ConfigManager {
             "debug" -> "debug"
             else -> "info"
         }
-        val safeMixedPort = options.mixedPort.coerceIn(1024, 65535)
+        val safeMixedPort = options.mixedPort.coerceIn(MIN_MIXED_PORT, MAX_LISTEN_PORT)
 
         val lanAuthYaml = buildLanAuthBlock(options.allowLan, options.lanPassword)
         val controllerYaml = buildControllerBlock(options.externalController, options.apiSecret)
+        val safeNameserversYaml = ConfigSanitizer.sanitizeDnsYamlBlock(
+            nameserversYaml,
+            ConfigSanitizer.DEFAULT_NAMESERVERS
+        )
+        val safeFallbackYaml = ConfigSanitizer.sanitizeDnsYamlBlock(
+            fallbackYaml,
+            ConfigSanitizer.DEFAULT_FALLBACK_SERVERS
+        )
         return """
             # Mihomo Android Injected Runtime Config
             mode: $safeMode
@@ -1193,7 +1218,7 @@ $lanAuthYaml$controllerYaml
             geox-url:
               geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"
               geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-              mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+              mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"
             dns:
               enable: true
               listen: 127.0.0.1:1053
@@ -1204,9 +1229,9 @@ $lanAuthYaml$controllerYaml
                 - 223.5.5.5
                 - 119.29.29.29
               nameserver:
-$nameserversYaml
+$safeNameserversYaml
               fallback:
-$fallbackYaml
+$safeFallbackYaml
               fake-ip-filter:
                 - "*.lan"
                 - "*.local"
@@ -1232,11 +1257,47 @@ $fallbackYaml
      * random per-process secret. Lines are pre-indented to survive trimIndent().
      */
     internal fun buildControllerBlock(listenAt: String?, secret: String?): String {
-        if (listenAt.isNullOrBlank() || secret.isNullOrBlank()) return ""
-        return listOf(
-            "external-controller: $listenAt",
-            "secret: \"$secret\""
-        ).joinToString("\n") { "            $it" } + "\n"
+        val safeListen = ConfigSanitizer.sanitizeControllerListen(listenAt)
+        val safeSecret = secret?.let(ConfigSanitizer::stripControlAndLineBreaks)?.takeIf { it.isNotBlank() }
+        return if (safeListen == null || safeSecret == null) {
+            ""
+        } else {
+            listOf(
+                "external-controller: $safeListen",
+                "secret: \"${ConfigSanitizer.escapeYamlDoubleQuoted(safeSecret)}\""
+            ).joinToString("\n") { "            $it" } + "\n"
+        }
+    }
+
+    private suspend fun executeProfileScriptsSafely(
+        context: Context,
+        rawYaml: String,
+        targetIds: List<String>
+    ): String {
+        return try {
+            val scriptResult = ConfigScriptEngine.executeScripts(
+                context = context,
+                rawYaml = rawYaml,
+                targetScriptIds = targetIds
+            )
+            if (scriptResult.hasFailures) {
+                Log.w(
+                    TAG,
+                    "Config scripts partially failed (${scriptResult.failed.size}/${scriptResult.total}); " +
+                        "falling back to the original config"
+                )
+            }
+            scriptResult.yaml
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            Log.w(TAG, "Config script execution crashed; falling back to original config", t)
+            LogRepository.addLog(
+                "warning",
+                "配置脚本执行异常，已安全回退到原始配置：${t.message ?: t.javaClass.simpleName}"
+            )
+            rawYaml
+        }
     }
 
     private val prepareLock = Mutex()
@@ -1254,16 +1315,6 @@ $fallbackYaml
         val settings = SettingsManager(context)
         val finalContent: String
 
-        val formatDnsList = { raw: String, fallback: List<String> ->
-            val items = raw.split(',', '\n')
-                .asSequence()
-                .map { it.trim().trim('"', '\'') }
-                .filter { it.isNotBlank() }
-                .toList()
-            val effective = items.ifEmpty { fallback }
-            effective.joinToString("\n") { "                - $it" }
-        }
-
         val activeProfile = if (sourceFile != null) {
             getProfiles(context).find {
                 it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
@@ -1272,16 +1323,13 @@ $fallbackYaml
 
         // Per-profile DNS override: when set it replaces the global upstream list entirely.
         val nameserversYaml = if (activeProfile?.dnsServersOverride.isNullOrEmpty()) {
-            formatDnsList(
-                settings.dnsNameservers,
-                listOf("https://223.5.5.5/dns-query", "https://doh.pub/dns-query", "223.5.5.5", "119.29.29.29")
-            )
+            ConfigSanitizer.formatDnsSettingYaml(settings.dnsNameservers, ConfigSanitizer.DEFAULT_NAMESERVERS)
         } else {
-            activeProfile.dnsServersOverride.joinToString("\n") { "                - $it" }
+            ConfigSanitizer.formatDnsServersYaml(activeProfile.dnsServersOverride, ConfigSanitizer.DEFAULT_NAMESERVERS)
         }
-        val fallbackYaml = formatDnsList(
+        val fallbackYaml = ConfigSanitizer.formatDnsSettingYaml(
             settings.dnsFallbackServers,
-            listOf("https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "1.1.1.1", "8.8.8.8")
+            ConfigSanitizer.DEFAULT_FALLBACK_SERVERS
         )
 
         // Bring the REST controller up with the same credentials on every config load.
@@ -1314,32 +1362,17 @@ $fallbackYaml
 
         if ((sourceFile != null) && sourceFile.exists()) {
             val originalContent = sourceFile.readText()
-            var rawContent = originalContent
             // Empty scriptIds means "no scripts bound" (explicit binding wins); legacy
             // profiles that predate bindings are migrated in MihomoApplication.
             // Honors the global scriptingEnabled master switch in Settings.
             val targetIds = if (settings.scriptingEnabled && activeProfile != null && activeProfile.scriptEnabled) {
                 activeProfile.scriptIds
             } else emptyList()
-            if (targetIds.isNotEmpty()) {
+            val rawContent = if (targetIds.isNotEmpty()) {
                 Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name} (${targetIds.size} scripts)...")
-                val scriptResult = ConfigScriptEngine.executeScripts(
-                    context = context,
-                    rawYaml = originalContent,
-                    targetScriptIds = targetIds
-                )
-                // A failed script leaves a half-rewritten config behind. The engine already
-                // falls back to the original YAML in that case, so the core always gets a
-                // consistent config — and the failure is logged at "warning" level so it
-                // survives the screen-off gate in LogRepository.
-                rawContent = scriptResult.yaml
-                if (scriptResult.hasFailures) {
-                    Log.w(
-                        TAG,
-                        "Config scripts partially failed (${scriptResult.failed.size}/${scriptResult.total}); " +
-                            "falling back to the original config"
-                    )
-                }
+                executeProfileScriptsSafely(context, originalContent, targetIds)
+            } else {
+                originalContent
             }
             val userContent = sanitizeUserConfig(
                 rawContent,

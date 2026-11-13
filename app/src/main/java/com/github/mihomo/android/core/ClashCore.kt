@@ -44,13 +44,24 @@ object ClashCore {
     /**
      * Serializes config loads.
      *
-     * `load()` is reachable from three independent sources (the UI's reload path, the
+     * `load()` is reachable from multiple independent sources (the UI's reload path, the
      * subscription worker and the VPN service's start path). Two overlapping
      * `Bridge.nativeLoad` calls rebuild the Go core's config state concurrently and the
      * second `CompletableDeferred` can be completed by the *first* load's native callback,
      * which leaves the core and the caller disagreeing about which config is live.
      */
     private val loadLock = Mutex()
+
+    /** Serializes config preparation (`prepareConfig`) + `load()` + selector restoration. */
+    private val configPipelineLock = Mutex()
+
+    private data class InFlightLoad(
+        val configDir: String,
+        val deferred: CompletableDeferred<Unit>,
+    )
+
+    @Volatile
+    private var inFlightLoad: InFlightLoad? = null
 
     private val activeGroupChecks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
@@ -135,26 +146,49 @@ object ClashCore {
         init(context)
     }
 
+    suspend fun prepareAndLoadProfile(
+        context: Context,
+        profileFile: File?,
+        profileId: String?,
+    ): Result<Unit> = configPipelineLock.withLock {
+        withContext(Dispatchers.IO) {
+            try {
+                init(context)
+                val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, profileFile)
+                val res = load(configFile, profileId)
+                if (res.isSuccess) {
+                    runCatching {
+                        val settings = com.github.mihomo.android.data.SettingsManager(context)
+                        val allSaved = settings.getSelectedNodesForProfile(profileId ?: "")
+                        allSaved.forEach { (gName, sNode) ->
+                            patchSelector(gName, sNode)
+                        }
+                    }
+                    notifyNetworkChanged(context)
+                }
+                res
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                currentCoroutineContext().ensureActive()
+                Result.failure(e)
+            }
+        }
+    }
+
     suspend fun reloadActiveConfig(context: Context): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             init(context)
             val settings = com.github.mihomo.android.data.SettingsManager(context)
             val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
             val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
-            val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, activeProfile?.file)
-            val res = load(configFile, activeProfile?.id)
-            if (res.isSuccess) {
-                runCatching {
-                    val allSaved = settings.getSelectedNodesForProfile(activeProfile?.id ?: "")
-                    allSaved.forEach { (gName, sNode) ->
-                        patchSelector(gName, sNode)
-                    }
-                }
-                notifyNetworkChanged(context)
-                return@withContext true
-            }
+            prepareAndLoadProfile(context, activeProfile?.file, activeProfile?.id).isSuccess
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            currentCoroutineContext().ensureActive()
             false
-        }.getOrDefault(false)
+        }
     }
 
     suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
@@ -176,53 +210,109 @@ object ClashCore {
         }
     }
 
+    private suspend fun awaitAssetsReady() {
+        val failure: ClashException? = try {
+            withTimeout(ASSETS_READY_TIMEOUT_MS.milliseconds) { Bridge.assetsReady() }
+            null
+        } catch (e: TimeoutCancellationException) {
+            ClashException("Timed out waiting for the geo database assets to be extracted", e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            wrapClashFailure("Failed to prepare the geo database assets", e)
+        }
+        if (failure != null) throw failure
+    }
+
+    private suspend fun awaitInFlightNativeLoad() {
+        val previous = inFlightLoad ?: return
+        if (previous.deferred.isCompleted) {
+            inFlightLoad = null
+            return
+        }
+        try {
+            withTimeout(LOAD_TIMEOUT_MS.milliseconds) {
+                try {
+                    previous.deferred.await()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // Previous native load failed; Go core is idle for the next load.
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw ClashException(
+                "Timed out waiting for the previous configuration load from ${previous.configDir}",
+                e
+            )
+        }
+        if (previous.deferred.isCompleted && inFlightLoad === previous) {
+            inFlightLoad = null
+        }
+    }
+
+    private fun startNativeLoad(configDir: String): CompletableDeferred<Unit> {
+        val deferred = CompletableDeferred<Unit>()
+        val entry = InFlightLoad(configDir, deferred)
+        inFlightLoad = entry
+        deferred.invokeOnCompletion {
+            if (inFlightLoad === entry) {
+                inFlightLoad = null
+            }
+        }
+        try {
+            Bridge.nativeLoad(deferred, configDir)
+        } catch (e: Throwable) {
+            val failure = ClashException("Failed to load the configuration from $configDir", e)
+            completeSafely(deferred, failure)
+            throw failure
+        }
+        return deferred
+    }
+
+    private suspend fun awaitNativeLoad(configDir: String, deferred: CompletableDeferred<Unit>) {
+        val failure: ClashException? = try {
+            withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
+            null
+        } catch (e: TimeoutCancellationException) {
+            ClashException("Timed out loading the configuration from $configDir", e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            wrapClashFailure("Failed to load the configuration from $configDir", e)
+        }
+        if (failure != null) throw failure
+    }
+
+    private fun wrapClashFailure(message: String, error: Throwable): ClashException =
+        error as? ClashException ?: ClashException(message, error)
+
     suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = loadLock.withLock {
         withContext(Dispatchers.IO) {
             try {
-                // The geo databases are extracted off the main thread at init; the core reads them
-                // while parsing the config, so wait for the extraction to finish first.
-                // The timeout guards against the extraction thread never running (it would
-                // otherwise hang this call forever, holding the load lock).
-                try {
-                    withTimeout(ASSETS_READY_TIMEOUT_MS.milliseconds) { Bridge.assetsReady() }
-                } catch (e: TimeoutCancellationException) {
-                    throw ClashException(
-                        "Timed out waiting for the geo database assets to be extracted",
-                        e
-                    )
-                } catch (e: ClashException) {
-                    throw e
-                } catch (e: Throwable) {
-                    throw ClashException("Failed to prepare the geo database assets", e)
+                // Wait for geo asset extraction before nativeLoad reads the clash home directory.
+                awaitAssetsReady()
+                // If an earlier nativeLoad timed out or was cancelled, Go may still be running it;
+                // wait for it to settle before invoking Bridge.nativeLoad again.
+                awaitInFlightNativeLoad()
+
+                val configDir = if (configFile.isDirectory) {
+                    configFile.absolutePath
+                } else {
+                    configFile.parentFile?.absolutePath ?: configFile.absolutePath
                 }
-                val deferred = CompletableDeferred<Unit>()
-                val configDir = if (configFile.isDirectory) configFile.absolutePath else (configFile.parentFile?.absolutePath ?: configFile.absolutePath)
                 Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
-                try {
-                    Bridge.nativeLoad(deferred, configDir)
-                } catch (e: Throwable) {
-                    throw ClashException("Failed to load the configuration from $configDir", e)
-                }
-                try {
-                    withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
-                } catch (e: TimeoutCancellationException) {
-                    throw ClashException("Timed out loading the configuration from $configDir", e)
-                } catch (e: ClashException) {
-                    throw e
-                } catch (e: Throwable) {
-                    throw ClashException("Failed to load the configuration from $configDir", e)
-                }
+                val deferred = startNativeLoad(configDir)
+                awaitNativeLoad(configDir, deferred)
+                activeGroupChecks.clear()
                 isCoreLoaded = true
                 if (profileId != null) {
                     loadedProfileId = profileId
                 }
                 Result.success(Unit)
-            } catch (e: Exception) {
-                // A cancelled coroutine must NOT be reported as an ordinary failure: the
-                // caller (e.g. a stop request during the start path) relies on the
-                // cancellation propagating instead of being turned into a Result.
-                // ensureActive() rethrows it when the job really was cancelled, and
-                // returns normally for every other exception (a timeout, for example).
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 currentCoroutineContext().ensureActive()
                 Result.failure(e)
             }
@@ -324,6 +414,9 @@ object ClashCore {
                 existing
             } else {
                 CompletableDeferred<Unit>().also { deferred ->
+                    deferred.invokeOnCompletion {
+                        activeGroupChecks.remove(groupName, deferred)
+                    }
                     runCatching {
                         Bridge.nativeHealthCheck(deferred, groupName)
                     }.onFailure { error ->
@@ -396,6 +489,10 @@ object ClashCore {
             withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
                 deferred.await()
             }
+        } catch (e: TimeoutCancellationException) {
+            Log.d(TAG, "Health check timed out for group '$name': ${e.message}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Throwable) {
         } finally {
             pollJob?.cancel()
@@ -411,6 +508,7 @@ object ClashCore {
                 activeGroupChecks.remove(name, deferred)
             }
         }
+        currentCoroutineContext().ensureActive()
         val group = queryGroup(name)
         val result = mutableMapOf<String, Int>()
         group?.proxies?.forEach { p ->
@@ -479,6 +577,9 @@ object ClashCore {
                     }
                 }
             }
+        } catch (_: TimeoutCancellationException) {
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Throwable) {
         } finally {
             // Only remove completed checks: other waiters may still await a running one.
@@ -486,6 +587,7 @@ object ClashCore {
                 activeGroupChecks.remove(targetGroup, deferred)
             }
         }
+        currentCoroutineContext().ensureActive()
 
         if (result !in 1..65534) {
             result = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay
