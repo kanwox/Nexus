@@ -3,6 +3,7 @@
 package com.github.mihomo.android.ui
 
 import android.content.Context
+import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -10,9 +11,10 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.Transition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -23,13 +25,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -66,35 +68,16 @@ import com.github.mihomo.android.ui.theme.LoonMotion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
 private fun SubScreenPredictiveBackEffect(
     enabled: Boolean,
-    reduceMotion: Boolean,
-    backSweepWidthPx: Float,
-    setEdgeOffset: (Float) -> Unit,
-    onNavigateBack: () -> Unit
+    onPredictiveBack: suspend (Flow<BackEventCompat>) -> Unit
 ) {
-    PredictiveBackHandler(enabled = enabled) { progress ->
-        if (reduceMotion) {
-            progress.collect { }
-            onNavigateBack()
-            setEdgeOffset(0f)
-            return@PredictiveBackHandler
-        }
-        try {
-            progress.collect { backEvent ->
-                setEdgeOffset((backEvent.progress * backSweepWidthPx).coerceAtLeast(0f))
-            }
-            onNavigateBack()
-            setEdgeOffset(0f)
-        } catch (e: CancellationException) {
-            setEdgeOffset(0f)
-            throw e
-        }
-    }
+    PredictiveBackHandler(enabled = enabled, onBack = onPredictiveBack)
 }
 
 internal data class SubScreenEnvironment(
@@ -114,16 +97,6 @@ internal data class SubScreenThemeCallbacks(
     val onPickProfileFile: () -> Unit
 )
 
-private data class SubScreenEdgeGestureConfig(
-    val isRtl: Boolean,
-    val reduceMotion: Boolean,
-    val edgeZonePx: Float,
-    val getEdgeOffset: () -> Float,
-    val setEdgeOffset: (Float) -> Unit,
-    val getIsDragging: () -> Boolean,
-    val setIsDragging: (Boolean) -> Unit
-)
-
 @Composable
 internal fun MainSubScreenOverlay(
     env: SubScreenEnvironment,
@@ -136,23 +109,38 @@ internal fun MainSubScreenOverlay(
     val backSweepWidthPx = with(density) { 200.dp.toPx() }
     val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
+    val visibleState = remember { MutableTransitionState(state.currentSubScreen != null) }
+    visibleState.targetState = state.currentSubScreen != null
+
     var lastActiveSubScreen by remember { mutableStateOf<SubScreen?>(null) }
-    var edgeOffset by remember { mutableFloatStateOf(0f) }
-    var isEdgeDragging by remember { mutableStateOf(false) }
+    val displayedSubScreen = state.currentSubScreen ?: lastActiveSubScreen
+    val bodyTransition = updateTransition(
+        targetState = displayedSubScreen,
+        label = "SubScreenOverlayTransition"
+    )
+    val controller = rememberSubScreenEdgeBackController(
+        env = env,
+        visibleState = visibleState,
+        fallbackSweepWidthPx = backSweepWidthPx,
+        reduceMotion = reduceMotion
+    )
+    controller.isBodyTransitionSettled = { targetParent ->
+        bodyTransition.currentState == targetParent && !bodyTransition.isRunning
+    }
 
     LaunchedEffect(state.currentSubScreen) {
-        isEdgeDragging = false
-        if (state.currentSubScreen != null) {
-            lastActiveSubScreen = state.currentSubScreen
-            edgeOffset = 0f
+        controller.syncOnScreenChange(state.currentSubScreen) { active ->
+            lastActiveSubScreen = active
         }
     }
+
+    LaunchedEffect(state.currentSubScreen, visibleState.currentState, visibleState.targetState) {
+        controller.resetIfOverlaySettledHidden()
+    }
+
     SubScreenPredictiveBackEffect(
         enabled = state.currentSubScreen != null,
-        reduceMotion = reduceMotion,
-        backSweepWidthPx = backSweepWidthPx,
-        setEdgeOffset = { value -> edgeOffset = value },
-        onNavigateBack = state::navigateBackSubScreen
+        onPredictiveBack = controller::handlePredictiveBack
     )
 
     val enterAnim = if (reduceMotion) EnterTransition.None else {
@@ -161,7 +149,7 @@ internal fun MainSubScreenOverlay(
             animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)
         )
     }
-    val exitAnim = if (reduceMotion) ExitTransition.None else {
+    val exitAnim = if (reduceMotion || controller.skipVisibilityExit) ExitTransition.None else {
         slideOutHorizontally(
             targetOffsetX = { width -> if (isRtl) -width else width },
             animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
@@ -169,32 +157,29 @@ internal fun MainSubScreenOverlay(
     }
 
     AnimatedVisibility(
-        visible = state.currentSubScreen != null,
+        visibleState = visibleState,
         enter = enterAnim,
         exit = exitAnim,
         modifier = Modifier
             .fillMaxSize()
             .zIndex(20f)
+            .onSizeChanged { size -> controller.containerWidthPx = size.width.toFloat() }
             .subScreenEdgeBackGesture(
                 currentSubScreen = state.currentSubScreen,
-                config = SubScreenEdgeGestureConfig(
-                    isRtl = isRtl,
-                    reduceMotion = reduceMotion,
-                    edgeZonePx = edgeZonePx,
-                    getEdgeOffset = { edgeOffset },
-                    setEdgeOffset = { value -> edgeOffset = value },
-                    getIsDragging = { isEdgeDragging },
-                    setIsDragging = { dragging -> isEdgeDragging = dragging }
-                ),
-                coroutineScope = env.coroutineScope,
-                onBackTriggered = { state.navigateBackSubScreen() }
+                isRtl = isRtl,
+                edgeZonePx = edgeZonePx,
+                controller = controller
             )
-            .graphicsLayer { translationX = if (isRtl) -edgeOffset else edgeOffset }
+            .graphicsLayer {
+                val offset = controller.edgeOffset.value
+                translationX = if (isRtl) -offset else offset
+                alpha = controller.overlayAlpha.value
+            }
     ) {
         SubScreenAnimatedBody(
-            displayedSubScreen = state.currentSubScreen ?: lastActiveSubScreen,
+            bodyTransition = bodyTransition,
             isRtl = isRtl,
-            reduceMotion = reduceMotion,
+            skipTransition = reduceMotion || controller.skipNestedTransition,
             env = env,
             theme = theme
         )
@@ -203,90 +188,38 @@ internal fun MainSubScreenOverlay(
 
 private fun Modifier.subScreenEdgeBackGesture(
     currentSubScreen: SubScreen?,
-    config: SubScreenEdgeGestureConfig,
-    coroutineScope: CoroutineScope,
-    onBackTriggered: () -> Unit
-): Modifier = pointerInput(currentSubScreen, config.isRtl, config.reduceMotion) {
+    isRtl: Boolean,
+    edgeZonePx: Float,
+    controller: SubScreenEdgeBackController
+): Modifier = pointerInput(currentSubScreen, isRtl, controller.reduceMotion) {
     if (currentSubScreen == null) return@pointerInput
-
-    fun settleBackToZero() {
-        if (config.reduceMotion) {
-            config.setEdgeOffset(0f)
-            return
-        }
-        coroutineScope.launch {
-            animate(
-                initialValue = config.getEdgeOffset(),
-                targetValue = 0f,
-                animationSpec = spring(
-                    dampingRatio = LoonMotion.edgeSettleDampingRatio,
-                    stiffness = LoonMotion.edgeSettleStiffness
-                )
-            ) { value, _ -> config.setEdgeOffset(value) }
-        }
-    }
 
     detectHorizontalDragGestures(
         onDragStart = { startOffset ->
-            val startedInZone = if (config.isRtl) {
-                startOffset.x >= size.width - config.edgeZonePx
-            } else {
-                startOffset.x <= config.edgeZonePx
-            }
-            config.setIsDragging(startedInZone)
+            controller.onDragStarted(startOffset.x, size.width.toFloat(), edgeZonePx, isRtl)
         },
         onHorizontalDrag = { change, dragAmount ->
-            val delta = if (config.isRtl) -dragAmount else dragAmount
-            if (config.getIsDragging() && (delta > 0f || config.getEdgeOffset() > 0f)) {
+            if (controller.onDragDelta(dragAmount, isRtl)) {
                 change.consume()
-                config.setEdgeOffset((config.getEdgeOffset() + delta).coerceAtLeast(0f))
             }
         },
-        onDragEnd = {
-            if (!config.getIsDragging()) return@detectHorizontalDragGestures
-            config.setIsDragging(false)
-            val screenWidth = size.width.toFloat()
-            if (config.getEdgeOffset() > screenWidth * 0.30f) {
-                if (config.reduceMotion) {
-                    onBackTriggered()
-                    config.setEdgeOffset(0f)
-                } else {
-                    coroutineScope.launch {
-                        animate(
-                            initialValue = config.getEdgeOffset(),
-                            targetValue = screenWidth,
-                            animationSpec = tween(durationMillis = LoonMotion.fastMs, easing = FastOutSlowInEasing)
-                        ) { value, _ -> config.setEdgeOffset(value) }
-                        onBackTriggered()
-                        config.setEdgeOffset(0f)
-                    }
-                }
-            } else {
-                settleBackToZero()
-            }
-        },
-        onDragCancel = {
-            if (config.getIsDragging()) {
-                config.setIsDragging(false)
-                settleBackToZero()
-            }
-        }
+        onDragEnd = { controller.onDragEnded(size.width.toFloat()) },
+        onDragCancel = { controller.onDragCanceled() }
     )
 }
 
 @Composable
 private fun SubScreenAnimatedBody(
-    displayedSubScreen: SubScreen?,
+    bodyTransition: Transition<SubScreen?>,
     isRtl: Boolean,
-    reduceMotion: Boolean,
+    skipTransition: Boolean,
     env: SubScreenEnvironment,
     theme: SubScreenThemeCallbacks
 ) {
     val rtlSign = if (isRtl) -1 else 1
-    AnimatedContent(
-        targetState = displayedSubScreen,
+    bodyTransition.AnimatedContent(
         transitionSpec = {
-            if (reduceMotion) {
+            if (skipTransition) {
                 EnterTransition.None togetherWith ExitTransition.None
             } else {
                 fun depthOf(screen: SubScreen?): Int = when (screen) {
@@ -323,8 +256,7 @@ private fun SubScreenAnimatedBody(
                 }
             }
         },
-        modifier = Modifier.fillMaxSize(),
-        label = "SubScreenOverlayTransition"
+        modifier = Modifier.fillMaxSize()
     ) { subScreen ->
         if (subScreen != null) {
             Box(modifier = Modifier.fillMaxSize().background(LoonBg)) {
