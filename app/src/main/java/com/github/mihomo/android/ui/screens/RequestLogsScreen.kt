@@ -1,42 +1,94 @@
 package com.github.mihomo.android.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.github.kr328.clash.core.util.trafficString
 import com.github.mihomo.android.data.RequestRecord
 import com.github.mihomo.android.data.RequestRepository
-import com.github.mihomo.android.service.VpnState
-import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
-import com.github.mihomo.android.ui.theme.*
+import com.github.mihomo.android.service.VpnState
+import com.github.mihomo.android.ui.components.CupertinoActionSheet
+import com.github.mihomo.android.ui.components.CupertinoActionSheetItem
+import com.github.mihomo.android.ui.components.CupertinoDetailRow
+import com.github.mihomo.android.ui.components.CupertinoIndentedDivider
+import com.github.mihomo.android.ui.components.CupertinoModalBottomSheet
+import com.github.mihomo.android.ui.components.CupertinoNavBar
+import com.github.mihomo.android.ui.components.CupertinoSearchBar
+import com.github.mihomo.android.ui.components.CupertinoSegmentedControl
+import com.github.mihomo.android.ui.components.CupertinoToast
+import com.github.mihomo.android.ui.components.IosHapticHelper
+import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.components.cupertinoGroupedItems
+import com.github.mihomo.android.ui.components.iosFocusRing
+import com.github.mihomo.android.ui.components.iosPressable
+import com.github.mihomo.android.ui.components.rememberClipboardCopy
+import com.github.mihomo.android.ui.components.rememberIosHaptic
+import com.github.mihomo.android.ui.theme.IosBlue
+import com.github.mihomo.android.ui.theme.IosGreen
+import com.github.mihomo.android.ui.theme.LoonBg
+import com.github.mihomo.android.ui.theme.LoonDangerText
+import com.github.mihomo.android.ui.theme.LoonInfoText
+import com.github.mihomo.android.ui.theme.LoonRadii
+import com.github.mihomo.android.ui.theme.LoonResponsiveContent
+import com.github.mihomo.android.ui.theme.LoonSizes
+import com.github.mihomo.android.ui.theme.LoonSpacing
+import com.github.mihomo.android.ui.theme.LoonSuccessText
+import com.github.mihomo.android.ui.theme.LoonTextMuted
+import com.github.mihomo.android.ui.theme.LoonTextPrimary
+import com.github.mihomo.android.ui.theme.LoonTextSecondary
+import com.github.mihomo.android.ui.theme.LoonTextStyles
+import com.github.mihomo.android.ui.theme.RoundedCornerShape
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.*
+import java.util.Locale
 
 private enum class RequestFilter(val labelKey: String) {
     ALL("log_level_all"),
@@ -52,6 +104,12 @@ private enum class RequestProtocolFilter {
 /** One deduped (packageName, sourceApp) entry for the app filter sheet; null package = system. */
 private data class RequestAppOption(val packageName: String?, val label: String)
 
+private data class RequestFilterCounts(
+    val activeCount: Int,
+    val proxyCount: Int,
+    val directCount: Int
+)
+
 private fun buildRequestAppOptions(
     records: List<RequestRecord>,
     systemLabel: String
@@ -62,7 +120,6 @@ private fun buildRequestAppOptions(
     for (record in records) {
         val pkg = record.packageName
         if (pkg == null) {
-            // All records without a package name collapse into a single localized entry.
             if (!systemAdded) {
                 systemAdded = true
                 options.add(RequestAppOption(null, systemLabel))
@@ -74,7 +131,127 @@ private fun buildRequestAppOptions(
     return options
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private val PROXY_EXCLUDED_OUTBOUNDS = setOf("DIRECT", "REJECT")
+
+private fun filterRequestRecords(
+    records: List<RequestRecord>,
+    searchQuery: String,
+    selectedFilter: RequestFilter,
+    selectedProtocol: RequestProtocolFilter,
+    selectedApp: RequestAppOption?
+): List<RequestRecord> {
+    val query = searchQuery.trim().lowercase(Locale.ROOT)
+    return records.filter { record ->
+        val filterMatch = when (selectedFilter) {
+            RequestFilter.ALL -> true
+            RequestFilter.ACTIVE -> record.isActive
+            RequestFilter.PROXY -> record.outbound.uppercase(Locale.ROOT) !in PROXY_EXCLUDED_OUTBOUNDS
+            RequestFilter.DIRECT -> record.outbound.equals("DIRECT", ignoreCase = true)
+        }
+        if (!filterMatch) return@filter false
+
+        val protocolMatch = selectedProtocol == RequestProtocolFilter.ALL ||
+            record.network.equals(selectedProtocol.name, ignoreCase = true)
+        if (!protocolMatch) return@filter false
+
+        val appMatch = when {
+            selectedApp == null -> true
+            selectedApp.packageName == null -> record.packageName == null
+            else -> record.packageName == selectedApp.packageName && record.sourceApp == selectedApp.label
+        }
+        if (!appMatch) return@filter false
+
+        if (query.isEmpty()) return@filter true
+        listOf(
+            record.host,
+            record.destinationIp,
+            record.sourceApp,
+            record.outbound,
+            record.rule,
+            record.rulePayload
+        ).any { field -> field.lowercase(Locale.ROOT).contains(query) }
+    }
+}
+
+private class RequestLogsUiState {
+    var searchQuery by mutableStateOf("")
+    var selectedFilter by mutableStateOf(RequestFilter.ALL)
+    var selectedProtocol by mutableStateOf(RequestProtocolFilter.ALL)
+    var selectedApp by mutableStateOf<RequestAppOption?>(null)
+    var showFilterActionSheet by mutableStateOf(false)
+    var showAppFilterSheet by mutableStateOf(false)
+    var showClearActionSheet by mutableStateOf(false)
+    var activeDetailRecordId by mutableStateOf<Long?>(null)
+}
+
+private data class RequestFilterUiState(
+    val records: List<RequestRecord>,
+    val filteredSize: Int,
+    val counts: RequestFilterCounts,
+    val selectedFilter: RequestFilter,
+    val selectedApp: RequestAppOption?,
+    val showFilterSheet: Boolean,
+    val showAppFilterSheet: Boolean
+)
+
+private data class RequestFilterSheetSummary(
+    val recordsSize: Int,
+    val filteredSize: Int,
+    val counts: RequestFilterCounts,
+    val selectedFilter: RequestFilter,
+    val selectedApp: RequestAppOption?
+)
+
+private data class RequestFilterSheetCallbacks(
+    val onSelectFilter: (RequestFilter) -> Unit,
+    val onOpenAppFilter: () -> Unit,
+    val onDismissFilter: () -> Unit,
+    val onSelectApp: (RequestAppOption?) -> Unit,
+    val onDismissAppFilter: () -> Unit
+)
+
+private data class RequestLogsListData(
+    val selectedFilter: RequestFilter,
+    val selectedProtocol: RequestProtocolFilter,
+    val selectedApp: RequestAppOption?,
+    val filteredRecords: List<RequestRecord>,
+    val activeCount: Int,
+    val timeFormat: DateTimeFormatter
+)
+
+private data class RequestLogFormatters(
+    val timeFormat: DateTimeFormatter,
+    val detailTimeFormat: DateTimeFormatter
+)
+
+@Composable
+private fun rememberRequestLogFormatters(): RequestLogFormatters {
+    val locale = LocalConfiguration.current.locales[0]
+    val timeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    }
+    val detailTimeFormat = remember(locale) {
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    }
+    return remember(timeFormat, detailTimeFormat) {
+        RequestLogFormatters(timeFormat = timeFormat, detailTimeFormat = detailTimeFormat)
+    }
+}
+
+private fun computeRequestFilterCounts(records: List<RequestRecord>): RequestFilterCounts {
+    var active = 0
+    var proxy = 0
+    var direct = 0
+    for (record in records) {
+        if (record.isActive) active++
+        when {
+            record.outbound.equals("DIRECT", ignoreCase = true) -> direct++
+            !record.outbound.equals("REJECT", ignoreCase = true) -> proxy++
+        }
+    }
+    return RequestFilterCounts(activeCount = active, proxyCount = proxy, directCount = direct)
+}
+
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun RequestLogsScreen(
@@ -85,446 +262,419 @@ fun RequestLogsScreen(
     val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
     val records by RequestRepository.recordsFlow.collectAsStateWithLifecycle()
+    val ui = remember { RequestLogsUiState() }
+    val formatters = rememberRequestLogFormatters()
 
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf(RequestFilter.ALL) }
-    var selectedProtocol by remember { mutableStateOf(RequestProtocolFilter.ALL) }
-    var selectedApp by remember { mutableStateOf<RequestAppOption?>(null) }
-    var showFilterActionSheet by remember { mutableStateOf(false) }
-    var showAppFilterSheet by remember { mutableStateOf(false) }
-    var showClearActionSheet by remember { mutableStateOf(false) }
-    var activeDetailRecordId by remember { mutableStateOf<Long?>(null) }
-    val activeDetailRecord = remember(records, activeDetailRecordId) {
-        val id = activeDetailRecordId ?: return@remember null
-        records.firstOrNull { it.id == id }
+    val filteredRecords = remember(records, ui.searchQuery, ui.selectedFilter, ui.selectedProtocol, ui.selectedApp) {
+        filterRequestRecords(records, ui.searchQuery, ui.selectedFilter, ui.selectedProtocol, ui.selectedApp)
     }
-    val coroutineScope = rememberCoroutineScope()
-
-    // java.time formatters are immutable and thread-safe, unlike SimpleDateFormat.
-    // The locale comes from LocalConfiguration, which is observable — reading
-    // Locale.getDefault() directly would not recompose when the system locale changes.
-    val locale = LocalConfiguration.current.locales[0]
-    val timeFormat = remember(locale) {
-        DateTimeFormatter.ofPattern("HH:mm:ss", locale).withZone(ZoneId.systemDefault())
-    }
-    val detailTimeFormat = remember(locale) {
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", locale).withZone(ZoneId.systemDefault())
+    val filterCounts = remember(records) { computeRequestFilterCounts(records) }
+    val activeDetailRecord = remember(records, ui.activeDetailRecordId) {
+        ui.activeDetailRecordId?.let { id -> records.firstOrNull { item -> item.id == id } }
     }
 
-    // Filter records based on status, protocol, source app and fluid search
-    val filteredRecords = remember(records, searchQuery, selectedFilter, selectedProtocol, selectedApp) {
-        val query = searchQuery.trim().lowercase()
-        val appFilter = selectedApp
-        records.filter { record ->
-            // Status filter
-            val filterMatch = when (selectedFilter) {
-                RequestFilter.ALL -> true
-                RequestFilter.ACTIVE -> record.isActive
-                RequestFilter.PROXY -> !record.outbound.equals("DIRECT", ignoreCase = true) && !record.outbound.equals("REJECT", ignoreCase = true)
-                RequestFilter.DIRECT -> record.outbound.equals("DIRECT", ignoreCase = true)
-            }
-            if (!filterMatch) return@filter false
+    Column(modifier = Modifier.fillMaxSize().background(LoonBg).statusBarsPadding()) {
+        RequestLogsNavBar(
+            lang = lang,
+            selectedFilter = ui.selectedFilter,
+            filterActive = ui.selectedFilter != RequestFilter.ALL ||
+                ui.selectedProtocol != RequestProtocolFilter.ALL ||
+                ui.selectedApp != null,
+            hasRecords = records.isNotEmpty(),
+            onBack = onBack,
+            onOpenFilter = { haptic.selection(); ui.showFilterActionSheet = true },
+            onOpenClear = { haptic.selection(); ui.showClearActionSheet = true }
+        )
 
-            // Protocol filter
-            val protocolMatch = selectedProtocol == RequestProtocolFilter.ALL ||
-                record.network.equals(selectedProtocol.name, ignoreCase = true)
-            if (!protocolMatch) return@filter false
-
-            // Source app filter
-            val appMatch = when {
-                appFilter == null -> true
-                appFilter.packageName == null -> record.packageName == null
-                else -> record.packageName == appFilter.packageName && record.sourceApp == appFilter.label
-            }
-            if (!appMatch) return@filter false
-
-            // Search query match
-            if (query.isEmpty()) return@filter true
-            record.host.lowercase().contains(query) ||
-                record.destinationIp.lowercase().contains(query) ||
-                record.sourceApp.lowercase().contains(query) ||
-                record.outbound.lowercase().contains(query) ||
-                record.rule.lowercase().contains(query) ||
-                record.rulePayload.lowercase().contains(query)
+        LoonResponsiveContent(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            RequestLogsListContent(
+                lang = lang,
+                searchQuery = ui.searchQuery,
+                listData = RequestLogsListData(
+                    selectedFilter = ui.selectedFilter,
+                    selectedProtocol = ui.selectedProtocol,
+                    selectedApp = ui.selectedApp,
+                    filteredRecords = filteredRecords,
+                    activeCount = filterCounts.activeCount,
+                    timeFormat = formatters.timeFormat
+                ),
+                onSearchQueryChange = { query -> ui.searchQuery = query },
+                onSelectProtocol = { protocol -> ui.selectedProtocol = protocol },
+                onSelectRecord = { id -> haptic.lightTick(); ui.activeDetailRecordId = id }
+            )
         }
     }
 
-    val activeCount = remember(records) { records.count { it.isActive } }
+    RequestLogsDetailAndClearSheets(
+        lang = lang,
+        activeDetailRecord = activeDetailRecord,
+        detailTimeFormat = formatters.detailTimeFormat,
+        showClearActionSheet = ui.showClearActionSheet,
+        onCopy = { text -> copyToClipboard(text) },
+        onDismissDetail = { ui.activeDetailRecordId = null },
+        onDismissClear = { ui.showClearActionSheet = false }
+    )
+    RequestLogsFilterSheetsHost(lang, ui, haptic, records, filteredRecords.size, filterCounts)
+}
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(LoonBg)
-            .statusBarsPadding()
-    ) {
-        // Navigation Bar: iOS centered title, back button, trailing filter and clear buttons
-        CupertinoNavBar(
-            title = AppStrings.get("requests_screen_title", lang),
-            showBackButton = true,
-            onBack = onBack,
-            actions = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val filterActive = selectedFilter != RequestFilter.ALL ||
-                        selectedProtocol != RequestProtocolFilter.ALL ||
-                        selectedApp != null
+@Composable
+private fun RequestLogsFilterSheetsHost(
+    lang: String,
+    ui: RequestLogsUiState,
+    haptic: IosHapticHelper,
+    records: List<RequestRecord>,
+    filteredSize: Int,
+    filterCounts: RequestFilterCounts
+) {
+    RequestLogsFilterSheets(
+        lang = lang,
+        state = RequestFilterUiState(
+            records = records,
+            filteredSize = filteredSize,
+            counts = filterCounts,
+            selectedFilter = ui.selectedFilter,
+            selectedApp = ui.selectedApp,
+            showFilterSheet = ui.showFilterActionSheet,
+            showAppFilterSheet = ui.showAppFilterSheet
+        ),
+        callbacks = RequestFilterSheetCallbacks(
+            onSelectFilter = { filter -> haptic.selection(); ui.selectedFilter = filter; ui.showFilterActionSheet = false },
+            onOpenAppFilter = { haptic.selection(); ui.showFilterActionSheet = false; ui.showAppFilterSheet = true },
+            onDismissFilter = { ui.showFilterActionSheet = false },
+            onSelectApp = { option -> haptic.selection(); ui.selectedApp = option; ui.showAppFilterSheet = false },
+            onDismissAppFilter = { ui.showAppFilterSheet = false }
+        )
+    )
+}
 
-                    // Filter Action Button
+@Composable
+private fun RequestLogsDetailAndClearSheets(
+    lang: String,
+    activeDetailRecord: RequestRecord?,
+    detailTimeFormat: DateTimeFormatter,
+    showClearActionSheet: Boolean,
+    onCopy: (String) -> Unit,
+    onDismissDetail: () -> Unit,
+    onDismissClear: () -> Unit
+) {
+    activeDetailRecord?.let { rec ->
+        RequestDetailSheet(
+            record = rec,
+            lang = lang,
+            detailTimeFormat = detailTimeFormat,
+            onCopy = onCopy,
+            onDismiss = onDismissDetail
+        )
+    }
+    if (showClearActionSheet) {
+        RequestClearActionSheet(lang = lang, onDismiss = onDismissClear)
+    }
+}
+
+@Composable
+private fun RequestLogsFilterSheets(
+    lang: String,
+    state: RequestFilterUiState,
+    callbacks: RequestFilterSheetCallbacks
+) {
+    if (state.showFilterSheet) {
+        RequestFilterActionSheet(
+            lang = lang,
+            summary = RequestFilterSheetSummary(
+                recordsSize = state.records.size,
+                filteredSize = state.filteredSize,
+                counts = state.counts,
+                selectedFilter = state.selectedFilter,
+                selectedApp = state.selectedApp
+            ),
+            onSelectFilter = callbacks.onSelectFilter,
+            onOpenAppFilter = callbacks.onOpenAppFilter,
+            onDismiss = callbacks.onDismissFilter
+        )
+    }
+    if (state.showAppFilterSheet) {
+        RequestAppFilterSheet(
+            lang = lang,
+            records = state.records,
+            selectedApp = state.selectedApp,
+            onSelectApp = callbacks.onSelectApp,
+            onDismiss = callbacks.onDismissAppFilter
+        )
+    }
+}
+
+@Composable
+private fun RequestLogsNavBar(
+    lang: String,
+    selectedFilter: RequestFilter,
+    filterActive: Boolean,
+    hasRecords: Boolean,
+    onBack: () -> Unit,
+    onOpenFilter: () -> Unit,
+    onOpenClear: () -> Unit
+) {
+    val actionShape = RoundedCornerShape(LoonRadii.control)
+    CupertinoNavBar(
+        title = AppStrings.get("requests_screen_title", lang),
+        showBackButton = true,
+        onBack = onBack,
+        actions = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+                        .clip(actionShape)
+                        .iosFocusRing(actionShape)
+                        .iosPressable(onClick = onOpenFilter)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(LoonSpacing.xs)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FilterList,
+                            contentDescription = AppStrings.get("requests_filter_desc", lang),
+                            tint = if (filterActive) IosBlue else LoonTextSecondary,
+                            modifier = Modifier.size(LoonSizes.icon)
+                        )
+                        if (selectedFilter != RequestFilter.ALL) {
+                            Text(
+                                text = AppStrings.get(selectedFilter.labelKey, lang),
+                                color = LoonInfoText,
+                                style = LoonTextStyles.calloutLarge().copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
+                }
+
+                if (hasRecords) {
                     Box(
                         modifier = Modifier
                             .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-                            .clip(RoundedCornerShape(8.dp))
-                            .iosPressable {
-                                haptic.selection()
-                                showFilterActionSheet = true
-                            }
+                            .clip(actionShape)
+                            .iosFocusRing(actionShape)
+                            .iosPressable(onClick = onOpenClear)
                             .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FilterList,
-                                contentDescription = AppStrings.get("requests_filter_desc", lang),
-                                tint = if (filterActive) IosBlue else LoonTextSecondary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            if (selectedFilter != RequestFilter.ALL) {
-                                Text(
-                                    text = AppStrings.get(selectedFilter.labelKey, lang),
-                                    color = IosBlue,
-                                    fontSize = LoonTypeScale.calloutLarge,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-
-                    if (records.isNotEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-                                .clip(RoundedCornerShape(8.dp))
-                                .iosPressable {
-                                    haptic.selection()
-                                    showClearActionSheet = true
-                                }
-                                .padding(horizontal = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = AppStrings.get("action_clear", lang),
-                                color = LoonDangerText,
-                                fontSize = LoonTypeScale.title3,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
+                        Text(
+                            text = AppStrings.get("action_clear", lang),
+                            color = LoonDangerText,
+                            style = LoonTextStyles.button()
+                        )
                     }
                 }
             }
+        }
+    )
+}
+
+@Composable
+private fun RequestLogsListContent(
+    lang: String,
+    searchQuery: String,
+    listData: RequestLogsListData,
+    onSearchQueryChange: (String) -> Unit,
+    onSelectProtocol: (RequestProtocolFilter) -> Unit,
+    onSelectRecord: (Long) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .bounceOverscroll(),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp)
+    ) {
+        requestLogsControlItems(
+            lang = lang,
+            searchQuery = searchQuery,
+            selectedProtocol = listData.selectedProtocol,
+            onSearchQueryChange = onSearchQueryChange,
+            onSelectProtocol = onSelectProtocol
         )
 
-        // Main Scroll Area: Fluid search & Grouped records
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .bounceOverscroll(),
-            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp)
-        ) {
-            // Fluid Search Bar (scrolls smoothly out of screen when browsing down)
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                ) {
-                    CupertinoSearchBar(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = AppStrings.get("requests_search_placeholder", lang)
-                    )
-                }
+        if (listData.filteredRecords.isEmpty()) {
+            item(key = "requests_empty") {
+                RequestLogsEmptyState(lang = lang, searchQuery = searchQuery)
             }
-
-            // Protocol filter row (All / TCP / UDP), coexists with search and status filters
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 2.dp)
-                ) {
-                    CupertinoSegmentedControl(
-                        items = RequestProtocolFilter.entries.toList(),
-                        selectedItem = selectedProtocol,
-                        onItemSelected = { protocol -> selectedProtocol = protocol },
-                        labelProvider = { protocol ->
-                            if (protocol == RequestProtocolFilter.ALL) {
-                                AppStrings.get("requests_protocol_all", lang)
-                            } else {
-                                protocol.name
-                            }
-                        }
-                    )
+        } else {
+            val sectionHeader = resolveRequestSectionHeader(
+                lang = lang,
+                searchQuery = searchQuery,
+                selectedFilter = listData.selectedFilter,
+                selectedApp = listData.selectedApp,
+                filteredCount = listData.filteredRecords.size,
+                activeCount = listData.activeCount
+            )
+            cupertinoGroupedItems(
+                items = listData.filteredRecords,
+                header = sectionHeader,
+                key = { _, record -> record.id },
+                dividerStartIndent = 16.dp
+            ) { _, record ->
+                val formattedTime = remember(record.timestamp, listData.timeFormat) {
+                    listData.timeFormat.format(Instant.ofEpochMilli(record.timestamp))
                 }
-            }
-
-            // List Content or Empty State
-            if (filteredRecords.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 80.dp),
-                        contentAlignment = Alignment.TopCenter
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.SwapVert,
-                                contentDescription = null,
-                                tint = LoonTextMuted.copy(alpha = 0.5f),
-                                modifier = Modifier.size(44.dp)
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = if (searchQuery.isNotBlank()) AppStrings.get("dns_empty_search", lang) else AppStrings.get("requests_empty", lang),
-                                color = LoonTextSecondary,
-                                fontSize = LoonTypeScale.subhead
-                            )
-                        }
-                    }
-                }
-            } else {
-                val appFilter = selectedApp
-                val sectionHeader = when {
-                    searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredRecords.size.toString())
-                    appFilter != null -> "${appFilter.label} (${filteredRecords.size})"
-                    selectedFilter == RequestFilter.ACTIVE -> AppStrings.get("requests_section_active", lang).replace("{n}", filteredRecords.size.toString())
-                    selectedFilter == RequestFilter.PROXY -> AppStrings.get("requests_section_proxy", lang).replace("{n}", filteredRecords.size.toString())
-                    selectedFilter == RequestFilter.DIRECT -> AppStrings.get("requests_section_direct", lang).replace("{n}", filteredRecords.size.toString())
-                    activeCount > 0 -> AppStrings.get("requests_section_all_active", lang).replace("{n}", filteredRecords.size.toString()).replace("{m}", activeCount.toString())
-                    else -> AppStrings.get("requests_section_all", lang).replace("{n}", filteredRecords.size.toString())
-                }
-
-                cupertinoGroupedItems(
-                    items = filteredRecords,
-                    header = sectionHeader,
-                    key = { _, record -> record.id },
-                    dividerStartIndent = 16.dp
-                ) { _, record ->
-                    val formattedTime = remember(record.timestamp) {
-                        timeFormat.format(Instant.ofEpochMilli(record.timestamp))
-                    }
-
-                    RequestRecordCell(
-                        record = record,
-                        formattedTime = formattedTime,
-                        onClick = {
-                            haptic.lightTick()
-                            activeDetailRecordId = record.id
-                        }
-                    )
-                }
+                RequestRecordCell(
+                    record = record,
+                    formattedTime = formattedTime,
+                    onClick = { onSelectRecord(record.id) }
+                )
             }
         }
     }
+}
 
-    // Detail Inspector: Pure iOS CupertinoModalBottomSheet
-    if (activeDetailRecord != null) {
-        val rec = activeDetailRecord
-        val formattedDetailTime = remember(rec.timestamp) {
-            detailTimeFormat.format(Instant.ofEpochMilli(rec.timestamp))
-        }
-
-        CupertinoModalBottomSheet(
-            onDismissRequest = { activeDetailRecordId = null },
-            title = AppStrings.get("requests_detail_title", lang),
-            trailingAction = {
-                if (rec.isActive) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(IosGreen)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = AppStrings.get("requests_status_active", lang),
-                            color = LoonSuccessText,
-                            fontSize = LoonTypeScale.footnote,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                } else {
-                    Text(
-                        text = AppStrings.get("requests_status_closed", lang),
-                        color = LoonTextMuted,
-                        fontSize = LoonTypeScale.footnote
-                    )
-                }
-            }
+private fun LazyListScope.requestLogsControlItems(
+    lang: String,
+    searchQuery: String,
+    selectedProtocol: RequestProtocolFilter,
+    onSearchQueryChange: (String) -> Unit,
+    onSelectProtocol: (RequestProtocolFilter) -> Unit
+) {
+    item(key = "requests_search_bar") {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 8.dp)
-            ) {
-                Spacer(modifier = Modifier.height(6.dp))
+            CupertinoSearchBar(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = AppStrings.get("requests_search_placeholder", lang)
+            )
+        }
+    }
 
-                // Card 1: 目标与网络
-                Text(
-                    text = AppStrings.get("requests_target_section", lang),
-                    fontSize = LoonTypeScale.footnote,
-                    fontWeight = FontWeight.SemiBold,
-                    color = LoonTextSecondary
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(LoonBg)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_host", lang),
-                        value = rec.host,
-                        showCopy = true,
-                        onCopy = {
-                            copyToClipboard(rec.host)
-                            CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val formattedEndpoint = formatHostPort(rec.destinationIp, rec.destinationPort)
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_endpoint", lang),
-                        value = formattedEndpoint,
-                        showCopy = true,
-                        onCopy = {
-                            copyToClipboard(formattedEndpoint)
-                            CupertinoToast.show(AppStrings.get("copied_endpoint_toast", lang))
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_network", lang),
-                        value = rec.network
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Card 2: 分流与策略
-                Text(
-                    text = AppStrings.get("requests_policy_section", lang),
-                    fontSize = LoonTypeScale.footnote,
-                    fontWeight = FontWeight.SemiBold,
-                    color = LoonTextSecondary
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(LoonBg)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    val ruleDescription = if (rec.rulePayload.isNotBlank()) {
-                        "${rec.rule} (${rec.rulePayload})"
+    item(key = "requests_protocol_segment") {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp)
+        ) {
+            CupertinoSegmentedControl(
+                items = RequestProtocolFilter.entries.toList(),
+                selectedItem = selectedProtocol,
+                onItemSelected = onSelectProtocol,
+                labelProvider = { protocol ->
+                    if (protocol == RequestProtocolFilter.ALL) {
+                        AppStrings.get("requests_protocol_all", lang)
                     } else {
-                        rec.rule
-                    }
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_rule", lang),
-                        value = ruleDescription
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_node", lang),
-                        value = rec.outbound,
-                        valueColor = when {
-                            rec.outbound.equals("REJECT", ignoreCase = true) -> LoonDangerText
-                            rec.outbound.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
-                            else -> IosBlue
-                        }
-                    )
-                    if (rec.chain.size > 1) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        CupertinoDetailRow(
-                            label = AppStrings.get("requests_field_chain", lang),
-                            value = rec.chain.joinToString(" ➔ ")
-                        )
+                        protocol.name
                     }
                 }
+            )
+        }
+    }
+}
 
-                Spacer(modifier = Modifier.height(14.dp))
+@Composable
+private fun RequestLogsEmptyState(
+    lang: String,
+    searchQuery: String
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 80.dp),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Default.SwapVert,
+                contentDescription = null,
+                tint = LoonTextMuted.copy(alpha = 0.5f),
+                modifier = Modifier.size(44.dp)
+            )
+            Spacer(modifier = Modifier.height(LoonSpacing.md))
+            Text(
+                text = if (searchQuery.isNotBlank()) AppStrings.get("dns_empty_search", lang)
+                else AppStrings.get("requests_empty", lang),
+                color = LoonTextSecondary,
+                style = LoonTextStyles.body()
+            )
+        }
+    }
+}
 
-                // Card 3: 来源与流量统计
-                Text(
-                    text = AppStrings.get("requests_source_section", lang),
-                    fontSize = LoonTypeScale.footnote,
-                    fontWeight = FontWeight.SemiBold,
-                    color = LoonTextSecondary
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Column(
+private fun resolveRequestSectionHeader(
+    lang: String,
+    searchQuery: String,
+    selectedFilter: RequestFilter,
+    selectedApp: RequestAppOption?,
+    filteredCount: Int,
+    activeCount: Int
+): String = when {
+    searchQuery.isNotBlank() -> AppStrings.get("search_results", lang).replace("{n}", filteredCount.toString())
+    selectedApp != null -> "${selectedApp.label} ($filteredCount)"
+    selectedFilter == RequestFilter.ACTIVE -> AppStrings.get("requests_section_active", lang).replace("{n}", filteredCount.toString())
+    selectedFilter == RequestFilter.PROXY -> AppStrings.get("requests_section_proxy", lang).replace("{n}", filteredCount.toString())
+    selectedFilter == RequestFilter.DIRECT -> AppStrings.get("requests_section_direct", lang).replace("{n}", filteredCount.toString())
+    activeCount > 0 -> AppStrings.get("requests_section_all_active", lang)
+        .replace("{n}", filteredCount.toString())
+        .replace("{m}", activeCount.toString())
+    else -> AppStrings.get("requests_section_all", lang).replace("{n}", filteredCount.toString())
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RequestDetailSheet(
+    record: RequestRecord,
+    lang: String,
+    detailTimeFormat: DateTimeFormatter,
+    onCopy: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val haptic = rememberIosHaptic()
+    val scope = rememberCoroutineScope()
+    var isClosing by remember(record.id) { mutableStateOf(false) }
+    val formattedDetailTime = remember(record.timestamp, detailTimeFormat) {
+        detailTimeFormat.format(Instant.ofEpochMilli(record.timestamp))
+    }
+
+    CupertinoModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = AppStrings.get("requests_detail_title", lang),
+        trailingAction = { RequestDetailTrailingStatus(isActive = record.isActive, lang = lang) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = LoonSpacing.xl)
+                .padding(bottom = LoonSpacing.sm)
+        ) {
+            Spacer(modifier = Modifier.height(6.dp))
+            RequestDetailTargetCard(record = record, lang = lang, onCopy = onCopy)
+            Spacer(modifier = Modifier.height(14.dp))
+            RequestDetailPolicyCard(record = record, lang = lang)
+            Spacer(modifier = Modifier.height(14.dp))
+            RequestDetailSourceCard(
+                record = record,
+                formattedDetailTime = formattedDetailTime,
+                lang = lang
+            )
+
+            if (record.isActive) {
+                Spacer(modifier = Modifier.height(18.dp))
+                val closeShape = RoundedCornerShape(LoonRadii.control)
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(LoonBg)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                ) {
-                    val systemLabel = AppStrings.get("system_app", lang)
-                    val appDisplay = if (!rec.packageName.isNullOrBlank()) {
-                        // The "app (package)" shape is part of the string table.
-                        AppStrings.get("requests_app_with_package", lang)
-                            .replace("{app}", rec.sourceApp.ifBlank { rec.packageName })
-                            .replace("{package}", rec.packageName)
-                    } else {
-                        rec.sourceApp.ifBlank { systemLabel }
-                    }
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_app", lang),
-                        value = appDisplay
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_traffic", lang),
-                        value = AppStrings.get("traffic_up_down", lang)
-                            .replace("{up}", trafficString(rec.uploadBytes))
-                            .replace("{down}", trafficString(rec.downloadBytes))
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_duration", lang),
-                        value = if (rec.isActive) AppStrings.get("requests_status_active", lang) else formatDuration(rec.durationMs, lang)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    CupertinoDetailRow(
-                        label = AppStrings.get("requests_field_time", lang),
-                        value = formattedDetailTime
-                    )
-                }
-
-                // Close Connection Action Button (if connection is active)
-                if (rec.isActive) {
-                    Spacer(modifier = Modifier.height(18.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(RedDanger.copy(alpha = 0.12f))
-                            .iosPressable {
-                                haptic.impact()
-                                val recordId = rec.id
-                                coroutineScope.launch {
-                                    val closed = RequestRepository.closeConnection(recordId)
+                        .heightIn(min = LoonSizes.touchTargetMin)
+                        .clip(closeShape)
+                        .iosFocusRing(closeShape)
+                        .background(LoonDangerText.copy(alpha = 0.12f))
+                        .iosPressable(enabled = !isClosing) {
+                            haptic.impact()
+                            isClosing = true
+                            scope.launch {
+                                try {
+                                    val closed = RequestRepository.closeConnection(record.id)
+                                    isClosing = false
                                     if (closed) {
-                                        activeDetailRecordId = null
+                                        onDismiss()
                                         CupertinoToast.show(AppStrings.get("requests_close_success", lang))
                                     } else {
                                         CupertinoToast.show(
@@ -532,149 +682,315 @@ fun RequestLogsScreen(
                                             isDestructive = true
                                         )
                                     }
+                                } catch (e: CancellationException) {
+                                    isClosing = false
+                                    throw e
                                 }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = AppStrings.get("requests_close_action", lang),
-                            color = LoonDangerText,
-                            fontSize = LoonTypeScale.body,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = AppStrings.get("requests_close_action", lang),
+                        color = LoonDangerText,
+                        style = LoonTextStyles.body().copy(fontWeight = FontWeight.SemiBold)
+                    )
                 }
             }
         }
     }
+}
 
-    // iOS Cupertino Action Sheet for Clearing Records
-    if (showClearActionSheet) {
-        CupertinoActionSheet(
-            onDismissRequest = { showClearActionSheet = false },
-            title = AppStrings.get("requests_clear_title", lang),
-            message = AppStrings.get("requests_clear_message", lang),
-            actions = listOf(
-                CupertinoActionSheetItem(
-                    text = AppStrings.get("requests_clear_closed", lang),
-                    onClick = {
-                        haptic.lightTick()
-                        showClearActionSheet = false
-                        RequestRepository.clearClosed()
-                        CupertinoToast.show(AppStrings.get("requests_cleared_closed_toast", lang))
-                    }
-                ),
-                CupertinoActionSheetItem(
-                    text = AppStrings.get("requests_clear_all", lang),
-                    isDestructive = true,
-                    onClick = {
-                        haptic.impact()
-                        showClearActionSheet = false
-                        RequestRepository.clearAll()
-                        CupertinoToast.show(AppStrings.get("requests_cleared_all_toast", lang), isDestructive = true)
-                    }
-                )
-            ),
-            cancelText = AppStrings.get("cancel", lang)
-        )
-    }
-
-    // iOS Cupertino Action Sheet for Request Filtering
-    if (showFilterActionSheet) {
-        CupertinoActionSheet(
-            onDismissRequest = { showFilterActionSheet = false },
-            title = AppStrings.get("requests_filter_title", lang),
-            message = AppStrings.get("requests_filter_message", lang).replace("{a}", filteredRecords.size.toString()).replace("{b}", records.size.toString()),
-            actions = RequestFilter.entries.map { filter ->
-                val count = when (filter) {
-                    RequestFilter.ALL -> records.size
-                    RequestFilter.ACTIVE -> activeCount
-                    RequestFilter.PROXY -> records.count { !it.outbound.equals("DIRECT", ignoreCase = true) && !it.outbound.equals("REJECT", ignoreCase = true) }
-                    RequestFilter.DIRECT -> records.count { it.outbound.equals("DIRECT", ignoreCase = true) }
-                }
-                CupertinoActionSheetItem(
-                    // The count and the check mark are part of the string table, not
-                    // concatenated onto a translated label.
-                    text = if (filter == selectedFilter) {
-                        AppStrings.get("filter_selected_mark", lang).replace(
-                            "{label}",
-                            AppStrings.get("filter_count", lang)
-                                .replace("{label}", AppStrings.get(filter.labelKey, lang))
-                                .replace("{n}", count.toString())
-                        )
-                    } else {
-                        AppStrings.get("filter_count", lang)
-                            .replace("{label}", AppStrings.get(filter.labelKey, lang))
-                            .replace("{n}", count.toString())
-                    },
-                    onClick = {
-                        haptic.selection()
-                        selectedFilter = filter
-                        showFilterActionSheet = false
-                    }
-                )
-            } + listOf(
-                CupertinoActionSheetItem(
-                    text = AppStrings.get("requests_filter_app", lang) + (selectedApp?.let { " · ${it.label}" } ?: ""),
-                    onClick = {
-                        haptic.selection()
-                        showFilterActionSheet = false
-                        showAppFilterSheet = true
-                    }
-                )
-            ),
-            cancelText = AppStrings.get("cancel", lang)
-        )
-    }
-
-    // App filter sheet: deduped (packageName, sourceApp) entries seen in the current records
-    if (showAppFilterSheet) {
-        val appOptions = remember(records, lang) {
-            buildRequestAppOptions(records, AppStrings.get("system_app", lang))
-        }
-        CupertinoModalBottomSheet(
-            onDismissRequest = { showAppFilterSheet = false },
-            title = AppStrings.get("requests_filter_app", lang),
-            doneText = null
-        ) {
-            LazyColumn(
+@Composable
+private fun RequestDetailTrailingStatus(isActive: Boolean, lang: String) {
+    if (isActive) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 420.dp)
-                    .bounceOverscroll(),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
-            ) {
-                item {
-                    AppFilterOptionRow(
-                        label = AppStrings.get("requests_filter_all_apps", lang),
-                        subtitle = null,
-                        isSelected = selectedApp == null,
-                        onClick = {
-                            haptic.selection()
-                            selectedApp = null
-                            showAppFilterSheet = false
-                        }
-                    )
-                    CupertinoIndentedDivider(startIndent = 16.dp)
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(IosGreen)
+            )
+            Spacer(modifier = Modifier.width(LoonSpacing.xs))
+            Text(
+                text = AppStrings.get("requests_status_active", lang),
+                color = LoonSuccessText,
+                style = LoonTextStyles.subtitleStrong()
+            )
+        }
+    } else {
+        Text(
+            text = AppStrings.get("requests_status_closed", lang),
+            color = LoonTextMuted,
+            style = LoonTextStyles.subtitle()
+        )
+    }
+}
+
+@Composable
+private fun RequestDetailTargetCard(
+    record: RequestRecord,
+    lang: String,
+    onCopy: (String) -> Unit
+) {
+    val formattedEndpoint = formatHostPort(record.destinationIp, record.destinationPort)
+    Text(
+        text = AppStrings.get("requests_target_section", lang),
+        style = LoonTextStyles.subtitleStrong(),
+        color = LoonTextSecondary
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(LoonRadii.control))
+            .background(LoonBg)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(LoonSpacing.sm)
+    ) {
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_host", lang),
+            value = record.host,
+            showCopy = true,
+            onCopy = {
+                onCopy(record.host)
+                CupertinoToast.show(AppStrings.get("dns_copied_domain", lang))
+            }
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_endpoint", lang),
+            value = formattedEndpoint,
+            showCopy = true,
+            onCopy = {
+                onCopy(formattedEndpoint)
+                CupertinoToast.show(AppStrings.get("copied_endpoint_toast", lang))
+            }
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_network", lang),
+            value = record.network
+        )
+    }
+}
+
+@Composable
+private fun RequestDetailPolicyCard(record: RequestRecord, lang: String) {
+    val ruleDescription = if (record.rulePayload.isNotBlank()) {
+        "${record.rule} (${record.rulePayload})"
+    } else {
+        record.rule
+    }
+    Text(
+        text = AppStrings.get("requests_policy_section", lang),
+        style = LoonTextStyles.subtitleStrong(),
+        color = LoonTextSecondary
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(LoonRadii.control))
+            .background(LoonBg)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(LoonSpacing.sm)
+    ) {
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_rule", lang),
+            value = ruleDescription
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_node", lang),
+            value = record.outbound,
+            valueColor = when {
+                record.outbound.equals("REJECT", ignoreCase = true) -> LoonDangerText
+                record.outbound.equals("DIRECT", ignoreCase = true) -> LoonTextSecondary
+                else -> LoonInfoText
+            }
+        )
+        if (record.chain.size > 1) {
+            CupertinoDetailRow(
+                label = AppStrings.get("requests_field_chain", lang),
+                value = record.chain.joinToString(" ➔ ")
+            )
+        }
+    }
+}
+
+@Composable
+private fun RequestDetailSourceCard(
+    record: RequestRecord,
+    formattedDetailTime: String,
+    lang: String
+) {
+    val systemLabel = AppStrings.get("system_app", lang)
+    val appDisplay = if (!record.packageName.isNullOrBlank()) {
+        AppStrings.get("requests_app_with_package", lang)
+            .replace("{app}", record.sourceApp.ifBlank { record.packageName })
+            .replace("{package}", record.packageName)
+    } else {
+        record.sourceApp.ifBlank { systemLabel }
+    }
+
+    Text(
+        text = AppStrings.get("requests_source_section", lang),
+        style = LoonTextStyles.subtitleStrong(),
+        color = LoonTextSecondary
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(LoonRadii.control))
+            .background(LoonBg)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(LoonSpacing.sm)
+    ) {
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_app", lang),
+            value = appDisplay
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_traffic", lang),
+            value = AppStrings.get("traffic_up_down", lang)
+                .replace("{up}", trafficString(record.uploadBytes))
+                .replace("{down}", trafficString(record.downloadBytes))
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_duration", lang),
+            value = if (record.isActive) AppStrings.get("requests_status_active", lang)
+            else formatDuration(record.durationMs, lang)
+        )
+        CupertinoDetailRow(
+            label = AppStrings.get("requests_field_time", lang),
+            value = formattedDetailTime
+        )
+    }
+}
+
+@Composable
+private fun RequestClearActionSheet(
+    lang: String,
+    onDismiss: () -> Unit
+) {
+    val haptic = rememberIosHaptic()
+    CupertinoActionSheet(
+        onDismissRequest = onDismiss,
+        title = AppStrings.get("requests_clear_title", lang),
+        message = AppStrings.get("requests_clear_message", lang),
+        actions = listOf(
+            CupertinoActionSheetItem(
+                text = AppStrings.get("requests_clear_closed", lang),
+                onClick = {
+                    haptic.lightTick()
+                    onDismiss()
+                    RequestRepository.clearClosed()
+                    CupertinoToast.show(AppStrings.get("requests_cleared_closed_toast", lang))
                 }
-                items(
-                    count = appOptions.size,
-                    key = { index -> "${appOptions[index].packageName}|${appOptions[index].label}" }
-                ) { index ->
-                    val option = appOptions[index]
-                    AppFilterOptionRow(
-                        label = option.label,
-                        subtitle = option.packageName,
-                        isSelected = option == selectedApp,
-                        onClick = {
-                            haptic.selection()
-                            selectedApp = option
-                            showAppFilterSheet = false
-                        }
-                    )
-                    if (index < appOptions.lastIndex) {
-                        CupertinoIndentedDivider(startIndent = 16.dp)
-                    }
+            ),
+            CupertinoActionSheetItem(
+                text = AppStrings.get("requests_clear_all", lang),
+                isDestructive = true,
+                onClick = {
+                    haptic.impact()
+                    onDismiss()
+                    RequestRepository.clearAll()
+                    CupertinoToast.show(AppStrings.get("requests_cleared_all_toast", lang), isDestructive = true)
+                }
+            )
+        ),
+        cancelText = AppStrings.get("cancel", lang)
+    )
+}
+
+@Composable
+private fun RequestFilterActionSheet(
+    lang: String,
+    summary: RequestFilterSheetSummary,
+    onSelectFilter: (RequestFilter) -> Unit,
+    onOpenAppFilter: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val filterActions = RequestFilter.entries.map { filter ->
+        val count = when (filter) {
+            RequestFilter.ALL -> summary.recordsSize
+            RequestFilter.ACTIVE -> summary.counts.activeCount
+            RequestFilter.PROXY -> summary.counts.proxyCount
+            RequestFilter.DIRECT -> summary.counts.directCount
+        }
+        val counted = AppStrings.get("filter_count", lang)
+            .replace("{label}", AppStrings.get(filter.labelKey, lang))
+            .replace("{n}", count.toString())
+        CupertinoActionSheetItem(
+            text = if (filter == summary.selectedFilter) {
+                AppStrings.get("filter_selected_mark", lang).replace("{label}", counted)
+            } else {
+                counted
+            },
+            onClick = { onSelectFilter(filter) }
+        )
+    }
+
+    CupertinoActionSheet(
+        onDismissRequest = onDismiss,
+        title = AppStrings.get("requests_filter_title", lang),
+        message = AppStrings.get("requests_filter_message", lang)
+            .replace("{a}", summary.filteredSize.toString())
+            .replace("{b}", summary.recordsSize.toString()),
+        actions = filterActions + CupertinoActionSheetItem(
+            text = AppStrings.get("requests_filter_app", lang) +
+                (summary.selectedApp?.let { app -> " · ${app.label}" } ?: ""),
+            onClick = onOpenAppFilter
+        ),
+        cancelText = AppStrings.get("cancel", lang)
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RequestAppFilterSheet(
+    lang: String,
+    records: List<RequestRecord>,
+    selectedApp: RequestAppOption?,
+    onSelectApp: (RequestAppOption?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val appOptions = remember(records, lang) {
+        buildRequestAppOptions(records, AppStrings.get("system_app", lang))
+    }
+    CupertinoModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = AppStrings.get("requests_filter_app", lang),
+        doneText = null
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .bounceOverscroll(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)
+        ) {
+            item(key = "all_apps") {
+                AppFilterOptionRow(
+                    label = AppStrings.get("requests_filter_all_apps", lang),
+                    subtitle = null,
+                    isSelected = selectedApp == null,
+                    onClick = { onSelectApp(null) }
+                )
+                CupertinoIndentedDivider(startIndent = 16.dp)
+            }
+            items(
+                count = appOptions.size,
+                key = { index -> "${appOptions[index].packageName}|${appOptions[index].label}" }
+            ) { index ->
+                val option = appOptions[index]
+                AppFilterOptionRow(
+                    label = option.label,
+                    subtitle = option.packageName,
+                    isSelected = option == selectedApp,
+                    onClick = { onSelectApp(option) }
+                )
+                if (index < appOptions.lastIndex) {
+                    CupertinoIndentedDivider(startIndent = 16.dp)
                 }
             }
         }
@@ -688,10 +1004,14 @@ internal fun formatHostPort(host: String, port: Int): String {
     return if (port > 0) "$bracketed:$port" else bracketed
 }
 
-/**
- * Pure, high signal-to-noise ratio Request Record Row.
- * Preserves full width for domains, linear typography with middots, zero rectangular tag noise.
- */
+private fun resolveRequestRecordMidText(record: RequestRecord, lang: String): String = when {
+    record.uploadBytes > 0L || record.downloadBytes > 0L -> AppStrings.get("traffic_up_down", lang)
+        .replace("{up}", trafficString(record.uploadBytes))
+        .replace("{down}", trafficString(record.downloadBytes))
+    record.rulePayload.isNotBlank() -> "${record.rule}(${record.rulePayload})"
+    else -> record.rule
+}
+
 @Composable
 private fun RequestRecordCell(
     record: RequestRecord,
@@ -702,22 +1022,22 @@ private fun RequestRecordCell(
     val (outboundColor, outboundText) = when {
         record.outbound.equals("REJECT", ignoreCase = true) -> Pair(LoonDangerText, "REJECT")
         record.outbound.equals("DIRECT", ignoreCase = true) -> Pair(LoonTextSecondary, "DIRECT")
-        else -> Pair(IosBlue, record.outbound)
+        else -> Pair(LoonInfoText, record.outbound)
     }
-
-    val displayHost = if ((record.destinationPort != 443) && (record.destinationPort != 80)) {
+    val displayHost = if (record.destinationPort != 443 && record.destinationPort != 80) {
         formatHostPort(record.host, record.destinationPort)
     } else {
         record.host
     }
+    val midText = resolveRequestRecordMidText(record = record, lang = lang)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = LoonSizes.touchTargetMin)
             .iosPressable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 11.dp)
+            .padding(horizontal = LoonSpacing.lg, vertical = 11.dp)
     ) {
-        // Line 1: Target Endpoint + Outbound Node / Rule policy name
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -726,114 +1046,90 @@ private fun RequestRecordCell(
             Text(
                 text = displayHost,
                 color = LoonTextPrimary,
-                fontSize = LoonTypeScale.body,
-                fontWeight = FontWeight.SemiBold,
+                style = LoonTextStyles.body().copy(fontWeight = FontWeight.SemiBold),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false)
             )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
+            Spacer(modifier = Modifier.width(LoonSpacing.sm))
             Text(
                 text = outboundText,
                 color = outboundColor,
-                fontSize = LoonTypeScale.callout,
-                fontWeight = FontWeight.Medium,
+                style = LoonTextStyles.callout().copy(fontWeight = FontWeight.Medium),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(LoonSpacing.xs))
 
-        // Line 2: Source App · Traffic · Protocol + Active Green Dot or Completion Time
+        RequestRecordBottomRow(
+            record = record,
+            midText = midText,
+            formattedTime = formattedTime,
+            lang = lang
+        )
+    }
+}
+
+@Composable
+private fun RequestRecordBottomRow(
+    record: RequestRecord,
+    midText: String,
+    formattedTime: String,
+    lang: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            modifier = Modifier.weight(1f, fill = false)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f, fill = false)
-            ) {
-                Text(
-                    text = record.sourceApp.ifBlank { AppStrings.get("system_app", lang) },
-                    color = LoonTextSecondary,
-                    fontSize = LoonTypeScale.footnoteLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+            Text(
+                text = record.sourceApp.ifBlank { AppStrings.get("system_app", lang) },
+                color = LoonTextSecondary,
+                style = LoonTextStyles.subtitle(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(text = " · ", color = LoonTextMuted, style = LoonTextStyles.subtitle())
+            Text(
+                text = midText,
+                color = LoonTextSecondary,
+                style = LoonTextStyles.subtitle(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(text = " · ", color = LoonTextMuted, style = LoonTextStyles.subtitle())
+            Text(text = record.network, color = LoonTextMuted, style = LoonTextStyles.subtitle())
+        }
+
+        Spacer(modifier = Modifier.width(LoonSpacing.sm))
+
+        if (record.isActive) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(IosGreen)
                 )
-
+                Spacer(modifier = Modifier.width(LoonSpacing.xs))
                 Text(
-                    text = " · ",
-                    color = LoonTextMuted,
-                    fontSize = LoonTypeScale.footnoteLarge
-                )
-
-                val midText = if (record.uploadBytes > 0L || record.downloadBytes > 0L) {
-                    AppStrings.get("traffic_up_down", lang)
-                        .replace("{up}", trafficString(record.uploadBytes))
-                        .replace("{down}", trafficString(record.downloadBytes))
-                } else if (record.rulePayload.isNotBlank()) {
-                    "${record.rule}(${record.rulePayload})"
-                } else {
-                    record.rule
-                }
-
-                Text(
-                    text = midText,
-                    color = LoonTextSecondary,
-                    fontSize = LoonTypeScale.footnoteLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Text(
-                    text = " · ",
-                    color = LoonTextMuted,
-                    fontSize = LoonTypeScale.footnoteLarge
-                )
-
-                Text(
-                    text = record.network,
-                    color = LoonTextMuted,
-                    fontSize = LoonTypeScale.footnote
+                    text = AppStrings.get("filter_active", lang),
+                    color = LoonSuccessText,
+                    style = LoonTextStyles.subtitle().copy(fontWeight = FontWeight.Medium)
                 )
             }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            if (record.isActive) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(IosGreen)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = AppStrings.get("filter_active", lang),
-                        color = LoonSuccessText,
-                        fontSize = LoonTypeScale.footnote,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            } else {
-                Text(
-                    text = formattedTime,
-                    color = LoonTextMuted,
-                    fontSize = LoonTypeScale.footnote
-                )
-            }
+        } else {
+            Text(text = formattedTime, color = LoonTextMuted, style = LoonTextStyles.subtitle())
         }
     }
 }
 
-/**
- * One selectable row inside the app filter sheet (iOS grouped-list row with check mark).
- */
 @Composable
 private fun AppFilterOptionRow(
     label: String,
@@ -844,25 +1140,27 @@ private fun AppFilterOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = LoonSizes.touchTargetMin)
+            .semantics { selected = isSelected }
             .iosPressable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 11.dp),
+            .padding(horizontal = LoonSpacing.lg, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = label,
-                color = if (isSelected) IosBlue else LoonTextPrimary,
-                fontSize = LoonTypeScale.body,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) LoonInfoText else LoonTextPrimary,
+                style = if (isSelected) LoonTextStyles.body().copy(fontWeight = FontWeight.SemiBold)
+                else LoonTextStyles.body(),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             if (!subtitle.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(LoonSpacing.xxs))
                 Text(
                     text = subtitle,
                     color = LoonTextMuted,
-                    fontSize = LoonTypeScale.captionLarge,
+                    style = LoonTextStyles.subtitle(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -879,15 +1177,16 @@ private fun AppFilterOptionRow(
     }
 }
 
-/**
- * Format duration in milliseconds into human-readable string.
- */
 private fun formatDuration(ms: Long, lang: String): String {
     if (ms <= 0) return AppStrings.get("duration_lt_second", lang)
     val seconds = ms / 1000
     return when {
-        seconds >= 3600 -> AppStrings.get("duration_hm", lang).replace("{h}", (seconds / 3600).toString()).replace("{m}", ((seconds % 3600) / 60).toString())
-        seconds >= 60 -> AppStrings.get("duration_ms", lang).replace("{m}", (seconds / 60).toString()).replace("{s}", (seconds % 60).toString())
+        seconds >= 3600 -> AppStrings.get("duration_hm", lang)
+            .replace("{h}", (seconds / 3600).toString())
+            .replace("{m}", ((seconds % 3600) / 60).toString())
+        seconds >= 60 -> AppStrings.get("duration_ms", lang)
+            .replace("{m}", (seconds / 60).toString())
+            .replace("{s}", (seconds % 60).toString())
         else -> AppStrings.get("duration_s", lang).replace("{s}", seconds.toString())
     }
 }

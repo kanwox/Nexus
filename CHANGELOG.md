@@ -9,6 +9,29 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-11-14
+
+### Added
+
+- **Backup V2 Streaming Encryption & LAN Credential Protection**: Added V2 encrypted backups (`45`-byte AAD, `210,000` PBKDF2 iterations, `16 KB` chunked streaming cipher) while retaining V1 decryption and optional plaintext export/import, and encrypted stored LAN proxy passwords via `LanPasswordCipher` (Android Keystore / AES-256-GCM with `ks1:`/`sw1:` formats).
+- **Tile Launch & Expanded JVM Test Suite**: Added `TileVpnLaunchActivity` for Quick Settings Tile VPN startup reliability and expanded pure-JVM unit tests covering core routing, config validation/scripts, streaming backup encryption, diagnostics redaction, transport/log/DNS repositories, Geo/update verification, `MihomoApi` URL encoding, and UI localization/cache invariants (`44` suites / `353` unit tests).
+
+### Changed
+
+- **Single Offline GeoIP Asset Consolidation**: Removed the bundled duplicate `Country.mmdb` asset so offline Geo resolution relies solely on `geoip.metadb` and `geosite.dat` with protobuf and MaxMind metadata validation on manual updates.
+- **Core, Data & UI Modular Decomposition**: Extracted focused modules (`ProfileStore`, `ConfigValidation`, `ConfigScriptSupport`, `UpdateDownloadManager`, `ProxiesRuntimeCacheStore`, `ProxiesSpeedTestEngine`, `ProxiesSpeedTestHostAdapter`, `MainAppState`, `MainAppBackupDialogs`, `MainAppSubScreens`, `CupertinoFeedback`, `CupertinoModals`) with coroutine cancellation safety and `Locale.ROOT` formatting consistency.
+- **Proxy Group List Mode, Navigation & Motion Polish**:
+  - Kept collapsed and expanded group header right slots aligned at `48dp` minimum touch-target height, unified list-mode group-to-node vertical spacing at `8dp`, and disabled press-scale shrinking on group header cards.
+  - Removed the selected-icon `1.08f` zoom animation from `BottomNavItem` while keeping color and weight transitions.
+  - Added staggered cross-fade transitions (`statusFadeTransform`, respecting `LocalReduceMotion`) for speed-test spinners and latency status text.
+- **Build, Detekt & R8 Configuration**: Upgraded CI workflow permissions, tag-gated release extraction, `:app:detekt` invocation under AGP 9.4.1, `compose-bom:2026.09.00` alignment, stricter `config/detekt/detekt.yml` complexity/coroutine rules, pruned `gradle/verification-metadata.xml` (`462` components), `.gitattributes` LF normalization, and narrowed R8 keep rules with `-dontobfuscate` preserved for readable crash traces.
+
+### Fixed
+
+- **P0 Security, Config Validation & Diagnostics Redaction**: Hardened URL/redirect validation (`UrlValidation`), QuickJS script execution limits (`ConfigScriptEngine`/`ScriptManager`), atomic per-profile writes and Base64 pre-validation (`ConfigManager`/`ProfileStore`), DNS root rule sanitization (`ConfigSanitizer`/`ConfigValidation`), `ProfileParser` bounded regex evaluation and legacy section parsing, and `DiagnosticsExporter` credential/token/IPv6 redaction without corrupting GitHub release download URLs.
+- **VPN Lifecycle, Bridge & Network Tracking**: Fixed `Bridge.assetsReady()` retry recovery when extraction fails, moved cold-start `ClashCore.init` and legacy script migration off the main thread (`MihomoApplication`), replaced deprecated `cm.allNetworks` queries with active non-VPN physical network tracking, filtered TUN loopback DNS addresses, deduplicated network/timezone notifications, and guarded stale health checks and invalid per-app whitelist states (`ClashCore`/`MihomoVpnService`).
+- **Speed Test State Transitions & Repository Consistency**: Synchronized testing-flag clearing with delay cache commits for single-node and group speed tests so loading indicators fade cleanly into measured latencies without intermediate flicker; fixed `ThrottledPublisher` lazy coroutine races, `RequestRepository` stream generation/eviction guards, `LogRepository` bounded disk writes, UI state and scroll stability, and multi-language string parity (`values`, `values-zh`, `values-en`, `values-ru`).
+
 ## [1.0.6] - 2026-11-06
 
 ### Added

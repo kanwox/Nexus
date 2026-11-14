@@ -2,6 +2,7 @@ package com.github.mihomo.android.data
 
 import java.io.File
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * Pure-JVM helper logic for the in-app update integrity verification.
@@ -52,15 +53,27 @@ object UpdateVerifier {
             if (line.length < DIGEST_LENGTH + 2) return@forEach
             val digest = line.take(DIGEST_LENGTH)
             if (!isHex64(digest)) return@forEach
-            val filename = line.substring(DIGEST_LENGTH)
-                .trimStart(' ', '\t')
-                .removePrefix("*")
-                .trimEnd()
+            val separator = line[DIGEST_LENGTH]
+            if (separator != ' ' && separator != '\t') return@forEach
+            val filename = normalizeSumsFileName(line.substring(DIGEST_LENGTH))
             // A digest with no filename is unusable: nothing to look the entry up by.
             if (filename.isEmpty()) return@forEach
-            entries[filename] = digest.lowercase()
+            entries[filename] = digest.lowercase(Locale.ROOT)
         }
         return entries
+    }
+
+    private fun normalizeSumsFileName(rawSuffix: String): String {
+        val stripped = rawSuffix
+            .trimStart(' ', '\t')
+            .removePrefix("*")
+            .trim()
+        val baseName = stripped
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .removePrefix("*")
+            .trim()
+        return if (baseName == "." || baseName == "..") "" else baseName
     }
 
     /**

@@ -1,36 +1,83 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.ui.components
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.LruCache
 import androidx.compose.foundation.Image
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+private class BoundedLruCache<K : Any, V : Any>(private val maxEntries: Int) {
+    private val map = object : LinkedHashMap<K, V>(maxEntries + 1, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean =
+            size > maxEntries
+    }
+
+    @Synchronized
+    fun get(key: K): V? = map[key]
+
+    @Synchronized
+    fun put(key: K, value: V) {
+        map[key] = value
+    }
+
+    @Synchronized
+    fun remove(key: K) {
+        map.remove(key)
+    }
+
+    @Synchronized
+    fun evictAll() {
+        map.clear()
+    }
+}
 
 /**
  * Group icons come from subscription-controlled URLs, i.e. untrusted input. The loader caps
- * the payload and downsamples before decoding so a hostile/huge image cannot OOM the process.
+ * payload bytes, rejects SVG/text documents fast, downsamples bitmaps before decoding, and
+ * records short-lived negative cache entries so failing URLs do not storm the network on scroll.
  */
 object ImageCache {
     private const val MAX_ICON_BYTES = 512 * 1024
     private const val MAX_ICON_DIMEN_PX = 128
     private const val MAX_DISK_ENTRIES = 200
+    private const val NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000L
+    private val ASCII_WHITESPACE = byteArrayOf(
+        ' '.code.toByte(),
+        '\n'.code.toByte(),
+        '\r'.code.toByte(),
+        '\t'.code.toByte()
+    )
 
-    private val memoryCache = LruCache<String, ImageBitmap>(120)
+    private val memoryCache = BoundedLruCache<String, ImageBitmap>(120)
+    private val negativeCache = BoundedLruCache<String, Long>(256)
+    private val diskLock = Any()
+
+    @Volatile
     private var diskCacheDir: File? = null
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -38,40 +85,57 @@ object ImageCache {
         .build()
 
     fun initDiskCache(cacheDir: File) {
-        if (diskCacheDir == null) {
-            diskCacheDir = File(cacheDir, "icon_cache").apply { mkdirs() }
+        if (diskCacheDir != null) return
+        synchronized(diskLock) {
+            if (diskCacheDir == null) {
+                diskCacheDir = File(cacheDir, "icon_cache").apply { mkdirs() }
+            }
         }
     }
 
     private fun getDiskFile(url: String): File? {
         val dir = diskCacheDir ?: return null
-        val hash = MessageDigest.getInstance("MD5")
+        val hash = MessageDigest.getInstance("SHA-256")
             .digest(url.toByteArray())
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { byte -> "%02x".format(Locale.ROOT, byte) }
         return File(dir, "$hash.bin")
     }
 
     fun getMemory(url: String): ImageBitmap? = memoryCache.get(url)
 
+    internal fun isNegativelyCached(url: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val failedAt = negativeCache.get(url) ?: return false
+        if (nowMs - failedAt < NEGATIVE_CACHE_TTL_MS) {
+            return true
+        }
+        negativeCache.remove(url)
+        return false
+    }
+
+    internal fun markFailed(url: String, nowMs: Long = System.currentTimeMillis()) {
+        negativeCache.put(url, nowMs)
+    }
+
+    internal fun clearNegativeCache() {
+        negativeCache.evictAll()
+    }
+
     fun get(url: String): ImageBitmap? {
-        memoryCache.get(url)?.let { return it }
-        val diskFile = getDiskFile(url)
-        if (diskFile != null && diskFile.exists()) {
+        memoryCache.get(url)?.let { cached -> return cached }
+        val diskFile = getDiskFile(url) ?: return null
+        synchronized(diskLock) {
+            if (!diskFile.exists()) return null
             if (diskFile.length() > MAX_ICON_BYTES) {
-                diskFile.delete()
+                runCatching { diskFile.delete() }
                 return null
             }
-            runCatching {
+            val loaded = runCatching {
                 val bytes = diskFile.readBytes()
-                val bitmap = decodeIcon(bytes)
-                if (bitmap != null) {
-                    val imageBitmap = bitmap.asImageBitmap()
-                    memoryCache.put(url, imageBitmap)
-                    return imageBitmap
-                }
-            }
+                decodeIcon(bytes)?.asImageBitmap()
+            }.getOrNull() ?: return null
+            memoryCache.put(url, loaded)
+            return loaded
         }
-        return null
     }
 
     suspend fun load(url: String, context: Context? = null): ImageBitmap? = withContext(Dispatchers.IO) {
@@ -79,36 +143,85 @@ object ImageCache {
         if (diskCacheDir == null && context != null) {
             initDiskCache(context.cacheDir)
         }
-        get(url)?.let { return@withContext it }
+        get(url)?.let { cached -> return@withContext cached }
+        if (isNegativelyCached(url)) return@withContext null
 
-        runCatching {
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0")
-                .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                // okhttp 5 always has a body on a response.
-                val body = resp.body
-                if (body.contentLength() > MAX_ICON_BYTES) return@withContext null
-                val bytes = body.byteStream().use { readCapped(it) } ?: return@withContext null
+        try {
+            fetchAndDecodeIcon(url)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            markFailed(url)
+            null
+        }
+    }
 
-                val bitmap = decodeIcon(bytes) ?: return@withContext null
-                val diskFile = getDiskFile(url)
-                runCatching {
-                    diskFile?.writeBytes(bytes)
-                    pruneDiskCache()
-                }
-                val imageBitmap = bitmap.asImageBitmap()
-                memoryCache.put(url, imageBitmap)
-                imageBitmap
+    private fun fetchAndDecodeIcon(url: String): ImageBitmap? {
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0")
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                markFailed(url)
+                return null
             }
-        }.getOrNull()
+            val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+            if (contentType.contains("svg") || contentType.startsWith("text/")) {
+                markFailed(url)
+                return null
+            }
+            val body = resp.body
+            if (body.contentLength() > MAX_ICON_BYTES) {
+                markFailed(url)
+                return null
+            }
+            val bytes = body.byteStream().use { stream -> readCapped(stream) }
+            if (bytes == null || looksLikeNonBitmapText(bytes)) {
+                markFailed(url)
+                return null
+            }
+            val bitmap = decodeIcon(bytes)
+            if (bitmap == null) {
+                markFailed(url)
+                return null
+            }
+            writeDiskAndPrune(url, bytes)
+            val imageBitmap = bitmap.asImageBitmap()
+            memoryCache.put(url, imageBitmap)
+            return imageBitmap
+        }
+    }
+
+    private fun writeDiskAndPrune(url: String, bytes: ByteArray) {
+        val diskFile = getDiskFile(url) ?: return
+        synchronized(diskLock) {
+            runCatching {
+                diskFile.writeBytes(bytes)
+                pruneDiskCache()
+            }
+        }
+    }
+
+    internal fun looksLikeNonBitmapText(bytes: ByteArray): Boolean {
+        val limit = minOf(bytes.size, 64)
+        var i = 0
+        while (i < limit && bytes[i] in ASCII_WHITESPACE) {
+            i++
+        }
+        if (i >= limit) return true
+        val prefix = bytes.copyOfRange(i, limit).toString(Charsets.UTF_8).lowercase(Locale.ROOT)
+        return prefix.startsWith("<svg") ||
+            prefix.startsWith("<?xml") ||
+            prefix.startsWith("<!doctype") ||
+            prefix.startsWith("<html") ||
+            prefix.startsWith("{") ||
+            prefix.startsWith("[")
     }
 
     /** Reads at most [MAX_ICON_BYTES]; returns null for an oversized payload instead of OOMing. */
     private fun readCapped(input: InputStream): ByteArray? {
-        val out = java.io.ByteArrayOutputStream()
+        val out = ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
         var total = 0
         while (true) {
@@ -141,11 +254,11 @@ object ImageCache {
     /** Keeps the icon cache bounded; oldest files fall out once the entry count is exceeded. */
     private fun pruneDiskCache() {
         val dir = diskCacheDir ?: return
-        val files = dir.listFiles()?.filter { it.isFile } ?: return
+        val files = dir.listFiles()?.filter { file -> file.isFile } ?: return
         if (files.size <= MAX_DISK_ENTRIES) return
-        files.sortedBy { it.lastModified() }
+        files.sortedBy { file -> file.lastModified() }
             .take(files.size - MAX_DISK_ENTRIES)
-            .forEach { runCatching { it.delete() } }
+            .forEach { file -> runCatching { file.delete() } }
     }
 }
 
@@ -158,12 +271,10 @@ fun RemoteIcon(
     if (url.isNullOrBlank()) return
     val context = LocalContext.current
 
-    // Memory-only: a disk read plus BitmapFactory decode in the composition initializer would
-    // block the frame. The LaunchedEffect below performs the (async) load on a miss.
+    // Memory-only: disk I/O and BitmapFactory decode run inside LaunchedEffect on Dispatchers.IO.
     var imageBitmap by remember(url) { mutableStateOf(ImageCache.getMemory(url)) }
 
     LaunchedEffect(url) {
-        ImageCache.initDiskCache(context.cacheDir)
         if (imageBitmap == null) {
             val loaded = ImageCache.load(url, context)
             if (loaded != null) {

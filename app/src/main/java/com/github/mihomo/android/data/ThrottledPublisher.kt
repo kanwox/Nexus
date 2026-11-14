@@ -1,10 +1,16 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,15 +26,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class ThrottledPublisher(
     private val intervalMs: Long,
     private val subscriptionCount: StateFlow<Int>,
+    private val coroutineScope: CoroutineScope,
     private val publish: () -> Unit
 ) {
-    private val scheduled = AtomicBoolean(false)
+    constructor(
+        intervalMs: Long,
+        subscriptionCount: StateFlow<Int>,
+        publish: () -> Unit
+    ) : this(intervalMs, subscriptionCount, scope, publish)
+
+    private val lock = Any()
+    private var scheduledJob: Job? = null
     private val stale = AtomicBoolean(false)
 
     init {
-        scope.launch {
+        coroutineScope.launch {
             subscriptionCount.collect { count ->
-                if (count > 0 && stale.compareAndSet(true, false)) {
+                val shouldPublish = synchronized(lock) {
+                    count > 0 && stale.compareAndSet(true, false)
+                }
+                if (shouldPublish) {
                     publish()
                 }
             }
@@ -40,22 +57,51 @@ internal class ThrottledPublisher(
             publishNow()
             return
         }
-        if (subscriptionCount.value == 0) {
-            stale.set(true)
-            return
-        }
-        if (scheduled.compareAndSet(false, true)) {
-            scope.launch {
-                delay(intervalMs.milliseconds)
-                scheduled.set(false)
-                publish()
-            }
+        val publishImmediately = synchronized(lock) { scheduleOrMarkStaleLocked() }
+        if (publishImmediately) {
+            publish()
         }
     }
 
-    /** Publishes synchronously, used for user-initiated actions such as "clear". */
+    private fun scheduleOrMarkStaleLocked(): Boolean {
+        if (subscriptionCount.value <= 0) {
+            stale.set(true)
+            return subscriptionCount.value > 0 && stale.compareAndSet(true, false)
+        }
+        if (scheduledJob == null) {
+            val timerJob = launchDelayedPublish()
+            scheduledJob = timerJob
+            timerJob.start()
+        }
+        return false
+    }
+
+    private fun launchDelayedPublish(): Job =
+        coroutineScope.launch(start = CoroutineStart.LAZY) {
+            delay(intervalMs.milliseconds)
+            val activeJob = currentCoroutineContext()[Job]
+            if (shouldExecuteScheduledPublish(activeJob)) {
+                publish()
+            }
+        }
+
+    private fun shouldExecuteScheduledPublish(activeJob: Job?): Boolean = synchronized(lock) {
+        if (scheduledJob !== activeJob || !coroutineScope.isActive || activeJob?.isActive != true) {
+            return@synchronized false
+        }
+        scheduledJob = null
+        val hasSubscribers = subscriptionCount.value > 0
+        stale.set(!hasSubscribers)
+        hasSubscribers
+    }
+
+    /** Publishes synchronously and cancels any pending delayed publication. */
     fun publishNow() {
-        stale.set(false)
+        synchronized(lock) {
+            stale.set(false)
+            scheduledJob?.cancel()
+            scheduledJob = null
+        }
         publish()
     }
 
@@ -66,7 +112,7 @@ internal class ThrottledPublisher(
                     Thread.currentThread().stackTrace.any {
                         it.className.startsWith("org.junit.") || it.className.startsWith("org.testng.")
                     }
-            } catch (_: Throwable) {
+            } catch (_: Exception) {
                 false
             }
         }

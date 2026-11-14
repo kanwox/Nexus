@@ -198,4 +198,145 @@ class ProfileParserTest {
         assertEquals(0, parsedNull.totalNodes)
         assertEquals(0, parsedMissing.totalNodes)
     }
+
+    @Test
+    fun `parses legacy uppercase YAML keys Proxy, Proxy Group, and Rule`() = runBlocking {
+        tempFile.writeText(
+            """
+            Proxy:
+              - { Name: "Legacy-HK", Type: ss, server: 1.2.3.4, port: 443 }
+            Proxy Group:
+              - Name: "Legacy-Select"
+                Type: select
+                Proxies:
+                  - Legacy-HK
+                  - DIRECT
+            Rule:
+              - DOMAIN-SUFFIX,example.com,Legacy-Select
+              - MATCH,DIRECT
+            """.trimIndent()
+        )
+
+        val parsed = ProfileParser.parse(tempFile)
+        assertEquals(1, parsed.totalNodes)
+        assertEquals(listOf("Legacy-Select"), parsed.groupNames)
+        assertEquals(
+            listOf("Legacy-HK", "DIRECT"),
+            parsed.groups["Legacy-Select"]?.proxies?.map { it.name }
+        )
+        assertEquals(2, parsed.totalRules)
+        assertEquals("example.com", parsed.rules[0].payload)
+        assertEquals("Legacy-Select", parsed.rules[0].target)
+    }
+
+    @Test
+    fun `fallback parser handles legacy uppercase sections and inline type before name`() = runBlocking {
+        tempFile.writeText(
+            """
+            Proxy:
+              - { type: vmess, name: "Inline-First" }
+               broken : : yaml
+            Proxy Group:
+              - name: "Fallback-Legacy"
+                type: select
+                - Inline-First
+            Rule:
+              - DOMAIN,example.org,Fallback-Legacy
+              - MATCH,DIRECT
+            """.trimIndent()
+        )
+
+        val parsed = ProfileParser.parse(tempFile)
+        assertEquals(1, parsed.totalNodes)
+        assertTrue(parsed.groups.containsKey("Fallback-Legacy"))
+        assertEquals(listOf("Inline-First"), parsed.groups["Fallback-Legacy"]?.proxies?.map { it.name })
+        assertEquals(2, parsed.totalRules)
+        assertEquals("DOMAIN", parsed.rules[0].type)
+        assertEquals("MATCH", parsed.rules[1].type)
+    }
+
+    @Test
+    fun `parseWithOverrides prepends override rules and invalidates cache when overrides change`() = runBlocking {
+        tempFile.writeText(
+            """
+            proxies:
+              - { name: "N1", type: ss }
+            proxy-groups:
+              - name: "Select"
+                type: select
+                proxies: [N1]
+            rules:
+              - MATCH,Select
+            """.trimIndent()
+        )
+
+        val first = ProfileParser.parseWithOverrides(
+            tempFile,
+            overridePrependRules = listOf("DOMAIN,first.test,REJECT")
+        )
+        assertEquals(2, first.totalRules)
+        assertEquals("first.test", first.rules[0].payload)
+        assertEquals("MATCH", first.rules[1].type)
+
+        val second = ProfileParser.parseWithOverrides(
+            tempFile,
+            overridePrependRules = listOf(
+                "DOMAIN,a.test,DIRECT",
+                "IP-CIDR,1.1.1.0/24,REJECT,no-resolve"
+            )
+        )
+        assertEquals(3, second.totalRules)
+        assertEquals("a.test", second.rules[0].payload)
+        assertTrue(second.rules[1].noResolve)
+        assertEquals("MATCH", second.rules[2].type)
+    }
+
+    @Test
+    fun `parses rule payloads with nested parentheses without splitting inner commas`() = runBlocking {
+        tempFile.writeText(
+            """
+            proxies:
+              - { name: "N1", type: ss }
+            rules:
+              - AND,((DOMAIN,a.com),(NETWORK,tcp)),N1,no-resolve
+            """.trimIndent()
+        )
+
+        val parsed = ProfileParser.parse(tempFile)
+        assertEquals(1, parsed.totalRules)
+        val rule = parsed.rules.single()
+        assertEquals("AND", rule.type)
+        assertEquals("((DOMAIN,a.com),(NETWORK,tcp))", rule.payload)
+        assertEquals("N1", rule.target)
+        assertTrue(rule.noResolve)
+    }
+
+    @Test
+    fun `compileSafeRegex rejects oversized or malformed patterns`() {
+        org.junit.Assert.assertNull(ProfileParser.compileSafeRegex("a".repeat(600)))
+        org.junit.Assert.assertNull(ProfileParser.compileSafeRegex("[unclosed"))
+        org.junit.Assert.assertNull(ProfileParser.compileSafeRegex("   "))
+        assertNotNull(ProfileParser.compileSafeRegex("HK|SG"))
+    }
+
+    @Test
+    fun `safeRegexContains aborts catastrophic backtracking without hanging`() {
+        val evilRegex = Regex("^(a+)+$")
+        val evilInput = "a".repeat(32) + "!"
+
+        val startMs = System.currentTimeMillis()
+        val matched = ProfileParser.safeRegexContains(
+            regex = evilRegex,
+            input = evilInput,
+            timeoutMs = 25L,
+            maxCharAccesses = 10_000
+        )
+        val elapsedMs = System.currentTimeMillis() - startMs
+
+        assertFalse(matched)
+        assertTrue("ReDoS guard took unexpectedly long: ${elapsedMs}ms", elapsedMs < 2_000L)
+
+        val safeRegex = requireNotNull(ProfileParser.compileSafeRegex("^HK"))
+        assertTrue(ProfileParser.safeRegexContains(safeRegex, "HK" + "x".repeat(5000)))
+    }
 }

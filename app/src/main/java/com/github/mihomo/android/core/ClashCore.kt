@@ -1,11 +1,16 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.core
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.util.Log
+import com.github.kr328.clash.common.Global
 import com.github.kr328.clash.core.bridge.Bridge
 import com.github.kr328.clash.core.bridge.ClashException
 import com.github.kr328.clash.core.bridge.LogcatInterface
@@ -14,11 +19,18 @@ import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.kr328.clash.core.model.ProxySort
 import com.github.kr328.clash.core.model.Traffic
 import com.github.kr328.clash.core.model.TunnelState
-import kotlinx.coroutines.CompletableDeferred
+import com.github.mihomo.android.MihomoApplication
+import com.github.mihomo.android.data.ConfigManager
+import com.github.mihomo.android.data.LogRepository
+import com.github.mihomo.android.data.SettingsManager
+import java.io.File
+import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -27,46 +39,232 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+
+private const val CORE_TAG = "ClashCore"
+internal const val DEFAULT_FALLBACK_DNS = "223.5.5.5,119.29.29.29"
+internal const val HEALTH_CHECK_TIMEOUT_MS = 8_000L
+internal const val HEALTH_CHECK_STALE_MS = 16_000L
+private const val HEALTH_CHECK_POLL_INTERVAL_MS = 200L
+private const val PROXY_DELAY_POLL_INTERVAL_MS = 150L
+private const val LOAD_TIMEOUT_MS = 20_000L
+private const val ASSETS_READY_TIMEOUT_MS = 120_000L
+private const val MAX_VALID_DELAY_MS = 65534
+
+private val TUN_IPV6_ADDRESS_BYTES = parseIpv6LiteralBytes(TunConfig.IPV6_ADDRESS)
+private val TUN_IPV6_PORTAL_BYTES = parseIpv6LiteralBytes(TunConfig.IPV6_PORTAL)
+
+private data class ActiveHealthCheck(
+    val deferred: CompletableDeferred<Unit>,
+    val startedAtMs: Long,
+)
+
+private data class InFlightLoad(
+    val configDir: String,
+    val deferred: CompletableDeferred<Unit>,
+)
+
+internal fun isTunnelAddress(address: String): Boolean {
+    val normalized = address.trim()
+    if (normalized.isEmpty()) return true
+    if (normalized == TunConfig.IPV4_PORTAL || normalized == TunConfig.IPV4_ADDRESS) return true
+    if (normalized.contains(':')) {
+        val parsed = parseIpv6LiteralBytes(normalized)
+        if (parsed != null &&
+            (parsed.contentEquals(TUN_IPV6_PORTAL_BYTES) || parsed.contentEquals(TUN_IPV6_ADDRESS_BYTES))
+        ) {
+            return true
+        }
+        return normalized.equals(TunConfig.IPV6_PORTAL, ignoreCase = true) ||
+            normalized.equals(TunConfig.IPV6_ADDRESS, ignoreCase = true)
+    }
+    return false
+}
+
+internal fun selectDnsServerString(
+    rawAddresses: List<String>,
+    previousDns: String?,
+    fallbackDns: String = DEFAULT_FALLBACK_DNS,
+): String {
+    val sanitized = rawAddresses
+        .map { it.trim() }
+        .filter { !isTunnelAddress(it) }
+        .distinct()
+    return when {
+        sanitized.isNotEmpty() -> sanitized.joinToString(",")
+        !previousDns.isNullOrBlank() -> previousDns
+        else -> fallbackDns
+    }
+}
+
+internal fun isHealthCheckReusable(
+    isCompleted: Boolean,
+    startedAtMs: Long,
+    nowMs: Long,
+    staleThresholdMs: Long = HEALTH_CHECK_STALE_MS,
+): Boolean = !isCompleted && (nowMs - startedAtMs) in 0 until staleThresholdMs
+
+private fun createTunCallback(vpnService: VpnService, cm: ConnectivityManager?): TunInterface =
+    object : TunInterface {
+        override fun markSocket(fd: Int) {
+            vpnService.protect(fd)
+        }
+
+        override fun querySocketUid(protocol: Int, source: String, target: String): Int =
+            resolveConnectionOwnerUid(cm, protocol, source, target)
+    }
+
+private fun isNonVpnInternetNetwork(cm: ConnectivityManager, network: Network): Boolean {
+    val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull() ?: return false
+    return !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
+private fun resolveLinkPropertiesForNetwork(cm: ConnectivityManager, physical: Network?): LinkProperties? {
+    if (physical != null) {
+        return cm.getLinkProperties(physical)
+    }
+    val active = cm.activeNetwork ?: return null
+    val activeCaps = runCatching { cm.getNetworkCapabilities(active) }.getOrNull() ?: return null
+    return if (!activeCaps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+        cm.getLinkProperties(active)
+    } else {
+        null
+    }
+}
+
+private fun wrapClashFailure(message: String, error: Throwable): ClashException =
+    error as? ClashException ?: ClashException(message, error)
+
+private fun completeDeferredSafely(deferred: CompletableDeferred<Unit>, error: Throwable? = null) {
+    try {
+        if (error != null) {
+            deferred.completeExceptionally(error)
+        } else {
+            deferred.complete(Unit)
+        }
+    } catch (_: IllegalStateException) {
+        // Already completed or cancelled: nothing left to do.
+    }
+}
+
+private suspend fun awaitAssetsExtractionReady() {
+    val failure: ClashException? = try {
+        val finished = withTimeoutOrNull(ASSETS_READY_TIMEOUT_MS.milliseconds) {
+            Bridge.assetsReady()
+            true
+        }
+        if (finished == null) {
+            ClashException("Timed out waiting for the geo database assets to be extracted")
+        } else {
+            null
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        wrapClashFailure("Failed to prepare the geo database assets", e)
+    }
+    if (failure != null) throw failure
+}
+
+private suspend fun awaitPreviousLoadDeferred(deferred: CompletableDeferred<Unit>) {
+    try {
+        deferred.await()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Throwable) {
+        // Previous native load failed; Go core is idle for the next load.
+    }
+}
+
+private suspend fun awaitNativeLoadCompletion(configDir: String, deferred: CompletableDeferred<Unit>) {
+    val failure: ClashException? = try {
+        val finished = withTimeoutOrNull(LOAD_TIMEOUT_MS.milliseconds) {
+            deferred.await()
+            true
+        }
+        if (finished == null) {
+            ClashException("Timed out loading the configuration from $configDir")
+        } else {
+            null
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        wrapClashFailure("Failed to load the configuration from $configDir", e)
+    }
+    if (failure != null) throw failure
+}
+
+private suspend fun pollGroupHealthProgress(
+    groupName: String,
+    deferred: CompletableDeferred<Unit>,
+    initialDelays: Map<String, Int>,
+    reported: MutableSet<String>,
+    groupFetcher: (String) -> ProxyGroup?,
+    onProgress: (String, Int) -> Unit,
+) {
+    while (currentCoroutineContext().isActive && !deferred.isCompleted) {
+        delay(HEALTH_CHECK_POLL_INTERVAL_MS.milliseconds)
+        val proxies = groupFetcher(groupName)?.proxies ?: emptyList()
+        for (p in proxies) {
+            val newDelay = p.delay
+            if (newDelay in 1..MAX_VALID_DELAY_MS && initialDelays[p.name] != newDelay && reported.add(p.name)) {
+                onProgress(p.name, newDelay)
+            }
+        }
+        if (proxies.isNotEmpty() && reported.size >= proxies.size) {
+            break
+        }
+    }
+}
+
+private fun buildGroupHealthResult(
+    group: ProxyGroup?,
+    reported: MutableSet<String>,
+    onProgress: ((String, Int) -> Unit)?,
+): Map<String, Int> {
+    val result = mutableMapOf<String, Int>()
+    group?.proxies?.forEach { p ->
+        val d = when {
+            p.delay in 1..MAX_VALID_DELAY_MS -> p.delay
+            p.name.equals("DIRECT", ignoreCase = true) -> 0
+            else -> -2
+        }
+        result[p.name] = d
+        if (reported.add(p.name)) {
+            onProgress?.invoke(p.name, d)
+        }
+    }
+    return result
+}
 
 object ClashCore {
-    private const val TAG = "ClashCore"
-    private const val LOAD_TIMEOUT_MS = 20_000L
-    private const val HEALTH_CHECK_TIMEOUT_MS = 8_000L
-    private const val ASSETS_READY_TIMEOUT_MS = 120_000L
-
-    /**
-     * Serializes config loads.
-     *
-     * `load()` is reachable from multiple independent sources (the UI's reload path, the
-     * subscription worker and the VPN service's start path). Two overlapping
-     * `Bridge.nativeLoad` calls rebuild the Go core's config state concurrently and the
-     * second `CompletableDeferred` can be completed by the *first* load's native callback,
-     * which leaves the core and the caller disagreeing about which config is live.
-     */
     private val loadLock = Mutex()
-
-    /** Serializes config preparation (`prepareConfig`) + `load()` + selector restoration. */
     private val configPipelineLock = Mutex()
-
-    private data class InFlightLoad(
-        val configDir: String,
-        val deferred: CompletableDeferred<Unit>,
-    )
 
     @Volatile
     private var inFlightLoad: InFlightLoad? = null
 
-    private val activeGroupChecks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val activeGroupChecks = ConcurrentHashMap<String, ActiveHealthCheck>()
 
     @Volatile
     private var loadedProfileId: String? = null
+
+    @Volatile
+    private var trackedPhysicalNetwork: Network? = null
+
+    @Volatile
+    private var lastNotifiedDns: String? = null
+
+    @Volatile
+    private var lastNotifiedTzId: String? = null
+
+    @Volatile
+    private var lastNotifiedTzOffsetSec: Int? = null
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -80,39 +278,50 @@ object ClashCore {
     var isCoreLoaded = false
         private set
 
-    fun notifyNetworkChanged(context: Context) {
+    fun updateTrackedPhysicalNetwork(network: Network?) {
+        trackedPhysicalNetwork = network
+    }
+
+    private fun resolvePhysicalNetwork(cm: ConnectivityManager): Network? {
+        val active = cm.activeNetwork
+        if (active != null && isNonVpnInternetNetwork(cm, active)) {
+            trackedPhysicalNetwork = active
+            return active
+        }
+        val tracked = trackedPhysicalNetwork
+        if (tracked != null && isNonVpnInternetNetwork(cm, tracked)) {
+            return tracked
+        }
+        return null
+    }
+
+    fun notifyNetworkChanged(context: Context, force: Boolean = false) {
+        if (!ensureInitializedIfPossible(context)) return
         runCatching {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             if (cm == null) {
-                Log.w(TAG, "No ConnectivityManager; keeping the previous DNS configuration")
+                Log.w(CORE_TAG, "No ConnectivityManager; keeping the previous DNS configuration")
                 return@runCatching
             }
-            // While the tunnel is up, `activeNetwork` IS the VPN interface, so asking it for
-            // the DNS servers would tell the core that "the physical DNS server" is the
-            // tunnel's own portal address (172.19.0.2) — a self-reference that breaks
-            // resolution. Enumerate the physical networks instead and pick the first one
-            // that is not a VPN transport.
-            @Suppress("DEPRECATION")
-            val physical = cm.allNetworks.firstOrNull { net ->
-                val caps = runCatching { cm.getNetworkCapabilities(net) }.getOrNull()
-                caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            val physical = resolvePhysicalNetwork(cm)
+            val linkProps = resolveLinkPropertiesForNetwork(cm, physical)
+            val rawDns = linkProps?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
+            val dnsStr = selectDnsServerString(rawDns, lastNotifiedDns)
+            if (force || dnsStr != lastNotifiedDns) {
+                Bridge.nativeNotifyDnsChanged(dnsStr)
+                lastNotifiedDns = dnsStr
+                Log.i(CORE_TAG, "Notified native core DNS: $dnsStr")
             }
-            // Fall back to the active network when no physical one could be identified
-            // (e.g. a device that only exposes the VPN transport).
-            val linkProps = cm.getLinkProperties(physical ?: cm.activeNetwork)
-            // Both A and AAAA records are reported: on IPv6-only networks dropping the v6
-            // servers used to force a fallback to hardcoded resolvers that may be unreachable.
-            val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
-            val dnsStr = if (dnsServers.isNotEmpty()) dnsServers.joinToString(",") else "223.5.5.5,119.29.29.29"
-            Bridge.nativeNotifyDnsChanged(dnsStr)
-            Bridge.nativeNotifyTimeZoneChanged(
-                java.util.TimeZone.getDefault().id,
-                java.util.TimeZone.getDefault().rawOffset / 1000
-            )
-            Log.i(TAG, "Notified native core DNS: $dnsStr")
+            val tz = TimeZone.getDefault()
+            val tzId = tz.id
+            val tzOffsetSec = tz.rawOffset / 1000
+            if (force || tzId != lastNotifiedTzId || tzOffsetSec != lastNotifiedTzOffsetSec) {
+                Bridge.nativeNotifyTimeZoneChanged(tzId, tzOffsetSec)
+                lastNotifiedTzId = tzId
+                lastNotifiedTzOffsetSec = tzOffsetSec
+            }
         }.onFailure {
-            Log.w(TAG, "Failed to notify DNS to native core", it)
+            Log.w(CORE_TAG, "Failed to notify DNS to native core", it)
         }
     }
 
@@ -120,30 +329,50 @@ object ClashCore {
     @Synchronized
     fun init(context: Context) {
         if (initialized) return
-        // Bridge.init() loads the native libraries and runs nativeInit; either can throw
-        // (e.g. libclash.so is missing on an unsupported ABI). The flag is only set once
-        // every risky step succeeded, so a later call can retry instead of silently
-        // operating against a core that never came up.
         Bridge.init(context)
         runCatching {
             Bridge.nativeSubscribeLogcat(object : LogcatInterface {
                 override fun received(jsonPayload: String) {
-                    com.github.mihomo.android.data.LogRepository.addRawLogcat(jsonPayload)
+                    LogRepository.addRawLogcat(jsonPayload)
                 }
             })
         }.onFailure {
-            // Losing the logcat stream is not fatal — the core still works — but it must not
-            // leave the core in a half-initialized state.
-            Log.w(TAG, "Failed to subscribe to the native logcat stream", it)
+            Log.w(CORE_TAG, "Failed to subscribe to the native logcat stream", it)
         }
         initialized = true
-        notifyNetworkChanged(context)
-        Log.i(TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
+        notifyNetworkChanged(context, force = true)
+        Log.i(CORE_TAG, "Mihomo Core initialized. Version: ${getCoreVersion()}")
+    }
+
+    private fun ensureInitializedIfPossible(context: Context? = null): Boolean {
+        if (initialized) return true
+        if (MihomoApplication.isDebuggable() && MihomoApplication.isEmulator()) {
+            return false
+        }
+        val targetContext = context?.applicationContext
+            ?: runCatching { Global.application }.getOrNull()
+            ?: return false
+        return runCatching {
+            init(targetContext)
+            initialized
+        }.getOrDefault(false)
     }
 
     @Suppress("unused")
     suspend fun ensureInitialized(context: Context) = withContext(Dispatchers.IO) {
         init(context)
+    }
+
+    private fun restoreSavedSelectors(context: Context, profileId: String?) {
+        runCatching {
+            val settings = SettingsManager(context)
+            val allSaved = settings.getSelectedNodesForProfile(profileId ?: "")
+            allSaved.forEach { (gName, sNode) ->
+                patchSelector(gName, sNode)
+            }
+        }.onFailure {
+            Log.w(CORE_TAG, "Failed to restore saved selectors for profile $profileId", it)
+        }
     }
 
     suspend fun prepareAndLoadProfile(
@@ -154,17 +383,11 @@ object ClashCore {
         withContext(Dispatchers.IO) {
             try {
                 init(context)
-                val configFile = com.github.mihomo.android.data.ConfigManager.prepareConfig(context, profileFile)
+                val configFile = ConfigManager.prepareConfig(context, profileFile)
                 val res = load(configFile, profileId)
                 if (res.isSuccess) {
-                    runCatching {
-                        val settings = com.github.mihomo.android.data.SettingsManager(context)
-                        val allSaved = settings.getSelectedNodesForProfile(profileId ?: "")
-                        allSaved.forEach { (gName, sNode) ->
-                            patchSelector(gName, sNode)
-                        }
-                    }
-                    notifyNetworkChanged(context)
+                    restoreSavedSelectors(context, profileId)
+                    notifyNetworkChanged(context, force = true)
                 }
                 res
             } catch (e: CancellationException) {
@@ -179,8 +402,8 @@ object ClashCore {
     suspend fun reloadActiveConfig(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
             init(context)
-            val settings = com.github.mihomo.android.data.SettingsManager(context)
-            val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
+            val settings = SettingsManager(context)
+            val profiles = ConfigManager.getProfiles(context)
             val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
             prepareAndLoadProfile(context, activeProfile?.file, activeProfile?.id).isSuccess
         } catch (e: CancellationException) {
@@ -192,8 +415,8 @@ object ClashCore {
     }
 
     suspend fun ensureCoreLoaded(context: Context): Boolean = withContext(Dispatchers.IO) {
-        val settings = com.github.mihomo.android.data.SettingsManager(context)
-        val profiles = com.github.mihomo.android.data.ConfigManager.getProfiles(context)
+        val settings = SettingsManager(context)
+        val profiles = ConfigManager.getProfiles(context)
         val activeProfile = profiles.firstOrNull { it.id == settings.selectedProfileId } ?: profiles.firstOrNull()
         if (isCoreLoaded && activeProfile?.id == loadedProfileId) {
             notifyNetworkChanged(context)
@@ -203,25 +426,13 @@ object ClashCore {
     }
 
     fun getCoreVersion(): String {
+        if (!ensureInitializedIfPossible()) return "Unknown (uninitialized)"
         return try {
             Bridge.nativeCoreVersion()
         } catch (e: Throwable) {
+            Log.w(CORE_TAG, "Failed to query core version", e)
             "Unknown (${e.message})"
         }
-    }
-
-    private suspend fun awaitAssetsReady() {
-        val failure: ClashException? = try {
-            withTimeout(ASSETS_READY_TIMEOUT_MS.milliseconds) { Bridge.assetsReady() }
-            null
-        } catch (e: TimeoutCancellationException) {
-            ClashException("Timed out waiting for the geo database assets to be extracted", e)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            wrapClashFailure("Failed to prepare the geo database assets", e)
-        }
-        if (failure != null) throw failure
     }
 
     private suspend fun awaitInFlightNativeLoad() {
@@ -230,21 +441,12 @@ object ClashCore {
             inFlightLoad = null
             return
         }
-        try {
-            withTimeout(LOAD_TIMEOUT_MS.milliseconds) {
-                try {
-                    previous.deferred.await()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                    // Previous native load failed; Go core is idle for the next load.
-                }
-            }
-        } catch (e: TimeoutCancellationException) {
-            throw ClashException(
-                "Timed out waiting for the previous configuration load from ${previous.configDir}",
-                e
-            )
+        val finished = withTimeoutOrNull(LOAD_TIMEOUT_MS.milliseconds) {
+            awaitPreviousLoadDeferred(previous.deferred)
+            true
+        }
+        if (finished == null) {
+            throw ClashException("Timed out waiting for the previous configuration load from ${previous.configDir}")
         }
         if (previous.deferred.isCompleted && inFlightLoad === previous) {
             inFlightLoad = null
@@ -264,36 +466,17 @@ object ClashCore {
             Bridge.nativeLoad(deferred, configDir)
         } catch (e: Throwable) {
             val failure = ClashException("Failed to load the configuration from $configDir", e)
-            completeSafely(deferred, failure)
+            completeDeferredSafely(deferred, failure)
             throw failure
         }
         return deferred
     }
 
-    private suspend fun awaitNativeLoad(configDir: String, deferred: CompletableDeferred<Unit>) {
-        val failure: ClashException? = try {
-            withTimeout(LOAD_TIMEOUT_MS.milliseconds) { deferred.await() }
-            null
-        } catch (e: TimeoutCancellationException) {
-            ClashException("Timed out loading the configuration from $configDir", e)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            wrapClashFailure("Failed to load the configuration from $configDir", e)
-        }
-        if (failure != null) throw failure
-    }
-
-    private fun wrapClashFailure(message: String, error: Throwable): ClashException =
-        error as? ClashException ?: ClashException(message, error)
-
     suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = loadLock.withLock {
         withContext(Dispatchers.IO) {
             try {
-                // Wait for geo asset extraction before nativeLoad reads the clash home directory.
-                awaitAssetsReady()
-                // If an earlier nativeLoad timed out or was cancelled, Go may still be running it;
-                // wait for it to settle before invoking Bridge.nativeLoad again.
+                ensureInitializedIfPossible()
+                awaitAssetsExtractionReady()
                 awaitInFlightNativeLoad()
 
                 val configDir = if (configFile.isDirectory) {
@@ -301,9 +484,9 @@ object ClashCore {
                 } else {
                     configFile.parentFile?.absolutePath ?: configFile.absolutePath
                 }
-                Log.i(TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
+                Log.i(CORE_TAG, "Loading core config from directory: $configDir (target file: ${configFile.name})")
                 val deferred = startNativeLoad(configDir)
-                awaitNativeLoad(configDir, deferred)
+                awaitNativeLoadCompletion(configDir, deferred)
                 activeGroupChecks.clear()
                 isCoreLoaded = true
                 if (profileId != null) {
@@ -321,64 +504,47 @@ object ClashCore {
 
     fun setSuspended(suspended: Boolean) {
         if (!initialized) return
-        runCatching {
-            Bridge.nativeSuspend(suspended)
-        }
+        runCatching { Bridge.nativeSuspend(suspended) }
     }
 
     fun startTun(
         fd: Int,
         stack: String = "mips",
-        // Defaults come from TunConfig so the address plan handed to the core can never
-        // drift away from the one the VPN service assigns to the interface.
         gateway: String = TunConfig.GATEWAY,
         portal: String = TunConfig.PORTAL,
         dns: String = TunConfig.DNS,
-        vpnService: VpnService
+        vpnService: VpnService,
     ) {
+        ensureInitializedIfPossible(vpnService)
         val effectiveStack = if (stack.equals("gvisor", ignoreCase = true)) "gvisor" else "mips"
-        Log.i(TAG, "Starting TUN with fd=$fd, stack=$effectiveStack (configured=$stack)")
+        Log.i(CORE_TAG, "Starting TUN with fd=$fd, stack=$effectiveStack (configured=$stack)")
         val cm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             vpnService.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        } else null
-
-        Bridge.nativeStartTun(fd, effectiveStack, gateway, portal, dns, object : TunInterface {
-            override fun markSocket(fd: Int) {
-                vpnService.protect(fd)
-            }
-
-            override fun querySocketUid(protocol: Int, source: String, target: String): Int {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && cm != null) {
-                    try {
-                        // Shared parser: see parseHostPort in TunConfig.kt.
-                        val srcAddr = parseHostPort(source)
-                        val dstAddr = parseHostPort(target)
-                        if (srcAddr != null && dstAddr != null) {
-                            return cm.getConnectionOwnerUid(protocol, srcAddr, dstAddr)
-                        }
-                    } catch (_: Throwable) {
-                    }
-                }
-                return 0
-            }
-        })
+        } else {
+            null
+        }
+        Bridge.nativeStartTun(fd, effectiveStack, gateway, portal, dns, createTunCallback(vpnService, cm))
     }
 
     fun stopTun() {
-        Log.i(TAG, "Stopping TUN")
+        if (!initialized) return
+        Log.i(CORE_TAG, "Stopping TUN")
         runCatching { Bridge.nativeStopTun() }
     }
 
     fun queryTrafficNow(): Traffic {
+        if (!initialized) return 0L
         return runCatching { Bridge.nativeQueryTrafficNow() }.getOrDefault(0L)
     }
 
     fun queryTrafficTotal(): Traffic {
+        if (!initialized) return 0L
         return runCatching { Bridge.nativeQueryTrafficTotal() }.getOrDefault(0L)
     }
 
     @Suppress("unused")
     fun queryTunnelState(): TunnelState {
+        if (!ensureInitializedIfPossible()) return TunnelState("rule")
         return runCatching {
             val res = Bridge.nativeQueryTunnelState()
             json.decodeFromString<TunnelState>(res)
@@ -386,141 +552,121 @@ object ClashCore {
     }
 
     fun queryGroupNames(excludeNotSelectable: Boolean = false): List<String> {
+        if (!ensureInitializedIfPossible()) return emptyList()
         return runCatching {
             val raw = Bridge.nativeQueryGroupNames(excludeNotSelectable)
             val array = json.decodeFromString<JsonArray>(raw)
-            array.mapNotNull { it.jsonPrimitive.content }
+            array.map { it.jsonPrimitive.content }
         }.getOrDefault(emptyList())
     }
 
     fun queryGroup(name: String, sort: ProxySort = ProxySort.Default): ProxyGroup? {
+        if (!ensureInitializedIfPossible()) return null
         return runCatching {
             val raw = Bridge.nativeQueryGroup(name, sort.name)
             if (!raw.isNullOrEmpty()) {
                 json.decodeFromString<ProxyGroup>(raw)
-            } else null
+            } else {
+                null
+            }
         }.getOrNull()
     }
 
     fun patchSelector(selector: String, name: String): Boolean {
-        return runCatching {
-            Bridge.nativePatchSelector(selector, name)
-        }.getOrDefault(false)
+        if (!ensureInitializedIfPossible()) return false
+        return runCatching { Bridge.nativePatchSelector(selector, name) }.getOrDefault(false)
+    }
+
+    private fun evictStaleHealthChecks(nowMs: Long) {
+        activeGroupChecks.entries.removeIf { entry ->
+            !isHealthCheckReusable(entry.value.deferred.isCompleted, entry.value.startedAtMs, nowMs)
+        }
+    }
+
+    private fun removeCompletedGroupCheck(groupName: String, deferred: CompletableDeferred<Unit>) {
+        if (deferred.isCompleted) {
+            activeGroupChecks.entries.removeIf { entry ->
+                entry.key == groupName && entry.value.deferred === deferred
+            }
+        }
     }
 
     private fun getOrStartGroupHealthCheck(groupName: String): CompletableDeferred<Unit> {
-        return activeGroupChecks.compute(groupName) { _, existing ->
-            if (existing != null && !existing.isCompleted) {
+        ensureInitializedIfPossible()
+        val nowMs = System.currentTimeMillis()
+        evictStaleHealthChecks(nowMs)
+        var resolvedEntry: ActiveHealthCheck? = null
+        activeGroupChecks.compute(groupName) { _, existing ->
+            val nextEntry = if (
+                existing != null &&
+                isHealthCheckReusable(existing.deferred.isCompleted, existing.startedAtMs, nowMs)
+            ) {
                 existing
             } else {
-                CompletableDeferred<Unit>().also { deferred ->
-                    deferred.invokeOnCompletion {
-                        activeGroupChecks.remove(groupName, deferred)
-                    }
-                    runCatching {
-                        Bridge.nativeHealthCheck(deferred, groupName)
-                    }.onFailure { error ->
-                        // The native call failed outright, so no callback will ever complete
-                        // this deferred: release the waiters with a failure instead of
-                        // leaving them blocked until their own timeout.
-                        completeSafely(
-                            deferred,
-                            ClashException("Failed to start the health check for group '$groupName'", error)
-                        )
-                    }
-                }
+                createAndStartHealthCheck(groupName, nowMs)
             }
-        }!!
+            resolvedEntry = nextEntry
+            nextEntry
+        }
+        return checkNotNull(resolvedEntry).deferred
     }
 
-    /**
-     * Completes a deferred that native code also holds a reference to.
-     *
-     * The native side completes the deferred from a JNI callback thread. If the deferred
-     * was already completed (or cancelled) in the meantime, the completion must not be
-     * allowed to blow up on the *native* thread, which would take the whole process down.
-     * Swallowing it here makes a late/duplicate completion a no-op, which is exactly the
-     * semantics we need: the deferred must never be cancelled while native code still
-     * holds it, only dropped from the map.
-     *
-     * @param error the failure to report, or null to complete normally.
-     */
-    private fun completeSafely(deferred: CompletableDeferred<Unit>, error: Throwable? = null) {
-        try {
-            if (error != null) {
-                deferred.completeExceptionally(error)
-            } else {
-                deferred.complete(Unit)
-            }
-        } catch (_: IllegalStateException) {
-            // Already completed or cancelled: nothing left to do.
+    private fun createAndStartHealthCheck(groupName: String, startedAtMs: Long): ActiveHealthCheck {
+        val deferred = CompletableDeferred<Unit>()
+        val entry = ActiveHealthCheck(deferred, startedAtMs)
+        deferred.invokeOnCompletion {
+            activeGroupChecks.remove(groupName, entry)
         }
+        runCatching {
+            Bridge.nativeHealthCheck(deferred, groupName)
+        }.onFailure { error ->
+            completeDeferredSafely(
+                deferred,
+                ClashException("Failed to start the health check for group '$groupName'", error)
+            )
+        }
+        return entry
     }
 
     suspend fun healthCheckGroupNative(
         name: String,
-        onProgress: ((String, Int) -> Unit)? = null
+        onProgress: ((String, Int) -> Unit)? = null,
     ): Map<String, Int> = withContext(Dispatchers.IO) {
         val initialGroup = queryGroup(name)
         val initialDelays = initialGroup?.proxies?.associate { it.name to it.delay } ?: emptyMap()
         val deferred = getOrStartGroupHealthCheck(name)
+        val reported = ConcurrentHashMap.newKeySet<String>()
         var pollJob: Job? = null
         try {
             if (onProgress != null) {
-                val reported = mutableSetOf<String>()
                 pollJob = launch {
-                    while (isActive && !deferred.isCompleted) {
-                        delay(120L.milliseconds)
-                        val currentGroup = queryGroup(name)
-                        val proxies = currentGroup?.proxies ?: emptyList()
-                        proxies.forEach { p ->
-                            if (!reported.contains(p.name)) {
-                                val oldDelay = initialDelays[p.name]
-                                val newDelay = p.delay
-                                if (oldDelay != newDelay && newDelay in 1..65534) {
-                                    reported.add(p.name)
-                                    onProgress(p.name, newDelay)
-                                }
-                            }
-                        }
-                    }
+                    pollGroupHealthProgress(
+                        groupName = name,
+                        deferred = deferred,
+                        initialDelays = initialDelays,
+                        reported = reported,
+                        groupFetcher = ::queryGroup,
+                        onProgress = onProgress,
+                    )
                 }
             }
-            withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
+            val completedInTime = withTimeoutOrNull(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
                 deferred.await()
+                true
             }
-        } catch (e: TimeoutCancellationException) {
-            Log.d(TAG, "Health check timed out for group '$name': ${e.message}")
+            if (completedInTime == null) {
+                Log.d(CORE_TAG, "Health check timed out for group '$name'")
+            }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            Log.d(CORE_TAG, "Health check aborted for group '$name'", e)
         } finally {
             pollJob?.cancel()
-            // Only drop the map entry once the check has actually finished. Removing it
-            // unconditionally meant that a waiter which timed out first dropped the entry
-            // while the native check was still running, so the next caller started a
-            // SECOND concurrent native health check on the same group.
-            //
-            // The deferred is deliberately NOT cancelled: native code still holds it and
-            // will complete it later. Cancelling it would make that late completion throw
-            // on the JNI thread (see completeSafely).
-            if (deferred.isCompleted) {
-                activeGroupChecks.remove(name, deferred)
-            }
+            removeCompletedGroupCheck(name, deferred)
         }
         currentCoroutineContext().ensureActive()
-        val group = queryGroup(name)
-        val result = mutableMapOf<String, Int>()
-        group?.proxies?.forEach { p ->
-            val d = when {
-                p.delay in 1..65534 -> p.delay
-                p.name.equals("DIRECT", ignoreCase = true) -> 0
-                else -> -2
-            }
-            result[p.name] = d
-            onProgress?.invoke(p.name, d)
-        }
-        result
+        buildGroupHealthResult(queryGroup(name), reported, onProgress)
     }
 
     suspend fun healthCheck(name: String, onProgress: ((String, Int) -> Unit)? = null): Map<String, Int> =
@@ -528,87 +674,108 @@ object ClashCore {
 
     suspend fun testProxyDelayNative(proxyName: String, groupName: String? = null): Int = withContext(Dispatchers.IO) {
         if (proxyName.equals("DIRECT", ignoreCase = true)) return@withContext 0
-        if (proxyName.equals("REJECT", ignoreCase = true)) return@withContext -2
-        if (proxyName.equals("COMPATIBLE", ignoreCase = true)) return@withContext -2
+        if (proxyName.equals("REJECT", ignoreCase = true) || proxyName.equals("COMPATIBLE", ignoreCase = true)) {
+            return@withContext -2
+        }
 
         val allGroups = queryGroupNames()
-
-        // Testing a group means health-checking the group itself.
         if (allGroups.contains(proxyName)) {
-            val deferred = getOrStartGroupHealthCheck(proxyName)
-            try {
-                withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) { deferred.await() }
-            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Throwable) {
-            } finally {
-                if (deferred.isCompleted) {
-                    activeGroupChecks.remove(proxyName, deferred)
-                }
-            }
-            val subGroup = queryGroup(proxyName) ?: return@withContext -2
-            val activeProxy = subGroup.proxies.find { it.name == subGroup.now }
-            return@withContext activeProxy?.delay?.takeIf { it in 1..65534 }
-                ?: subGroup.proxies.map { it.delay }.filter { it in 1..65534 }.minOrNull()
-                ?: -2
+            return@withContext testGroupDelayInternal(proxyName)
         }
+
+        val groupCache = HashMap<String, ProxyGroup?>()
+        fun cachedGroup(g: String): ProxyGroup? = groupCache.getOrPut(g) { queryGroup(g) }
 
         val targetGroup = when {
             !groupName.isNullOrBlank() && allGroups.contains(groupName) -> groupName
             else -> allGroups.firstOrNull { g ->
-                queryGroup(g)?.proxies?.any { it.name == proxyName } == true
+                cachedGroup(g)?.proxies?.any { it.name == proxyName } == true
             } ?: return@withContext -2
         }
 
-        val initialDelay = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay ?: -1
+        val initialDelay = cachedGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay ?: -1
         val deferred = getOrStartGroupHealthCheck(targetGroup)
-        var result = -1
-        try {
-            // Poll for the target proxy's fresh delay so a single node reports before the
-            // whole group finishes; the post-completion snapshot below covers the rest.
-            withTimeout(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
-                while (deferred.isActive) {
-                    delay(150L.milliseconds)
-                    val current = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay
-                    if (current != null && current in 1..65534 && current != initialDelay) {
-                        result = current
-                        break
-                    }
-                }
+        val result = awaitSingleProxyDelay(targetGroup, proxyName, initialDelay, deferred)
+        currentCoroutineContext().ensureActive()
+
+        if (result in 1..MAX_VALID_DELAY_MS) {
+            return@withContext result
+        }
+        val postCheckGroup = queryGroup(targetGroup)
+        val proxyItem = postCheckGroup?.proxies?.find { it.name == proxyName }
+        if (proxyItem != null) {
+            return@withContext proxyItem.delay.takeIf { it in 1..MAX_VALID_DELAY_MS } ?: -2
+        }
+        allGroups.asSequence()
+            .filter { it != targetGroup }
+            .firstNotNullOfOrNull { g ->
+                queryGroup(g)?.proxies?.find { it.name == proxyName }?.delay?.takeIf { it in 1..MAX_VALID_DELAY_MS }
             }
-        } catch (_: TimeoutCancellationException) {
+            ?: -2
+    }
+
+    private suspend fun testGroupDelayInternal(groupName: String): Int {
+        val deferred = getOrStartGroupHealthCheck(groupName)
+        try {
+            withTimeoutOrNull(HEALTH_CHECK_TIMEOUT_MS.milliseconds) { deferred.await() }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {
         } finally {
-            // Only remove completed checks: other waiters may still await a running one.
-            if (deferred.isCompleted) {
-                activeGroupChecks.remove(targetGroup, deferred)
-            }
+            removeCompletedGroupCheck(groupName, deferred)
         }
-        currentCoroutineContext().ensureActive()
+        val subGroup = queryGroup(groupName) ?: return -2
+        val activeProxy = subGroup.proxies.find { it.name == subGroup.now }
+        return activeProxy?.delay?.takeIf { it in 1..MAX_VALID_DELAY_MS }
+            ?: subGroup.proxies.map { it.delay }.filter { it in 1..MAX_VALID_DELAY_MS }.minOrNull()
+            ?: -2
+    }
 
-        if (result !in 1..65534) {
-            result = queryGroup(targetGroup)?.proxies?.find { it.name == proxyName }?.delay
-                ?.takeIf { it in 1..65534 }
-                ?: allGroups.firstNotNullOfOrNull { g ->
-                    queryGroup(g)?.proxies?.find { it.name == proxyName }?.delay?.takeIf { it in 1..65534 }
+    private suspend fun awaitSingleProxyDelay(
+        targetGroup: String,
+        proxyName: String,
+        initialDelay: Int,
+        deferred: CompletableDeferred<Unit>,
+    ): Int {
+        var result = -1
+        try {
+            withTimeoutOrNull(HEALTH_CHECK_TIMEOUT_MS.milliseconds) {
+                while (!deferred.isCompleted) {
+                    delay(PROXY_DELAY_POLL_INTERVAL_MS.milliseconds)
+                    val validDelay = queryGroup(targetGroup)?.proxies
+                        ?.find { it.name == proxyName }
+                        ?.delay
+                        ?.takeIf { it in 1..MAX_VALID_DELAY_MS }
+                        ?: continue
+                    if (validDelay != initialDelay || deferred.isCompleted) {
+                        result = validDelay
+                        break
+                    }
                 }
-                ?: -2
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+        } finally {
+            removeCompletedGroupCheck(targetGroup, deferred)
         }
-        result
+        return result
     }
 
     @Suppress("unused")
     fun healthCheckAll() {
+        if (!ensureInitializedIfPossible()) return
         runCatching { Bridge.nativeHealthCheckAll() }
     }
 
     fun reset() {
         isCoreLoaded = false
         loadedProfileId = null
+        lastNotifiedDns = null
+        lastNotifiedTzId = null
+        lastNotifiedTzOffsetSec = null
         activeGroupChecks.clear()
+        if (!initialized) return
         runCatching { Bridge.nativeReset() }
     }
 }

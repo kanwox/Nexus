@@ -1,5 +1,3 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-
 package com.github.mihomo.android.ui.screens
 
 import android.content.Context
@@ -7,46 +5,69 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.github.mihomo.android.ui.components.*
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
-import com.github.mihomo.android.ui.theme.*
+import com.github.mihomo.android.ui.components.CupertinoAlertDialog
+import com.github.mihomo.android.ui.components.CupertinoCell
+import com.github.mihomo.android.ui.components.CupertinoDivider
+import com.github.mihomo.android.ui.components.CupertinoGroupedSection
+import com.github.mihomo.android.ui.components.CupertinoNavBar
+import com.github.mihomo.android.ui.components.CupertinoSingleSelectOption
+import com.github.mihomo.android.ui.components.CupertinoSingleSelectSheet
+import com.github.mihomo.android.ui.components.CupertinoSwitchCell
+import com.github.mihomo.android.ui.components.CupertinoTextField
+import com.github.mihomo.android.ui.components.CupertinoToast
+import com.github.mihomo.android.ui.components.bounceOverscroll
+import com.github.mihomo.android.ui.theme.LoonBg
+import com.github.mihomo.android.ui.theme.LoonResponsiveContent
+import java.util.Locale
+
+@Immutable
+data class VpnTunnelUiState(
+    val tunStack: String,
+    val tunMtu: Int,
+    val mixedPort: Int,
+    val ipv6Enabled: Boolean,
+    val killSwitchEnabled: Boolean,
+    val allowBypassEnabled: Boolean,
+    val allowPrivateSubs: Boolean,
+    val bootOnStartup: Boolean
+)
+
+class VpnTunnelCallbacks(
+    val onTunStackChanged: (String) -> Unit,
+    val onTunMtuChanged: (Int) -> Unit,
+    val onMixedPortChanged: (Int) -> Unit,
+    val onIpv6EnabledChanged: (Boolean) -> Unit,
+    val onKillSwitchChanged: (Boolean) -> Unit,
+    val onAllowBypassChanged: (Boolean) -> Unit,
+    val onAllowPrivateSubsChanged: (Boolean) -> Unit,
+    val onBootOnStartupChanged: (Boolean) -> Unit
+)
 
 /** VPN & tunnel second-level settings: stack, MTU, ports, protections and boot behavior. */
 @Composable
 fun VpnTunnelScreen(
-    tunStack: String,
-    onTunStackChanged: (String) -> Unit,
-    tunMtu: Int,
-    onTunMtuChanged: (Int) -> Unit,
-    mixedPort: Int,
-    onMixedPortChanged: (Int) -> Unit,
-    ipv6Enabled: Boolean,
-    onIpv6EnabledChanged: (Boolean) -> Unit,
-    killSwitchEnabled: Boolean,
-    onKillSwitchChanged: (Boolean) -> Unit,
-    allowBypassEnabled: Boolean,
-    onAllowBypassChanged: (Boolean) -> Unit,
-    allowPrivateSubs: Boolean,
-    onAllowPrivateSubsChanged: (Boolean) -> Unit,
-    bootOnStartup: Boolean,
-    onBootOnStartupChanged: (Boolean) -> Unit,
+    state: VpnTunnelUiState,
+    callbacks: VpnTunnelCallbacks,
     onBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
@@ -73,244 +94,250 @@ fun VpnTunnelScreen(
             onBack = onBack
         )
 
-        LazyColumn(
+        LoonResponsiveContent(
             modifier = Modifier
-                .fillMaxSize()
-                .bounceOverscroll(),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .fillMaxWidth()
+                .weight(1f)
         ) {
-            item {
-                CupertinoGroupedSection {
-                    TunStackCell(
-                        tunStack = tunStack,
-                        lang = lang,
-                        onClick = { showTunDialog = true }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_tun_mtu", lang),
-                        value = tunMtu.toString(),
-                        showChevron = true,
-                        onClick = { showTunMtuDialog = true }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_mixed_port", lang),
-                        value = mixedPort.toString(),
-                        showChevron = true,
-                        onClick = { showMixedPortDialog = true }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = "IPv6",
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = ipv6Enabled,
-                                onCheckedChange = onIpv6EnabledChanged
-                            )
-                        },
-                        onClick = { onIpv6EnabledChanged(!ipv6Enabled) }
-                    )
-                }
-            }
-
-            item {
-                CupertinoGroupedSection {
-                    CupertinoCell(
-                        title = AppStrings.get("settings_kill_switch", lang),
-                        subtitle = if (killSwitchSupported) {
-                            AppStrings.get("settings_kill_switch_desc", lang)
-                        } else {
-                            AppStrings.get("settings_kill_switch_unsupported", lang)
-                        },
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = killSwitchEnabled && killSwitchSupported,
-                                enabled = killSwitchSupported,
-                                onCheckedChange = onKillSwitchChanged
-                            )
-                        },
-                        onClick = {
-                            if (killSwitchSupported) onKillSwitchChanged(!killSwitchEnabled)
-                        }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_allow_bypass", lang),
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = allowBypassEnabled,
-                                onCheckedChange = onAllowBypassChanged
-                            )
-                        },
-                        onClick = { onAllowBypassChanged(!allowBypassEnabled) }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_allow_private_subs", lang),
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = allowPrivateSubs,
-                                onCheckedChange = onAllowPrivateSubsChanged
-                            )
-                        },
-                        onClick = { onAllowPrivateSubsChanged(!allowPrivateSubs) }
-                    )
-                }
-            }
-
-            item {
-                CupertinoGroupedSection {
-                    CupertinoCell(
-                        title = AppStrings.get("settings_boot_startup", lang),
-                        showChevron = false,
-                        trailing = {
-                            CupertinoSwitch(
-                                checked = bootOnStartup,
-                                onCheckedChange = onBootOnStartupChanged
-                            )
-                        },
-                        onClick = { onBootOnStartupChanged(!bootOnStartup) }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_system_vpn", lang),
-                        showChevron = true,
-                        onClick = {
-                            runCatching {
-                                context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
-                            }
-                        }
-                    )
-                    CupertinoDivider()
-                    CupertinoCell(
-                        title = AppStrings.get("settings_always_on_vpn", lang),
-                        subtitle = AppStrings.get("settings_always_on_vpn_desc", lang),
-                        showChevron = true,
-                        onClick = {
-                            // The system always-on screen is the REAL system-level kill
-                            // switch ("Block connections without VPN"); this app cannot
-                            // grant it for itself, so hand the user to the right toggle.
-                            runCatching {
-                                context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
-                            }
-                        }
-                    )
-                }
-            }
+            VpnTunnelList(
+                state = state,
+                callbacks = callbacks,
+                lang = lang,
+                context = context,
+                killSwitchSupported = killSwitchSupported,
+                onOpenTunDialog = { showTunDialog = true },
+                onOpenMtuDialog = { showTunMtuDialog = true },
+                onOpenMixedPortDialog = { showMixedPortDialog = true }
+            )
         }
     }
 
+    VpnTunnelOverlays(
+        state = state,
+        callbacks = callbacks,
+        lang = lang,
+        showTunDialog = showTunDialog,
+        showMixedPortDialog = showMixedPortDialog,
+        showTunMtuDialog = showTunMtuDialog,
+        onDismissTun = { showTunDialog = false },
+        onDismissMixedPort = { showMixedPortDialog = false },
+        onDismissTunMtu = { showTunMtuDialog = false }
+    )
+}
+
+@Suppress("LongParameterList")
+@Composable
+private fun VpnTunnelList(
+    state: VpnTunnelUiState,
+    callbacks: VpnTunnelCallbacks,
+    lang: String,
+    context: Context,
+    killSwitchSupported: Boolean,
+    onOpenTunDialog: () -> Unit,
+    onOpenMtuDialog: () -> Unit,
+    onOpenMixedPortDialog: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .bounceOverscroll(),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            VpnCoreSection(
+                state = state,
+                callbacks = callbacks,
+                lang = lang,
+                onOpenTunDialog = onOpenTunDialog,
+                onOpenMtuDialog = onOpenMtuDialog,
+                onOpenMixedPortDialog = onOpenMixedPortDialog
+            )
+        }
+        item {
+            VpnProtectionSection(
+                state = state,
+                callbacks = callbacks,
+                lang = lang,
+                killSwitchSupported = killSwitchSupported
+            )
+        }
+        item {
+            VpnSystemSection(
+                bootOnStartup = state.bootOnStartup,
+                onBootOnStartupChanged = callbacks.onBootOnStartupChanged,
+                lang = lang,
+                context = context
+            )
+        }
+    }
+}
+
+@Composable
+private fun VpnCoreSection(
+    state: VpnTunnelUiState,
+    callbacks: VpnTunnelCallbacks,
+    lang: String,
+    onOpenTunDialog: () -> Unit,
+    onOpenMtuDialog: () -> Unit,
+    onOpenMixedPortDialog: () -> Unit
+) {
+    CupertinoGroupedSection {
+        CupertinoCell(
+            title = AppStrings.get("settings_tun_stack", lang),
+            value = if (state.tunStack.equals("gvisor", ignoreCase = true)) "gVisor" else "Mips",
+            showChevron = true,
+            onClick = onOpenTunDialog
+        )
+        CupertinoDivider()
+        CupertinoCell(
+            title = AppStrings.get("settings_tun_mtu", lang),
+            value = state.tunMtu.toString(),
+            showChevron = true,
+            onClick = onOpenMtuDialog
+        )
+        CupertinoDivider()
+        CupertinoCell(
+            title = AppStrings.get("settings_mixed_port", lang),
+            value = state.mixedPort.toString(),
+            showChevron = true,
+            onClick = onOpenMixedPortDialog
+        )
+        CupertinoDivider()
+        CupertinoSwitchCell(
+            title = "IPv6",
+            checked = state.ipv6Enabled,
+            onCheckedChange = callbacks.onIpv6EnabledChanged
+        )
+    }
+}
+
+@Composable
+private fun VpnProtectionSection(
+    state: VpnTunnelUiState,
+    callbacks: VpnTunnelCallbacks,
+    lang: String,
+    killSwitchSupported: Boolean
+) {
+    CupertinoGroupedSection {
+        CupertinoSwitchCell(
+            title = AppStrings.get("settings_kill_switch", lang),
+            subtitle = if (killSwitchSupported) {
+                AppStrings.get("settings_kill_switch_desc", lang)
+            } else {
+                AppStrings.get("settings_kill_switch_unsupported", lang)
+            },
+            checked = state.killSwitchEnabled && killSwitchSupported,
+            enabled = killSwitchSupported,
+            onCheckedChange = callbacks.onKillSwitchChanged
+        )
+        CupertinoDivider()
+        CupertinoSwitchCell(
+            title = AppStrings.get("settings_allow_bypass", lang),
+            checked = state.allowBypassEnabled,
+            onCheckedChange = callbacks.onAllowBypassChanged
+        )
+        CupertinoDivider()
+        CupertinoSwitchCell(
+            title = AppStrings.get("settings_allow_private_subs", lang),
+            checked = state.allowPrivateSubs,
+            onCheckedChange = callbacks.onAllowPrivateSubsChanged
+        )
+    }
+}
+
+@Composable
+private fun VpnSystemSection(
+    bootOnStartup: Boolean,
+    onBootOnStartupChanged: (Boolean) -> Unit,
+    lang: String,
+    context: Context
+) {
+    CupertinoGroupedSection {
+        CupertinoSwitchCell(
+            title = AppStrings.get("settings_boot_startup", lang),
+            checked = bootOnStartup,
+            onCheckedChange = onBootOnStartupChanged
+        )
+        CupertinoDivider()
+        CupertinoCell(
+            title = AppStrings.get("settings_system_vpn", lang),
+            showChevron = true,
+            onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) } }
+        )
+        CupertinoDivider()
+        CupertinoCell(
+            title = AppStrings.get("settings_always_on_vpn", lang),
+            subtitle = AppStrings.get("settings_always_on_vpn_desc", lang),
+            showChevron = true,
+            onClick = {
+                // The system always-on screen is the REAL system-level kill switch
+                // ("Block connections without VPN"); this app cannot grant it for itself.
+                runCatching { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }
+            }
+        )
+    }
+}
+
+@Suppress("LongParameterList")
+@Composable
+private fun VpnTunnelOverlays(
+    state: VpnTunnelUiState,
+    callbacks: VpnTunnelCallbacks,
+    lang: String,
+    showTunDialog: Boolean,
+    showMixedPortDialog: Boolean,
+    showTunMtuDialog: Boolean,
+    onDismissTun: () -> Unit,
+    onDismissMixedPort: () -> Unit,
+    onDismissTunMtu: () -> Unit
+) {
     if (showTunDialog) {
         val stacks = listOf(
-            Triple("mips", "Mips", AppStrings.get("tun_desc_mips", lang)),
-            Triple("gvisor", "gVisor", AppStrings.get("tun_desc_gvisor", lang))
+            CupertinoSingleSelectOption("mips", "Mips", AppStrings.get("tun_desc_mips", lang)),
+            CupertinoSingleSelectOption("gvisor", "gVisor", AppStrings.get("tun_desc_gvisor", lang))
         )
-        CupertinoModalBottomSheet(
-            onDismissRequest = { showTunDialog = false },
-            title = AppStrings.get("tun_stack_dialog_title", lang)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 8.dp)
-            ) {
-                stacks.forEachIndexed { index, (stackKey, label, desc) ->
-                    val isSelected = tunStack.equals(stackKey, ignoreCase = true)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable {
-                                onTunStackChanged(stackKey)
-                                showTunDialog = false
-                            }
-                            .padding(horizontal = 8.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = label,
-                                fontSize = LoonTypeScale.body,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) IosBlue else LoonTextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = desc,
-                                fontSize = LoonTypeScale.footnote,
-                                color = LoonTextSecondary
-                            )
-                        }
-                        if (isSelected) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = null,
-                                tint = IosBlue,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                    if (index < stacks.size - 1) {
-                        HorizontalDivider(
-                            color = LoonCardBorder,
-                            thickness = 0.5.dp,
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                    }
-                }
-            }
-        }
+        CupertinoSingleSelectSheet(
+            title = AppStrings.get("tun_stack_dialog_title", lang),
+            options = stacks,
+            selectedValue = state.tunStack.lowercase(Locale.ROOT),
+            onSelect = { stackKey ->
+                callbacks.onTunStackChanged(stackKey)
+                onDismissTun()
+            },
+            onDismissRequest = onDismissTun
+        )
     }
 
     if (showMixedPortDialog) {
         NumberValueDialog(
             title = AppStrings.get("settings_mixed_port", lang),
-            initialValue = mixedPort,
+            initialValue = state.mixedPort,
             range = 1024..65535,
             rangeHint = AppStrings.get("port_range_hint", lang),
-            onConfirm = {
-                onMixedPortChanged(it)
-                showMixedPortDialog = false
+            lang = lang,
+            onConfirm = { port ->
+                callbacks.onMixedPortChanged(port)
+                onDismissMixedPort()
             },
-            onDismiss = { showMixedPortDialog = false }
+            onDismiss = onDismissMixedPort
         )
     }
 
     if (showTunMtuDialog) {
         NumberValueDialog(
             title = AppStrings.get("settings_tun_mtu", lang),
-            initialValue = tunMtu,
+            initialValue = state.tunMtu,
             range = 1280..65535,
             rangeHint = AppStrings.get("mtu_range_hint", lang),
-            onConfirm = {
-                onTunMtuChanged(it)
-                showTunMtuDialog = false
+            lang = lang,
+            onConfirm = { mtu ->
+                callbacks.onTunMtuChanged(mtu)
+                onDismissTunMtu()
             },
-            onDismiss = { showTunMtuDialog = false }
+            onDismiss = onDismissTunMtu
         )
     }
-}
-
-@Composable
-private fun TunStackCell(
-    tunStack: String,
-    lang: String,
-    onClick: () -> Unit
-) {
-    CupertinoCell(
-        title = AppStrings.get("settings_tun_stack", lang),
-        value = if (tunStack.equals("gvisor", ignoreCase = true)) "gVisor" else "Mips",
-        showChevron = true,
-        onClick = onClick
-    )
 }
 
 /** Cupertino alert with a numeric-only text field, validated against [range] on confirm. */
@@ -320,14 +347,15 @@ private fun NumberValueDialog(
     initialValue: Int,
     range: IntRange,
     rangeHint: String,
+    lang: String,
     onConfirm: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var input by remember { mutableStateOf(initialValue.toString()) }
+    var input by remember(initialValue) { mutableStateOf(initialValue.toString()) }
     CupertinoAlertDialog(
         title = title,
-        confirmText = AppStrings.get("action_save", com.github.mihomo.android.i18n.LocalAppLanguage.current),
-        dismissText = AppStrings.get("cancel", com.github.mihomo.android.i18n.LocalAppLanguage.current),
+        confirmText = AppStrings.get("action_save", lang),
+        dismissText = AppStrings.get("cancel", lang),
         onConfirm = {
             val parsed = input.trim().toIntOrNull()
             if (parsed != null && parsed in range) {
@@ -343,9 +371,7 @@ private fun NumberValueDialog(
                 value = input,
                 onValueChange = { newValue -> input = newValue.filter { ch -> ch.isDigit() } },
                 placeholder = "${range.first} - ${range.last}",
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                )
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
         }
     )

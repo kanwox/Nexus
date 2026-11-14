@@ -133,6 +133,12 @@ object LoonMotion {
     const val fastMs = 150
     const val normalMs = 220
     const val slowMs = 300
+
+    /** Staggered cross-fade timings for compact status transitions (fade out first, then fade in). */
+    const val statusFadeOutMs = 150
+    const val statusFadeInDelayMs = 100
+    const val statusFadeInMs = 260
+
     const val pressScale = 0.982f
     const val pressScaleStrong = 0.97f
     const val dragLiftScale = 1.03f
@@ -151,10 +157,6 @@ object LoonMotion {
     /** Spring used by the segmented-control thumb (softer, longer travel). */
     const val segmentedDampingRatio = 0.84f
     const val segmentedStiffness = 380f
-
-    /** Spring used by the bottom-nav selection scale. */
-    const val navDampingRatio = 0.7f
-    const val navStiffness = 400f
 
     /**
      * Spring used by the press feedback ([iosPressable]): a short, slightly bouncy pop that

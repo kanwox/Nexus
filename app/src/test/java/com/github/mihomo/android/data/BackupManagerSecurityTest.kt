@@ -27,13 +27,24 @@ class BackupManagerSecurityTest {
         val encrypted = BackupManager.encrypt(plain.toByteArray(Charsets.UTF_8), "pw")
 
         assertTrue(BackupManager.isEncrypted(encrypted))
-        // The magic header is "NEXUS_ENC_V1\n".
-        val magic = "NEXUS_ENC_V1\n"
+        // The V2 magic header is "NEXUS_ENC_V2\n".
+        val magic = "NEXUS_ENC_V2\n"
         assertEquals(magic, String(encrypted.copyOfRange(0, magic.length), Charsets.UTF_8))
         // The secret must not be readable in the encrypted file.
         val asText = String(encrypted, Charsets.UTF_8)
         assertFalse("the token leaked into the encrypted backup", asText.contains("SECRET-TOKEN"))
         assertFalse(asText.contains("example.com"))
+    }
+
+    @Test
+    fun `legacy v1 encrypted payload is also detected and decrypted`() {
+        val plain = """{"version":1,"profiles":[{"name":"HK","content":"proxies: []"}]}"""
+        val legacyEncrypted = BackupManager.encryptLegacyV1(plain.toByteArray(Charsets.UTF_8), "pw")
+
+        assertTrue(BackupManager.isEncrypted(legacyEncrypted))
+        val legacyMagic = "NEXUS_ENC_V1\n"
+        assertEquals(legacyMagic, String(legacyEncrypted.copyOfRange(0, legacyMagic.length), Charsets.UTF_8))
+        assertEquals(plain, BackupManager.decrypt(legacyEncrypted, "pw"))
     }
 
     @Test

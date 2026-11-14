@@ -1,22 +1,29 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
-import androidx.core.content.edit
 import com.github.mihomo.android.core.TunConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 data class ProfileItem(
@@ -45,12 +52,6 @@ data class ProfileItem(
  * - [hostsEntries] are "domain: target" lines merged into the hosts mapping (profile entries
  *   win over subscription hosts on key conflicts).
  * - [dnsServersOverride] replaces the upstream nameserver list when non-empty.
- *
- * Applying them inside the YAML sanitizer means one parse/dump pass covers stripping and
- * overriding, and the overrides cannot be defeated by key quoting either.
- *
- * The field set mirrors [ProfileItem]'s override fields so the caller does not have to
- * hand-copy them one by one (which is how a field silently went missing before).
  */
 data class ConfigOverrides(
     val prependRules: List<String> = emptyList(),
@@ -65,9 +66,21 @@ data class SubscriptionUserInfo(
     val expire: Long = 0L,
 )
 
+private const val TAG = "ConfigManager"
+
 object ConfigManager {
-    private const val TAG = "ConfigManager"
     private const val MAX_SUBSCRIPTION_BYTES = 20L * 1024 * 1024
+    private const val STREAM_BUFFER_BYTES = 64 * 1024
+    private const val BYTES_PER_MB = 1024 * 1024
+    private const val MAX_LISTEN_PORT = 65535
+    private const val MIN_MIXED_PORT = 1024
+    private const val FALLBACK_NAME_MOD = 1000
+    private const val SUBSCRIPTION_USER_AGENT = "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0"
+
+    private val prepareLock = Mutex()
+    private val profileLocks = ConcurrentHashMap<String, Mutex>()
+
+    private fun profileLock(id: String): Mutex = profileLocks.computeIfAbsent(id) { Mutex() }
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -87,138 +100,70 @@ object ConfigManager {
         .build()
 
     /**
-     * Writes via a temp file + rename so a crash mid-write can never leave a truncated file.
-     *
-     * The rename itself is done with [Files.move] and `ATOMIC_MOVE`, because the previous
-     * `renameTo` fallback wrote straight into the destination file — exactly the truncation
-     * this function exists to prevent. A plain (non-atomic) move is only used when the
-     * filesystem refuses `ATOMIC_MOVE`; if even that fails the file is left untouched.
+     * Writes via a unique temp file + atomic move so a crash or concurrent write can never
+     * corrupt or truncate the destination file.
      */
     internal fun writeTextAtomic(file: File, content: String) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(content)
+        val parent = file.absoluteFile.parentFile?.apply { mkdirs() }
+            ?: throw IOException("Missing parent directory for ${file.path}")
+        val tmp = File.createTempFile("${file.name}.", ".tmp", parent)
         try {
-            Files.move(
-                tmp.toPath(),
-                file.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE
-            )
-            return
-        } catch (_: Exception) {
-            // Some filesystems (and the app's emulated storage) do not support ATOMIC_MOVE.
-            // Fall back to a plain replace, which is still better than truncating in place.
-        }
-        try {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: Exception) {
-            Log.w(TAG, "Atomic move failed for ${file.name}, writing in place", e)
-            file.writeText(content)
-            tmp.delete()
+            tmp.writeText(content, Charsets.UTF_8)
+            ProfileStore.moveReplacingFile(tmp, file)
+        } finally {
+            if (tmp.exists()) tmp.delete()
         }
     }
 
     /** Reads a response body fully but refuses payloads above [maxBytes] instead of OOMing. */
-    internal fun readBodyCapped(response: okhttp3.Response, maxBytes: Long, emptyError: String): String {
-        // okhttp 5 always has a body on a response; the empty-body case is caught by the
-        // blank check at the end instead.
+    internal fun readBodyCapped(response: Response, maxBytes: Long, emptyError: String): String {
         val body = response.body
         val declared = body.contentLength()
-        if (declared > maxBytes) error("内容过大 (${declared / 1024 / 1024} MB, 上限 ${maxBytes / 1024 / 1024} MB)")
-        // Chunked responses report -1: coerce to a sane initial buffer size instead of
-        // constructing StringWriter with a negative capacity (which throws).
-        val out = java.io.StringWriter(declared.coerceIn(0, 1024 * 1024).toInt())
-        body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
-            val buf = CharArray(64 * 1024)
-            var total = 0L
+        if (declared > maxBytes) {
+            error("内容过大 (${declared / BYTES_PER_MB} MB, 上限 ${maxBytes / BYTES_PER_MB} MB)")
+        }
+        return readStreamCapped(
+            stream = body.byteStream(),
+            initialHint = declared.coerceIn(0L, BYTES_PER_MB.toLong()).toInt(),
+            maxBytes = maxBytes,
+            emptyError = emptyError
+        )
+    }
+
+    private fun readStreamCapped(
+        stream: InputStream,
+        initialHint: Int,
+        maxBytes: Long,
+        emptyError: String
+    ): String {
+        val out = ByteArrayOutputStream(initialHint.coerceAtLeast(256))
+        val buf = ByteArray(STREAM_BUFFER_BYTES)
+        var total = 0L
+        stream.use { input ->
             while (true) {
-                val n = reader.read(buf)
+                val n = input.read(buf)
                 if (n < 0) break
                 total += n
-                if (total > maxBytes) error("内容超过 ${maxBytes / 1024 / 1024} MB 上限")
+                if (total > maxBytes) {
+                    error("内容超过 ${maxBytes / BYTES_PER_MB} MB 上限")
+                }
                 out.write(buf, 0, n)
             }
         }
-        val text = out.toString()
+        val text = out.toByteArray().toString(Charsets.UTF_8)
         if (text.isBlank()) error(emptyError)
         return text
     }
 
-    private val HTML_ERROR_INDICATORS = listOf("<!doctype html", "<html", "<head>", "cf-browser-verification")
-    private val YAML_KEY_INDICATORS = listOf("proxies:", "Proxy:", "proxy-groups:", "rules:", "proxy-providers:")
-    private val PROTOCOL_PREFIXES = listOf("vmess://", "vless://", "ss://", "trojan://", "hysteria://", "hysteria2://")
+    internal fun isValidSubscriptionPayload(content: String): Boolean =
+        ConfigValidation.isValidSubscriptionPayload(content)
 
-    /**
-     * Pre-validates a subscription response to reject HTML error pages, Cloudflare
-     * captchas, or corrupted payloads.
-     *
-     * A base64 payload is only accepted when it decodes to a Clash/Mihomo YAML config.
-     * A base64 payload that decodes to a list of node URIs (`vmess://…`) is a
-     * "subscription" this app cannot use: the file would be written verbatim, the YAML
-     * parser would see a plain string instead of a map, and the core would fail to load
-     * the config with an obscure error. Rejecting it here gives the user a clear message.
-     */
-    internal fun isValidSubscriptionPayload(content: String): Boolean {
-        val trimmed = content.trim()
-        if (trimmed.isEmpty()) return false
-        val lower = trimmed.lowercase()
-        // Reject obvious HTML error / Cloudflare challenge pages
-        if (HTML_ERROR_INDICATORS.any { lower.contains(it) }) {
-            return false
-        }
-        // 1. Standard Clash/Mihomo YAML structure keys
-        if (YAML_KEY_INDICATORS.any { trimmed.contains(it) }) {
-            return true
-        }
-        // 2. Standard protocol URLs
-        if (PROTOCOL_PREFIXES.any { trimmed.startsWith(it) }) {
-            return true
-        }
-        // 3. Base64 encoded payload
-        val firstLine = trimmed.lines().firstOrNull()?.trim() ?: ""
-        if (firstLine.length > 20 && !firstLine.contains(" ")) {
-            val decoded = runCatching {
-                String(java.util.Base64.getDecoder().decode(firstLine), Charsets.UTF_8)
-            }.getOrNull()
-            if (decoded != null) {
-                // A base64 node list is not a config this app can load.
-                if (PROTOCOL_PREFIXES.any { decoded.trimStart().startsWith(it) }) {
-                    return false
-                }
-                // Only a decoded YAML mapping is a usable subscription.
-                if (runCatching { YamlSupport.create().load<Any>(decoded) is Map<*, *> }.getOrDefault(false)) {
-                    return true
-                }
-                return false
-            }
-        }
-        // 4. Valid YAML Map fallback
-        return runCatching { YamlSupport.create().load<Any>(trimmed) is Map<*, *> }.getOrDefault(false)
-    }
+    internal fun validateConfigStructure(content: String): String? =
+        ConfigValidation.validateConfigStructure(content)
 
-    /** Top-level config keys that only the injected runtime header may set. */
-    private val PROTECTED_TOP_LEVEL_KEYS = setOf(
-        "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
-        "redir-port", "tproxy-port", "allow-lan", "bind-address",
-        "external-controller", "external-controller-cors", "secret",
-        "external-controller-unix", "external-controller-pipe", "external-doh",
-        "authentication", "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
-        "external-ui", "external-ui-name", "external-ui-url",
-        "tun", "dns", "interface-name", "routing-mark",
-        "geodata-mode", "geo-auto-update", "geox-url",
-        "listeners", "sub-rules", "tunnels"
-    )
+    internal fun extractProfileName(name: String?, response: Response?, body: String, url: String): String =
+        ConfigValidation.extractProfileName(name, response, body, url)
 
-    /**
-     * Parses the `subscription-userinfo` header.
-     *
-     * The header is a `;`-separated list of `key=value` pairs. A value that is not a
-     * number invalidates the WHOLE header (returns null): reporting it as `0` would
-     * silently claim "0 bytes used" / "expired" for a provider that sent something else.
-     *
-     * Returns null unless the provider reported a quota (`total`) or an expiry (`expire`):
-     * a provider that only reports traffic has nothing meaningful to show.
-     */
     fun parseSubscriptionUserInfo(header: String?): SubscriptionUserInfo? {
         if (header.isNullOrBlank()) return null
         var upload = 0L
@@ -228,748 +173,218 @@ object ConfigManager {
         for (part in header.split(";")) {
             val trimmed = part.trim()
             if (trimmed.isEmpty()) continue
-            // limit = 2: a value may itself contain "=" (base64 padding, signed tokens).
             val kv = trimmed.split("=", limit = 2)
             if (kv.size != 2) continue
-            val k = kv[0].trim().lowercase()
-            val raw = kv[1].trim()
-            if (k !in setOf("upload", "download", "total", "expire")) continue
-            val v = raw.toLongOrNull() ?: return null
-            when (k) {
-                "upload" -> upload = v
-                "download" -> download = v
-                "total" -> total = v
-                "expire" -> expire = v
+            val key = kv[0].trim().lowercase(Locale.ROOT)
+            if (key !in setOf("upload", "download", "total", "expire")) continue
+            val value = kv[1].trim().toLongOrNull() ?: return null
+            when (key) {
+                "upload" -> upload = value
+                "download" -> download = value
+                "total" -> total = value
+                "expire" -> expire = value
             }
         }
-        return if ((total > 0L) || (expire > 0L)) SubscriptionUserInfo(upload, download, total, expire) else null
+        return if (total > 0L || expire > 0L) SubscriptionUserInfo(upload, download, total, expire) else null
     }
 
-    internal fun extractProfileName(name: String?, response: okhttp3.Response?, body: String, url: String): String {
-        if (!name.isNullOrBlank()) return name.trim()
+    fun getConfigFile(context: Context): File = ProfileStore.getConfigFile(context)
 
-        // 1. Check URL Fragment (#Name)
-        runCatching {
-            val uri = java.net.URI(url)
-            val fragment = uri.fragment
-            if (!fragment.isNullOrBlank()) {
-                val decoded = runCatching { java.net.URLDecoder.decode(fragment, "UTF-8") }.getOrDefault(fragment)
-                if (decoded.isNotBlank()) return decoded.trim()
-            }
-        }
+    internal fun newestProfileHistoryFile(context: Context, id: String): File? =
+        ProfileStore.newestProfileHistoryFile(context, id)
 
-        // 2. Check URL Query param (name=... or title=...)
-        runCatching {
-            val uri = java.net.URI(url)
-            val query = uri.query
-            if (!query.isNullOrBlank()) {
-                for (param in query.split("&")) {
-                    // limit = 2: the value may itself contain "=" (base64 padding, tokens).
-                    val pair = param.split("=", limit = 2)
-                    if ((pair.size == 2) && (pair[0].equals("name", ignoreCase = true) || pair[0].equals("title", ignoreCase = true))) {
-                        val decoded = runCatching { java.net.URLDecoder.decode(pair[1], "UTF-8") }.getOrDefault(pair[1])
-                        if (decoded.isNotBlank()) return decoded.trim()
-                    }
-                }
-            }
-        }
+    internal fun archiveKnownGoodVersion(context: Context, id: String) =
+        ProfileStore.archiveKnownGoodVersion(context, id)
 
-        // 3. Check response header: profile-title
-        val profileTitle = response?.header("profile-title") ?: response?.header("Profile-Title")
-        if (!profileTitle.isNullOrBlank()) {
-            val decoded = runCatching { java.net.URLDecoder.decode(profileTitle, "UTF-8") }.getOrDefault(profileTitle)
-            if (decoded.isNotBlank()) return decoded.trim()
-        }
+    fun restoreProfileFromHistory(context: Context, id: String, source: File): Result<Unit> =
+        ProfileStore.restoreProfileFromHistory(context, id, source)
 
-        // 4. Check Content-Disposition (filename*=UTF-8''... or filename=...)
-        val contentDisp = response?.header("content-disposition") ?: response?.header("Content-Disposition")
-        if (!contentDisp.isNullOrBlank()) {
-            if (contentDisp.contains("filename*=", ignoreCase = true)) {
-                val rawEncoded = contentDisp.substringAfter("filename*=").substringAfter("''").trim('"', '\'', ' ')
-                val decoded = runCatching { java.net.URLDecoder.decode(rawEncoded, "UTF-8") }.getOrDefault(rawEncoded)
-                val clean = decoded.removeSuffix(".yaml").removeSuffix(".yml")
-                if (clean.isNotBlank()) return clean.trim()
-            }
-            if (contentDisp.contains("filename=", ignoreCase = true)) {
-                val fname = contentDisp.substringAfter("filename=").trim('"', '\'', ' ')
-                val cleanFname = fname.removeSuffix(".yaml").removeSuffix(".yml")
-                if (cleanFname.isNotBlank()) return cleanFname.trim()
-            }
-        }
-
-        // 5. Check top 25 lines of YAML body for title/name comment
-        val lines = body.lineSequence().take(25)
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.startsWith("#")) {
-                val afterHash = trimmed.removePrefix("#").trim()
-                val prefixes = listOf("name:", "title:", "名称:", "订阅名称:")
-                if (prefixes.any { afterHash.startsWith(it, ignoreCase = true) }) {
-                    val n = afterHash.substringAfter(":").trim()
-                    if (n.isNotBlank()) return n
-                }
-            }
-        }
-
-        // 6. Hostname fallback
-        val host = runCatching { java.net.URI(url).host }.getOrNull()
-        if (!host.isNullOrBlank()) {
-            return host.removePrefix("www.").substringBefore(":")
-        }
-
-        return "订阅-${System.currentTimeMillis() % 1000}"
-    }
-
-    fun getConfigFile(context: Context): File {
-        return context.filesDir.resolve("config.yaml")
-    }
-
-    fun getProfilesDir(context: Context): File {
-        return context.filesDir.resolve("profiles").apply { mkdirs() }
-    }
-
-    /**
-     * Resolves the YAML file of a profile inside the profiles directory.
-     *
-     * The profile id ends up in a file name, and an id can come from a restored backup or a
-     * tampered metadata store. Interpolating it directly (`"$id.yaml"`) would let a crafted
-     * id (`../../databases/x`) write outside the profiles directory, so every path built
-     * from an id goes through [SafeFileName.resolveChild].
-     */
-    internal fun profileFile(context: Context, id: String): File? =
-        SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml")
-
-    /** The previous payload of a profile, kept as `<id>.yaml.bak` next to the profile. */
-    internal fun profileBackupFile(context: Context, id: String): File? =
-        SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.bak")
-
-    /**
-     * Ring of the last [SUBSCRIPTION_HISTORY_KEEP] known-good payloads of a profile, kept
-     * as `<id>.yaml.v1` … `<id>.yaml.v<N>` next to the profile. The single `.bak` only
-     * covers the immediately-previous content: a user who updates twice into a broken
-     * subscription lost both the old and the new payload. The versioned ring gives the
-     * UI a manual "restore previous version" path.
-     */
-    internal fun profileHistoryFiles(context: Context, id: String): List<File> {
-        return (1..SUBSCRIPTION_HISTORY_KEEP).mapNotNull { v ->
-            SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.v$v")
-        }
-    }
-
-    /** Newest history slot of a profile, or null when the ring is empty. */
-    internal fun newestProfileHistoryFile(context: Context, id: String): File? {
-        return profileHistoryFiles(context, id).lastOrNull { it.exists() && it.length() > 0 }
-    }    /** How many known-good versions the per-profile ring keeps (1..3 sensible). */
-    private const val SUBSCRIPTION_HISTORY_KEEP = 3
-
-    /**
-     * Archives the payload that was just replaced (kept in `.bak` by the update
-     * transaction) into the versioned history ring. Called by the update callers AFTER a
-     * hot reload proved the NEW payload loadable — archiving a payload the core cannot
-     * load would poison the recovery path.
-     *
-     * Runs best-effort; a failed rotation only means a shorter ring, never a broken
-     * profile.
-     */
-    internal fun archiveKnownGoodVersion(context: Context, id: String) {
-        val backup = profileBackupFile(context, id)
-            ?.takeIf { it.exists() && it.length() > 0 }
-            ?: return
-        val content = runCatching { backup.readText() }.getOrDefault("")
-        if (!isValidSubscriptionPayload(content)) return
-        val ring = profileHistoryFiles(context, id)
-        // Delete the oldest so the shift below never collides with an existing file.
-        ring.lastOrNull()?.delete()
-        for (i in ring.size - 1 downTo 1) {
-            runCatching {
-                Files.move(ring[i - 1].toPath(), ring[i].toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }
-        runCatching { backup.copyTo(ring.first(), overwrite = true) }
-        Log.i(TAG, "Archived known-good version of profile $id into the history ring")
-    }
-
-    /**
-     * Restores [source] over the active profile file atomically and reports success.
-     * Used by the automatic rollback after a failed reload and by the UI's manual
-     * "restore previous version" action — both must go through the same atomic write
-     * so a crash mid-restore cannot truncate the profile either.
-     */
-    fun restoreProfileFromHistory(context: Context, id: String, source: File): Result<Unit> {
-        return runCatching {
-            val target = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
-            if (!source.exists() || source.length() == 0L) error("历史版本文件为空或不存在")
-            val content = source.readText()
-            if (!isValidSubscriptionPayload(content)) error("历史版本内容无效")
-            writeTextAtomic(target, content)
-            // Reflect the restore in the metadata timestamp so the UI shows it.
-            synchronized(storeLock) {
-                val store = loadStore(context)
-                store.profiles[id]?.let { meta ->
-                    persistStore(
-                        context,
-                        store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis())))
-                    )
-                }
-            }
-            invalidateProfilesCache()
-            Log.i(TAG, "Restored profile $id from history file ${source.name}")
-        }
-    }
+    fun rollbackSubscriptionUpdate(context: Context, id: String): Boolean =
+        ProfileStore.rollbackSubscriptionUpdate(context, id)
 
     suspend fun downloadSubscription(
         context: Context,
         url: String,
         name: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
+                .header("User-Agent", SUBSCRIPTION_USER_AGENT)
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
+            val downloaded = httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     error("HTTP 错误: ${response.code} ${response.message}")
                 }
-
                 val userInfo = parseSubscriptionUserInfo(
                     response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
                 )
-
                 val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
-                if (!isValidSubscriptionPayload(body)) {
-                    error("响应内容不是有效的配置或节点数据 (疑似网页、拦截错误页或不受支持的 Base64 节点列表)")
-                }
-                val id = java.util.UUID.randomUUID().toString()
-                val file = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
-                writeTextAtomic(file, body)
-
-                val resolvedName = extractProfileName(name, response, body, url)
-                val item = ProfileItem(
-                    id = id,
-                    name = resolvedName,
-                    url = url,
-                    file = file,
-                    lastUpdated = System.currentTimeMillis(),
-                    uploadBytes = userInfo?.upload ?: 0L,
-                    downloadBytes = userInfo?.download ?: 0L,
-                    totalBytes = userInfo?.total ?: 0L,
-                    expireTimestamp = userInfo?.expire ?: 0L
-                )
-                saveProfileMetadata(context, item)
-                item
+                val resolvedYaml = ConfigValidation.resolveSubscriptionYaml(body)
+                    ?: error("响应内容不是有效的配置或节点数据 (疑似网页、拦截错误页或不受支持的 Base64 节点列表)")
+                val resolvedName = extractProfileName(name, response, resolvedYaml, url)
+                Triple(resolvedYaml, resolvedName, userInfo)
             }
-        }
-    }
 
-    /**
-     * Automatic rollback of the last subscription update: restores the `.bak` copy (the
-     * payload that was live immediately before the update) over the profile file. Called
-     * when the hot reload of a freshly updated profile failed, so the on-disk config and
-     * the running tunnel stay consistent. Returns false when there is nothing to roll
-     * back to (first import) or the backup is unusable — the caller then surfaces the
-     * failure instead of pretending the old config came back.
-     */
-    fun rollbackSubscriptionUpdate(context: Context, id: String): Boolean {
-        val backup = profileBackupFile(context, id)
-            ?.takeIf { it.exists() && it.length() > 0 }
-            ?: newestProfileHistoryFile(context, id)
-            ?: return false
-        val restored = restoreProfileFromHistory(context, id, backup).isSuccess
-        if (restored) {
-            LogRepository.addLog(
-                "warning",
-                "订阅配置热重载失败，已自动回滚到上一个可用版本"
+            val (resolvedYaml, resolvedName, userInfo) = downloaded
+            validateConfigStructure(resolvedYaml)?.let { reason ->
+                error("订阅配置结构有误：$reason")
+            }
+
+            val id = UUID.randomUUID().toString()
+            val file = ProfileStore.profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+            writeTextAtomic(file, resolvedYaml)
+            val item = ProfileItem(
+                id = id,
+                name = resolvedName,
+                url = url,
+                file = file,
+                lastUpdated = System.currentTimeMillis(),
+                uploadBytes = userInfo?.upload ?: 0L,
+                downloadBytes = userInfo?.download ?: 0L,
+                totalBytes = userInfo?.total ?: 0L,
+                expireTimestamp = userInfo?.expire ?: 0L
             )
+            ProfileStore.saveProfileMetadata(context, item)
+            Result.success(item)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
-        return restored
     }
 
-    /**
-     * Deep structural validation of a subscription payload, run BEFORE the live file is
-     * touched. [isValidSubscriptionPayload] only checks that the content IS a YAML map;
-     * the core additionally rejects payloads whose proxy section is malformed (a node
-     * without a name, duplicate names, a non-list `rules` block). Those cases used to
-     * pass the download check, replace the working file, and only explode at hot-reload
-     * time — with no automatic recovery.
-     *
-     * Deliberately conservative: only structurally certain problems hard-fail. Group
-     * members that reference nodes delivered via `proxy-providers` look "unknown" to a
-     * static check, so unknown member references are NOT errors (the core accepts them).
-     *
-     * @return null when the payload passes, or a human-readable reason it cannot load.
-     */
-    internal fun validateConfigStructure(content: String): String? {
-        val parsed = runCatching { YamlSupport.create().load<Any?>(content) }.getOrNull()
-            ?: return "配置不是有效的 YAML 映射"
-        if (parsed !is Map<*, *>) return "配置顶层不是键值映射"
-
-        val proxies = parsed["proxies"]
-        if (proxies != null && proxies !is List<*>) return "proxies 段不是列表"
-        val proxyNames = LinkedHashSet<String>()
-        if (proxies is List<*>) {
-            for ((idx, entry) in proxies.withIndex()) {
-                if (entry !is Map<*, *>) return "第 ${idx + 1} 个节点不是键值映射"
-                val name = entry["name"]?.toString()
-                if (name.isNullOrBlank()) return "第 ${idx + 1} 个节点缺少 name"
-                if (entry["type"]?.toString().isNullOrBlank()) return "节点「$name」缺少 type"
-                if (!proxyNames.add(name)) return "存在重复节点名: $name"
-            }
-        }
-
-        val groups = parsed["proxy-groups"]
-        if (groups != null && groups !is List<*>) return "proxy-groups 段不是列表"
-        val groupNames = LinkedHashSet<String>()
-        if (groups is List<*>) {
-            for ((idx, entry) in groups.withIndex()) {
-                if (entry !is Map<*, *>) return "第 ${idx + 1} 个策略组不是键值映射"
-                val name = entry["name"]?.toString()
-                if (name.isNullOrBlank()) return "第 ${idx + 1} 个策略组缺少 name"
-                if (!groupNames.add(name)) return "存在重复策略组名: $name"
-                if (entry["type"]?.toString().isNullOrBlank()) return "策略组「$name」缺少 type"
-            }
-        }
-
-        val rules = parsed["rules"]
-        if (rules != null && rules !is List<*>) return "rules 段不是列表"
-        if (rules is List<*>) {
-            for ((idx, rule) in rules.withIndex()) {
-                if (rule !is String) return "第 ${idx + 1} 条规则不是文本: $rule"
-                if (rule.substringBefore(',').isBlank()) return "第 ${idx + 1} 条规则缺少规则类型: $rule"
-                // RULE-SET / AND / OR / NOT rules carry their payload differently, so only
-                // the final ,TARGET is checked — every rule type ends with its target.
-                val target = rule.substringAfterLast(',').trim()
-                if (target.isBlank()) return "第 ${idx + 1} 条规则缺少目标出站: $rule"
-            }
-        }
-        return null
-    }
-
-    /**
-     * Re-downloads a profile and replaces its file in place (the id stays the same).
-     *
-     * The profile NAME is deliberately kept as it is: a name the user set (or accepted
-     * once) is their intent, while the provider's `profile-title` / Content-Disposition
-     * is just metadata that can change at any time. Renaming on every update would
-     * silently undo a manual rename, so the provider-supplied name is only used when the
-     * profile is created for the first time (see [downloadSubscription]).
-     *
-     * The update is a TRANSACTION. The previous implementation overwrote the live file
-     * as soon as the download looked plausible; if the core then failed to load it, the
-     * working configuration was gone and only a manual `.bak` copy could save the user.
-     * Now: download to a staged file → structural validation → kernel pre-validation
-     * (when the core is up) → atomic activation → hot reload → automatic rollback on
-     * any post-activation failure. The known-good ring (see [rotateProfileHistory])
-     * additionally keeps manual recovery possible.
-     */
     suspend fun updateSubscription(
         context: Context,
         id: String,
         name: String,
         url: String
     ): Result<ProfileItem> = withContext(Dispatchers.IO) {
-        runCatching {
-            requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "ClashMeta/1.18.0 Mihomo/1.18.0 Clash/1.0.0")
-                .build()
-
-            val file = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
-
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    error("HTTP 错误: ${response.code} ${response.message}")
-                }
-
-                val userInfo = parseSubscriptionUserInfo(
-                    response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
-                )
-
-                // A capped, atomic replacement: a failed or oversized download must never
-                // destroy the currently working profile file.
-                val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
-                if (!isValidSubscriptionPayload(body)) {
-                    error("更新失败：响应内容不是有效的配置或节点数据 (疑似网页、拦截错误页或不受支持的 Base64 节点列表)")
-                }
-
-                // --- Stage 1: write the candidate NEXT TO the profile, never over it. ---
-                val stagedFile = SafeFileName.resolveChild(getProfilesDir(context), "$id.yaml.staged")
-                    ?: error("无法为订阅创建安全的文件路径")
-                writeTextAtomic(stagedFile, body)
-
-                // --- Stage 2: deep structural validation of the STAGED file. ---
-                val structuralProblem = validateConfigStructure(body)
-                if (structuralProblem != null) {
-                    stagedFile.delete()
-                    error("更新已取消：$structuralProblem；正在运行的旧配置未受影响")
-                }
-
-                // --- Stage 3: atomic activation. ---
-                val hadWorkingContent = file.exists() && file.length() > 0
-                val backupFile = profileBackupFile(context, id)
-                if (hadWorkingContent && backupFile != null) {
-                    runCatching { file.copyTo(backupFile, overwrite = true) }
-                }
-                runCatching {
-                    Files.move(
-                        stagedFile.toPath(), file.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE
-                    )
-                }.recoverCatching {
-                    // Some filesystems refuse ATOMIC_MOVE; a plain move is still atomic
-                    // enough here because the staged file is fully written by now.
-                    Files.move(stagedFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }.onFailure {
-                    error("无法激活新配置文件: ${it.message}")
-                }
-
-                val existing = getProfiles(context).find { it.id == id }
-                val item = ProfileItem(
-                    id = id,
-                    name = name,
-                    url = url,
-                    file = file,
-                    lastUpdated = System.currentTimeMillis(),
-                    scriptEnabled = existing?.scriptEnabled ?: false,
-                    scriptIds = existing?.scriptIds ?: emptyList(),
-                    autoUpdate = existing?.autoUpdate ?: false,
-                    autoUpdateInterval = existing?.autoUpdateInterval ?: 1440,
-                    uploadBytes = userInfo?.upload ?: (existing?.uploadBytes ?: 0L),
-                    downloadBytes = userInfo?.download ?: (existing?.downloadBytes ?: 0L),
-                    totalBytes = userInfo?.total ?: (existing?.totalBytes ?: 0L),
-                    expireTimestamp = userInfo?.expire ?: (existing?.expireTimestamp ?: 0L),
-                    prependRules = existing?.prependRules ?: emptyList(),
-                    hostsEntries = existing?.hostsEntries ?: emptyList(),
-                    dnsServersOverride = existing?.dnsServersOverride ?: emptyList()
-                )
-                saveProfileMetadata(context, item)
-                Log.i(TAG, "Successfully overwritten existing profile id=$id ($name)")
-                item
-            }
+        profileLock(id).withLock {
+            updateSubscriptionLocked(context, id, name, url)
         }
+    }
+
+    private fun updateSubscriptionLocked(
+        context: Context,
+        id: String,
+        name: String,
+        url: String
+    ): Result<ProfileItem> = try {
+        requireSecureRemoteUrl(url, SettingsManager(context).allowPrivateSubscriptionHosts)
+        val file = ProfileStore.profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+        val stagedFile = ProfileStore.profileStagedFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", SUBSCRIPTION_USER_AGENT)
+            .build()
+
+        val (resolvedYaml, userInfo) = httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("HTTP 错误: ${response.code} ${response.message}")
+            }
+            val info = parseSubscriptionUserInfo(
+                response.header("subscription-userinfo") ?: response.header("Subscription-Userinfo")
+            )
+            val body = readBodyCapped(response, MAX_SUBSCRIPTION_BYTES, "响应内容为空")
+            val yaml = ConfigValidation.resolveSubscriptionYaml(body)
+                ?: error("更新失败：响应内容不是有效的配置或节点数据 (疑似网页、拦截错误页或不受支持的 Base64 节点列表)")
+            yaml to info
+        }
+
+        val item = try {
+            writeTextAtomic(stagedFile, resolvedYaml)
+            val problem = validateConfigStructure(resolvedYaml)
+            if (problem != null) {
+                error("更新已取消：$problem；正在运行的旧配置未受影响")
+            }
+            ProfileStore.commitSubscriptionUpdate(
+                context = context,
+                id = id,
+                fallbackName = name,
+                url = url,
+                file = file,
+                stagedFile = stagedFile,
+                backupFile = ProfileStore.profileBackupFile(context, id),
+                userInfo = userInfo
+            )
+        } finally {
+            if (stagedFile.exists()) stagedFile.delete()
+        }
+        Log.i(TAG, "Successfully overwritten existing profile id=$id (${item.name})")
+        Result.success(item)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        Result.failure(t)
     }
 
     fun saveLocalProfile(context: Context, name: String, content: String): ProfileItem {
-        val id = java.util.UUID.randomUUID().toString()
-        val file = profileFile(context, id) ?: error("无法为本地配置创建安全的文件路径")
+        val id = UUID.randomUUID().toString()
+        val file = ProfileStore.profileFile(context, id) ?: error("无法为本地配置创建安全的文件路径")
         writeTextAtomic(file, content)
         val item = ProfileItem(id, name, null, file, System.currentTimeMillis())
-        saveProfileMetadata(context, item)
+        ProfileStore.saveProfileMetadata(context, item)
         return item
     }
 
-    fun importProfileFromUri(context: Context, uri: android.net.Uri): Result<ProfileItem> = runCatching {
-        val contentResolver = context.contentResolver
-        var displayName = "本地配置-${System.currentTimeMillis() % 1000}"
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val sizeIdx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
-                if (sizeIdx != -1 && !cursor.isNull(sizeIdx)) {
-                    val fileSize = cursor.getLong(sizeIdx)
-                    if (fileSize > MAX_SUBSCRIPTION_BYTES) {
-                        error("配置文件过大 (${fileSize / 1024 / 1024} MB, 上限 ${MAX_SUBSCRIPTION_BYTES / 1024 / 1024} MB)")
-                    }
-                }
-                val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                if (nameIdx != -1) {
-                    val fName = cursor.getString(nameIdx)
-                    if (!fName.isNullOrBlank()) {
-                        displayName = fName.removeSuffix(".yaml").removeSuffix(".yml").removeSuffix(".txt")
-                    }
-                }
-            }
-        }
-        val content = contentResolver.openInputStream(uri)?.use { stream ->
-            val out = java.io.StringWriter()
-            stream.bufferedReader(Charsets.UTF_8).use { reader ->
-                val buf = CharArray(64 * 1024)
-                var total = 0L
-                while (true) {
-                    val n = reader.read(buf)
-                    if (n < 0) break
-                    total += n
-                    if (total > MAX_SUBSCRIPTION_BYTES) {
-                        error("配置文件超过 ${MAX_SUBSCRIPTION_BYTES / 1024 / 1024} MB 上限")
-                    }
-                    out.write(buf, 0, n)
-                }
-            }
-            out.toString()
+    fun importProfileFromUri(context: Context, uri: Uri): Result<ProfileItem> = runCatching {
+        val displayName = readImportDisplayNameAndCheckSize(context, uri)
+        val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+            readStreamCapped(stream, STREAM_BUFFER_BYTES, MAX_SUBSCRIPTION_BYTES, "配置文件内容为空")
         } ?: error("无法读取文件内容")
-        if (content.isBlank()) error("配置文件内容为空")
-        if (!isValidSubscriptionPayload(content)) {
-            error("所选文件不是有效的 Clash / Mihomo YAML 配置")
-        }
-        validateConfigStructure(content)?.let { reason ->
+        val resolvedYaml = ConfigValidation.resolveSubscriptionYaml(content)
+            ?: error("所选文件不是有效的 Clash / Mihomo YAML 配置")
+        validateConfigStructure(resolvedYaml)?.let { reason ->
             error("配置文件结构有误：$reason")
         }
-        saveLocalProfile(context, displayName, content)
+        saveLocalProfile(context, displayName, resolvedYaml)
     }
 
-    @Volatile
-    private var cachedProfiles: List<ProfileItem>? = null
-
-    fun invalidateProfilesCache() {
-        synchronized(storeLock) { cachedProfiles = null }
-        ProfileParser.clearCache()
-    }
-
-    @Serializable
-    private data class ProfileMeta(
-        val name: String = "",
-        val url: String? = null,
-        val updated: Long = 0L,
-        val scriptEnabled: Boolean = false,
-        val scriptIds: List<String> = emptyList(),
-        val autoUpdate: Boolean = false,
-        val autoUpdateInterval: Int = 1440,
-        val uploadBytes: Long = 0L,
-        val downloadBytes: Long = 0L,
-        val totalBytes: Long = 0L,
-        val expireTimestamp: Long = 0L,
-        val prependRules: List<String> = emptyList(),
-        val hostsEntries: List<String> = emptyList(),
-        val dnsServersOverride: List<String> = emptyList()
-    )
-
-    /** Single durable store for all profile metadata plus the manual ordering. */
-    @Serializable
-    private data class ProfilesStore(
-        val profiles: Map<String, ProfileMeta> = emptyMap(),
-        val order: List<String> = emptyList()
-    )
-
-    private val storeLock = Any()
-    private val storeJson = Json { ignoreUnknownKeys = true }
-
-    @Volatile
-    private var storeCache: ProfilesStore? = null
-
-    private fun storeFile(context: Context): File = context.filesDir.resolve("profiles_meta.json")
-
-    private fun storeBackupFile(context: Context): File =
-        context.filesDir.resolve("profiles_meta.json.bak")
-
-    private fun loadStore(context: Context): ProfilesStore {
-        storeCache?.let { return it }
-        synchronized(storeLock) {
-            storeCache?.let { return it }
-            storeCache = readStoreFromDisk(context)
-            return storeCache!!
-        }
-    }
-
-    private fun readStoreFromDisk(context: Context): ProfilesStore {
-        val file = storeFile(context)
-        if (!file.exists()) return migrateLegacyPrefsStore(context)
-        val parsed = runCatching { storeJson.decodeFromString<ProfilesStore>(file.readText()) }
-        if (parsed.isSuccess) return parsed.getOrThrow()
-        Log.w(TAG, "Failed to read profiles metadata store, trying backup", parsed.exceptionOrNull())
-        val backup = runCatching { storeJson.decodeFromString<ProfilesStore>(storeBackupFile(context).readText()) }
-        if (backup.isSuccess) {
-            Log.w(TAG, "Recovered profiles metadata from backup")
-            return backup.getOrThrow()
-        }
-        Log.w(TAG, "Profiles metadata unrecoverable; starting an empty store")
-        return ProfilesStore()
-    }
-
-    /** One-time migration from the legacy per-key SharedPreferences metadata store. */
-    private fun migrateLegacyPrefsStore(context: Context): ProfilesStore {
-        val prefs = context.getSharedPreferences("profiles_meta", Context.MODE_PRIVATE)
-        val metas = mutableMapOf<String, ProfileMeta>()
-        val files = getProfilesDir(context).listFiles { f -> f.extension == "yaml" } ?: emptyArray()
-        for (file in files) {
-            val id = file.nameWithoutExtension
-            metas[id] = ProfileMeta(
-                name = prefs.getString("${id}_name", null) ?: id,
-                url = prefs.getString("${id}_url", null),
-                updated = prefs.getLong("${id}_updated", file.lastModified()),
-                scriptEnabled = prefs.getBoolean("${id}_script_enabled", false),
-                scriptIds = prefs.getString("${id}_script_ids", "")
-                    ?.split(",")?.filter { it.isNotBlank() } ?: emptyList(),
-                autoUpdate = prefs.getBoolean("${id}_auto_update", false),
-                autoUpdateInterval = prefs.getInt("${id}_auto_update_interval", 1440),
-                uploadBytes = prefs.getLong("${id}_upload_bytes", 0L),
-                downloadBytes = prefs.getLong("${id}_download_bytes", 0L),
-                totalBytes = prefs.getLong("${id}_total_bytes", 0L),
-                expireTimestamp = prefs.getLong("${id}_expire_timestamp", 0L)
-            )
-        }
-        val order = prefs.getString("custom_profile_order", null)
-            ?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
-        val store = ProfilesStore(profiles = metas, order = order)
-        val written = runCatching { writeTextAtomic(storeFile(context), storeJson.encodeToString(store)) }
-            .onFailure { Log.w(TAG, "Failed to persist migrated profiles metadata", it) }
-            .isSuccess
-        // Only drop the legacy keys once the JSON store is durable on disk.
-        if (written) {
-            prefs.edit { clear() }
-        }
-        return store
-    }
-
-    private fun persistStore(context: Context, store: ProfilesStore) {
-        synchronized(storeLock) {
-            storeCache = store
-            // The cached profile listing is derived from this store (plus the directory
-            // scan): every store mutation must drop it, otherwise a freshly imported or
-            // downloaded profile stays invisible until the process restarts.
-            cachedProfiles = null
-            runCatching {
-                val json = storeJson.encodeToString(store)
-                writeTextAtomic(storeFile(context), json)
-                // Keep the previous good copy around so a corrupted main file can be recovered.
-                writeTextAtomic(storeBackupFile(context), json)
-            }.onFailure { Log.w(TAG, "Failed to persist profiles metadata", it) }
-        }
-    }
-
-    fun getProfiles(context: Context, forceReload: Boolean = false): List<ProfileItem> {
-        if (!forceReload) {
-            cachedProfiles?.let { return it }
-        }
-        // Hold the store lock across the whole listing so a concurrent delete/save cannot
-        // slip in between the directory scan and the cache write, which resurrected ghost
-        // entries in the UI.
-        synchronized(storeLock) {
-            if (!forceReload) {
-                cachedProfiles?.let { return it }
-            }
-
-            val dir = getProfilesDir(context)
-            val files = dir.listFiles { f -> f.extension == "yaml" } ?: emptyArray()
-            val store = loadStore(context)
-
-            val items = files.map { file ->
-                val id = file.nameWithoutExtension
-                val meta = store.profiles[id] ?: ProfileMeta(name = id, updated = file.lastModified())
-                ProfileItem(
-                    id = id,
-                    name = meta.name,
-                    url = meta.url,
-                    file = file,
-                    lastUpdated = if (meta.updated > 0L) meta.updated else file.lastModified(),
-                    scriptEnabled = meta.scriptEnabled,
-                    scriptIds = meta.scriptIds,
-                    autoUpdate = meta.autoUpdate,
-                    autoUpdateInterval = meta.autoUpdateInterval,
-                    uploadBytes = meta.uploadBytes,
-                    downloadBytes = meta.downloadBytes,
-                    totalBytes = meta.totalBytes,
-                    expireTimestamp = meta.expireTimestamp,
-                    prependRules = meta.prependRules,
-                    hostsEntries = meta.hostsEntries,
-                    dnsServersOverride = meta.dnsServersOverride
-                )
-            }
-
-            val result = if (store.order.isNotEmpty()) {
-                // id -> index map built once: `store.order.indexOf(it.id)` inside the
-                // comparator was O(n^2) and dominated the listing cost for many profiles.
-                val orderIndex = HashMap<String, Int>(store.order.size * 2)
-                store.order.forEachIndexed { index, id -> orderIndex[id] = index }
-                items.sortedWith(
-                    compareBy { orderIndex[it.id] ?: Int.MAX_VALUE }
-                )
-            } else {
-                items.sortedByDescending { it.lastUpdated }
-            }
-            cachedProfiles = result
-            return result
-        }
-    }
-
-    fun saveProfileOrder(context: Context, orderIds: List<String>) {
-        synchronized(storeLock) {
-            val store = loadStore(context)
-            persistStore(context, store.copy(order = orderIds))
-        }
-        invalidateProfilesCache()
-    }
-
-    fun updateProfile(context: Context, item: ProfileItem) {
-        saveProfileMetadata(context, item)
-    }
-
-    @Suppress("unused")
-    fun saveProfileContent(context: Context, id: String, content: String): Boolean {
-        return runCatching {
-            val file = profileFile(context, id) ?: return false
-            writeTextAtomic(file, content)
-            synchronized(storeLock) {
-                val store = loadStore(context)
-                store.profiles[id]?.let { meta ->
-                    persistStore(context, store.copy(profiles = store.profiles + (id to meta.copy(updated = System.currentTimeMillis()))))
+    private fun readImportDisplayNameAndCheckSize(context: Context, uri: Uri): String {
+        var displayName = "本地配置-${System.currentTimeMillis() % FALLBACK_NAME_MOD}"
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use
+            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (sizeIdx != -1 && !cursor.isNull(sizeIdx)) {
+                val fileSize = cursor.getLong(sizeIdx)
+                if (fileSize > MAX_SUBSCRIPTION_BYTES) {
+                    error("配置文件过大 (${fileSize / BYTES_PER_MB} MB, 上限 ${MAX_SUBSCRIPTION_BYTES / BYTES_PER_MB} MB)")
                 }
             }
-            invalidateProfilesCache()
-            true
-        }.getOrDefault(defaultValue = false)
-    }
-
-    private fun saveProfileMetadata(context: Context, item: ProfileItem) {
-        synchronized(storeLock) {
-            val store = loadStore(context)
-            val meta = ProfileMeta(
-                name = item.name,
-                url = item.url,
-                updated = item.lastUpdated,
-                scriptEnabled = item.scriptEnabled,
-                scriptIds = item.scriptIds,
-                autoUpdate = item.autoUpdate,
-                autoUpdateInterval = item.autoUpdateInterval,
-                uploadBytes = item.uploadBytes,
-                downloadBytes = item.downloadBytes,
-                totalBytes = item.totalBytes,
-                expireTimestamp = item.expireTimestamp,
-                prependRules = item.prependRules,
-                hostsEntries = item.hostsEntries,
-                dnsServersOverride = item.dnsServersOverride
-            )
-            persistStore(context, store.copy(profiles = store.profiles + (item.id to meta)))
+            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIdx != -1) {
+                val fName = cursor.getString(nameIdx)
+                if (!fName.isNullOrBlank()) {
+                    val trimmed = fName.removeSuffix(".yaml").removeSuffix(".yml").removeSuffix(".txt")
+                    ConfigSanitizer.stripControlAndLineBreaks(trimmed).trim()
+                        .takeIf { it.isNotEmpty() }
+                        ?.let { displayName = it }
+                }
+            }
         }
+        return displayName
     }
 
-    fun deleteProfile(context: Context, id: String) {
-        // The `.bak` holds the PREVIOUS subscription payload, including the server
-        // credentials of the old nodes. It is invisible in the UI (the listing only shows
-        // `*.yaml`), so it used to survive the deletion forever and keep the old
-        // credentials on disk. Delete it together with the profile.
-        profileFile(context, id)?.delete()
-        profileBackupFile(context, id)?.delete()
-        synchronized(storeLock) {
-            val store = loadStore(context)
-            persistStore(
-                context,
-                store.copy(profiles = store.profiles - id, order = store.order.filter { it != id })
-            )
-        }
-        invalidateProfilesCache()
-    }
+    fun invalidateProfilesCache() = ProfileStore.invalidateProfilesCache()
 
-    /**
-     * The plaintext-DNS reject rule.
-     *
-     * Rejects DNS to any destination except the tunnel's own portal, so an app that
-     * hardcodes 8.8.8.8 falls back to the resolver the tunnel controls.
-     *
-     * Two details matter:
-     *  - The portal addresses come from [TunConfig], the single source of truth shared with
-     *    `ClashCore.startTun` and the VPN service. Hardcoded literals here drifted apart
-     *    from the actual interface addresses, which broke the exemption (and with it the
-     *    core's own DNS lookups).
-     *  - The rule covers UDP **and** TCP. Plain DNS over TCP/53 was not blocked at all
-     *    before, so the protection was trivially bypassed.
-     *
-     * The rule vocabulary is deliberately restricted to types the core actually implements:
-     * `DST-IP` does not exist in Mihomo's rule parser (an `AND` rule using it makes the
-     * WHOLE config fail to load with "unsupported rule type DST-IP"), so the portal
-     * exemption uses `IP-CIDR` with an exact host prefix instead.
-     */
+    fun getProfiles(context: Context, forceReload: Boolean = false): List<ProfileItem> =
+        ProfileStore.getProfiles(context, forceReload)
+
+    fun saveProfileOrder(context: Context, orderIds: List<String>) =
+        ProfileStore.saveProfileOrder(context, orderIds)
+
+    fun updateProfile(context: Context, item: ProfileItem) =
+        ProfileStore.saveProfileMetadata(context, item)
+
+    fun deleteProfile(context: Context, id: String) =
+        ProfileStore.deleteProfile(context, id)
+
+    fun migrateLegacyScriptScopes(context: Context) =
+        ProfileStore.migrateLegacyScriptScopes(context)
+
     internal fun buildDnsRejectRule(): String {
         val v4 = "${TunConfig.IPV4_PORTAL}/32"
         val v6 = "${TunConfig.IPV6_PORTAL}/128"
@@ -977,166 +392,13 @@ object ConfigManager {
             "(NOT,((IP-CIDR,$v4,no-resolve))),(NOT,((IP-CIDR,$v6,no-resolve)))),REJECT"
     }
 
-    /**
-     * Runtime-critical top-level keys belong to the injected header. A subscription must not be
-     * able to reintroduce or override them, so they are removed structurally after parsing: text
-     * matching is trivially defeated by quoting a key (`"external-controller": 0.0.0.0:9090`).
-     *
-     * The same single parse/dump pass also applies the structured [overrides] (rule prepending
-     * and hosts merging) and the optional plaintext-DNS reject rule, so profile overrides get
-     * the same "cannot be defeated by quoting" guarantee as the key stripping.
-     */
     internal fun sanitizeUserConfig(
         raw: String,
         overrides: ConfigOverrides = ConfigOverrides(),
         blockThirdPartyDns: Boolean = false
-    ): String {
-        return try {
-            // Shared, hardened SnakeYAML setup: 100 MB code point limit (the default 3 MB
-            // silently rejected large subscriptions) and YAML 1.2 booleans, so nodes such as
-            // `name: on` or a password `yes` survive the parse/dump round-trip.
-            val yaml = YamlSupport.create()
-            val parsed = yaml.load<Any?>(raw)
-            if (parsed !is Map<*, *>) return raw
+    ): String = ConfigValidation.sanitizeUserConfig(raw, overrides, blockThirdPartyDns)
 
-            val sanitized = LinkedHashMap<String, Any?>()
-            for ((key, value) in parsed) {
-                val keyStr = key?.toString() ?: continue
-                if (keyStr.lowercase() in PROTECTED_TOP_LEVEL_KEYS) continue
-                sanitized[keyStr] = value
-            }
-
-            if (blockThirdPartyDns) {
-                val existingRules = (sanitized["rules"] as? List<*>) ?: emptyList<Any>()
-                sanitized["rules"] = listOf(buildDnsRejectRule()) + existingRules
-            }
-
-            val cleanPrependRules = ConfigSanitizer.sanitizePrependRules(overrides.prependRules)
-            if (cleanPrependRules.isNotEmpty()) {
-                val existingRules = (sanitized["rules"] as? List<*>) ?: emptyList<Any>()
-                sanitized["rules"] = cleanPrependRules + existingRules
-            }
-
-            val cleanHostsEntries = ConfigSanitizer.sanitizeHostsEntries(overrides.hostsEntries)
-            if (cleanHostsEntries.isNotEmpty()) {
-                val hosts = LinkedHashMap<String, Any?>()
-                for (entry in cleanHostsEntries) {
-                    val domain = entry.substringBefore(':').trim()
-                    val target = entry.substringAfter(':', "").trim()
-                    if (domain.isNotBlank() && target.isNotBlank()) {
-                        hosts[domain] = target
-                    }
-                }
-                if (hosts.isNotEmpty()) {
-                    val existingHosts = sanitized["hosts"] as? Map<*, *>
-                    if (existingHosts != null) {
-                        for ((key, value) in existingHosts) {
-                            hosts.putIfAbsent(key?.toString() ?: continue, value)
-                        }
-                    }
-                    sanitized["hosts"] = hosts
-                }
-            }
-
-            yaml.dump(sanitized)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            Log.w(TAG, "Structural config sanitization failed, falling back to text filter", e)
-            // The text fallback cannot apply the structured overrides (prepend rules, hosts),
-            // but the plaintext-DNS reject rule is a security control: silently dropping it
-            // would be a security downgrade the user never sees (the toggle still reads
-            // "on"). So it is injected textually as the FIRST rule instead.
-            val textFiltered = sanitizeUserConfigByText(raw)
-            val withDnsRule = if (blockThirdPartyDns) {
-                injectDnsRejectRuleTextually(textFiltered)
-            } else {
-                textFiltered
-            }
-            // LogRepository deduplicates repeated identical lines.
-            LogRepository.addLog(
-                "warning",
-                if (blockThirdPartyDns) {
-                    "配置 YAML 结构解析失败，已回退到文本清洗；本次不会应用前置规则与 Hosts 覆写，第三方 DNS 拦截规则已尽力注入"
-                } else {
-                    "配置 YAML 结构解析失败，已回退到文本清洗；本次不会应用前置规则、Hosts 覆写与第三方 DNS 拦截"
-                }
-            )
-            withDnsRule
-        }
-    }
-
-    /**
-     * Inserts the plaintext-DNS reject rule as the first entry of the top-level `rules:` list
-     * of an already text-filtered config.
-     *
-     * The rule is placed FIRST so it keeps priority over the subscription's own rules: a
-     * subscription that matches `MATCH,DIRECT` or an IP rule would otherwise swallow the
-     * DNS traffic before the reject rule is ever consulted.
-     *
-     * Returns the input unchanged (and reports failure) when no `rules:` key can be located —
-     * in that case the caller must make the downgrade visible instead of pretending the
-     * protection is active.
-     */
-    internal fun injectDnsRejectRuleTextually(text: String): String {
-        val rule = buildDnsRejectRule()
-        val lines = text.lines()
-        var rulesIndex = -1
-        for (i in lines.indices) {
-            val line = lines[i]
-            if (line.isBlank() || line.trimStart().startsWith("#")) continue
-            // A top-level key: no leading whitespace.
-            if (line.first().isWhitespace()) continue
-            val key = line.substringBefore(":").trim().trim('"', '\'')
-            if (key.equals("rules", ignoreCase = true)) {
-                rulesIndex = i
-                break
-            }
-        }
-        if (rulesIndex == -1) {
-            // No rules section at all: create one at the end of the document.
-            val builder = StringBuilder(text)
-            if (builder.isNotEmpty() && !builder.endsWith("\n")) builder.append('\n')
-            builder.append("rules:\n")
-            builder.append("  - ").append(rule).append('\n')
-            return builder.toString()
-        }
-
-        val builder = StringBuilder()
-        for ((i, line) in lines.withIndex()) {
-            if (i == rulesIndex) {
-                builder.append(line).append('\n')
-                builder.append("  - ").append(rule).append('\n')
-                continue
-            }
-            builder.append(line).append('\n')
-        }
-        // lines() keeps a trailing empty element for a trailing newline; drop the extra
-        // newline that the loop just added for it.
-        val result = builder.toString()
-        return if (result.endsWith("\n\n") && text.endsWith("\n")) result.dropLast(1) else result
-    }
-
-    /** Last-resort filter for configs that are not valid YAML on their own. */
-    private fun sanitizeUserConfigByText(raw: String): String {
-        val builder = StringBuilder()
-        var skipBlock = false
-        raw.lineSequence().forEach { line ->
-            val isTopLevel = line.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("\t") &&
-                !line.startsWith("#") && !line.startsWith("-") && line.contains(":")
-            if (isTopLevel) {
-                val key = line.substringBefore(":").trim().trim('"', '\'')
-                skipBlock = key.lowercase() in PROTECTED_TOP_LEVEL_KEYS
-            }
-            if (!skipBlock) {
-                builder.appendLine(line)
-            }
-        }
-        return builder.toString()
-    }
-
-    /** Options injected into the runtime header; pulled out so the template is unit-testable. */
-    internal data class RuntimeHeaderOptions(
+    data class RuntimeHeaderOptions(
         val tunnelMode: String,
         val logLevel: String,
         val ipv6Enabled: Boolean,
@@ -1149,17 +411,6 @@ object ConfigManager {
         val apiSecret: String? = null
     )
 
-    private const val MAX_LISTEN_PORT = 65535
-    private const val MIN_MIXED_PORT = 1024
-
-    /**
-     * LAN sharing with an access password: HTTP/SOCKS clients must authenticate, while
-     * loopback stays exempt so the phone itself is never prompted. These keys are in
-     * PROTECTED_TOP_LEVEL_KEYS, so subscriptions cannot override the injected auth.
-     *
-     * Lines are pre-indented by 12 spaces to survive the header template's trimIndent(),
-     * which computes its common indent AFTER interpolation (same trick as the DNS lists).
-     */
     internal fun buildLanAuthBlock(allowLan: Boolean, lanPassword: String): String {
         val cleanPassword = ConfigSanitizer.stripControlAndLineBreaks(lanPassword)
         return if (!allowLan || cleanPassword.isBlank()) {
@@ -1181,12 +432,12 @@ object ConfigManager {
         nameserversYaml: String,
         fallbackYaml: String
     ): String {
-        val safeMode = when (options.tunnelMode.lowercase().trim()) {
+        val safeMode = when (options.tunnelMode.lowercase(Locale.ROOT).trim()) {
             "global" -> "global"
             "direct" -> "direct"
             else -> "rule"
         }
-        val safeLogLevel = when (options.logLevel.lowercase().trim()) {
+        val safeLogLevel = when (options.logLevel.lowercase(Locale.ROOT).trim()) {
             "silent" -> "silent"
             "error" -> "error"
             "warning" -> "warning"
@@ -1194,7 +445,6 @@ object ConfigManager {
             else -> "info"
         }
         val safeMixedPort = options.mixedPort.coerceIn(MIN_MIXED_PORT, MAX_LISTEN_PORT)
-
         val lanAuthYaml = buildLanAuthBlock(options.allowLan, options.lanPassword)
         val controllerYaml = buildControllerBlock(options.externalController, options.apiSecret)
         val safeNameserversYaml = ConfigSanitizer.sanitizeDnsYamlBlock(
@@ -1250,12 +500,6 @@ $safeFallbackYaml
         """.trimIndent()
     }
 
-    /**
-     * The external-controller block gives the app a structured view of the core (connections,
-     * providers, memory) and must never be reachable from outside the device. Keys are in
-     * PROTECTED_TOP_LEVEL_KEYS, so subscriptions cannot rebind the controller or replace the
-     * random per-process secret. Lines are pre-indented to survive trimIndent().
-     */
     internal fun buildControllerBlock(listenAt: String?, secret: String?): String {
         val safeListen = ConfigSanitizer.sanitizeControllerListen(listenAt)
         val safeSecret = secret?.let(ConfigSanitizer::stripControlAndLineBreaks)?.takeIf { it.isNotBlank() }
@@ -1269,43 +513,7 @@ $safeFallbackYaml
         }
     }
 
-    private suspend fun executeProfileScriptsSafely(
-        context: Context,
-        rawYaml: String,
-        targetIds: List<String>
-    ): String {
-        return try {
-            val scriptResult = ConfigScriptEngine.executeScripts(
-                context = context,
-                rawYaml = rawYaml,
-                targetScriptIds = targetIds
-            )
-            if (scriptResult.hasFailures) {
-                Log.w(
-                    TAG,
-                    "Config scripts partially failed (${scriptResult.failed.size}/${scriptResult.total}); " +
-                        "falling back to the original config"
-                )
-            }
-            scriptResult.yaml
-        } catch (t: CancellationException) {
-            throw t
-        } catch (t: Throwable) {
-            Log.w(TAG, "Config script execution crashed; falling back to original config", t)
-            LogRepository.addLog(
-                "warning",
-                "配置脚本执行异常，已安全回退到原始配置：${t.message ?: t.javaClass.simpleName}"
-            )
-            rawYaml
-        }
-    }
-
-    private val prepareLock = Mutex()
-
     suspend fun prepareConfig(context: Context, sourceFile: File?): File {
-        // Serializes whole-file synthesis: a UI-triggered reload and a VPN start running
-        // concurrently would otherwise interleave and one write could clobber the other's
-        // header/body combination in config.yaml.
         return prepareLock.withLock {
             prepareConfigLocked(context, sourceFile)
         }
@@ -1313,30 +521,22 @@ $safeFallbackYaml
 
     private suspend fun prepareConfigLocked(context: Context, sourceFile: File?): File {
         val settings = SettingsManager(context)
-        val finalContent: String
-
-        val activeProfile = if (sourceFile != null) {
-            getProfiles(context).find {
-                it.file.absolutePath == sourceFile.absolutePath || it.file.name == sourceFile.name || it.id == sourceFile.nameWithoutExtension
-            }
-        } else null
-
-        // Per-profile DNS override: when set it replaces the global upstream list entirely.
+        val activeProfile = findActiveProfile(context, sourceFile)
         val nameserversYaml = if (activeProfile?.dnsServersOverride.isNullOrEmpty()) {
             ConfigSanitizer.formatDnsSettingYaml(settings.dnsNameservers, ConfigSanitizer.DEFAULT_NAMESERVERS)
         } else {
-            ConfigSanitizer.formatDnsServersYaml(activeProfile.dnsServersOverride, ConfigSanitizer.DEFAULT_NAMESERVERS)
+            ConfigSanitizer.formatDnsServersYaml(
+                activeProfile.dnsServersOverride,
+                ConfigSanitizer.DEFAULT_NAMESERVERS
+            )
         }
         val fallbackYaml = ConfigSanitizer.formatDnsSettingYaml(
             settings.dnsFallbackServers,
             ConfigSanitizer.DEFAULT_FALLBACK_SERVERS
         )
 
-        // Bring the REST controller up with the same credentials on every config load.
         ApiController.acquire()
         if (!ApiController.isReady) {
-            // Request records, DNS and the core status page all read from the controller;
-            // without it those views stay silently empty, so make the cause visible once.
             LogRepository.addLog(
                 "warning",
                 "本机 9090-9199 端口均被占用，external-controller 不可用；请求记录与内核状态将为空"
@@ -1360,56 +560,110 @@ $safeFallbackYaml
             fallbackYaml
         )
 
-        if ((sourceFile != null) && sourceFile.exists()) {
-            val originalContent = sourceFile.readText()
-            // Empty scriptIds means "no scripts bound" (explicit binding wins); legacy
-            // profiles that predate bindings are migrated in MihomoApplication.
-            // Honors the global scriptingEnabled master switch in Settings.
-            val targetIds = if (settings.scriptingEnabled && activeProfile != null && activeProfile.scriptEnabled) {
-                activeProfile.scriptIds
-            } else emptyList()
-            val rawContent = if (targetIds.isNotEmpty()) {
-                Log.i(TAG, "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name} (${targetIds.size} scripts)...")
-                executeProfileScriptsSafely(context, originalContent, targetIds)
-            } else {
-                originalContent
-            }
-            val userContent = sanitizeUserConfig(
-                rawContent,
-                overrides = ConfigOverrides(
-                    prependRules = activeProfile?.prependRules ?: emptyList(),
-                    hostsEntries = activeProfile?.hostsEntries ?: emptyList(),
-                    dnsServersOverride = activeProfile?.dnsServersOverride ?: emptyList()
-                ),
-                blockThirdPartyDns = settings.blockThirdPartyDns
-            )
-            // Cleanly prepend runtime settings without mangling proxies, rules or formatting
-            finalContent = "$header\n$userContent"
-            Log.i(TAG, "Prepared synthesized config with user profile: ${sourceFile.name}")
-        } else {
-            val defaultBody = """
-                proxies: []
-                proxy-groups:
-                  - name: GLOBAL
-                    type: select
-                    proxies:
-                      - DIRECT
-                rules:
-                  - MATCH,DIRECT
-            """.trimIndent()
-            finalContent = "$header\n$defaultBody"
-            Log.i(TAG, "Prepared default fallback config")
-        }
-
+        val userBody = buildUserConfigBody(context, settings, sourceFile, activeProfile)
+        val finalContent = "$header\n$userBody"
         val targetFile = getConfigFile(context)
         writeTextAtomic(targetFile, finalContent)
-        runCatching {
-            com.github.kr328.clash.core.bridge.Bridge.init(context)
-            val clashHomeConfig = context.filesDir.resolve("clash").apply { mkdirs() }.resolve("config.yaml")
-            // Write the same content to the core's home copy without reading it back.
-            writeTextAtomic(clashHomeConfig, finalContent)
-        }
-
+        syncConfigToClashHome(context, finalContent)
         return targetFile
+    }
+}
+
+private suspend fun executeProfileScriptsSafely(
+    context: Context,
+    rawYaml: String,
+    targetIds: List<String>
+): String {
+    return try {
+        val scriptResult = ConfigScriptEngine.executeScripts(
+            context = context,
+            rawYaml = rawYaml,
+            targetScriptIds = targetIds
+        )
+        if (scriptResult.hasFailures) {
+            Log.w(
+                TAG,
+                "Config scripts partially failed (${scriptResult.failed.size}/${scriptResult.total}); " +
+                    "falling back to the original config"
+            )
+        }
+        scriptResult.yaml
+    } catch (t: CancellationException) {
+        throw t
+    } catch (t: Throwable) {
+        Log.w(TAG, "Config script execution crashed; falling back to original config", t)
+        LogRepository.addLog(
+            "warning",
+            "配置脚本执行异常，已安全回退到原始配置：${t.message ?: t.javaClass.simpleName}"
+        )
+        rawYaml
+    }
+}
+
+private fun findActiveProfile(context: Context, sourceFile: File?): ProfileItem? {
+    if (sourceFile == null) return null
+    return ConfigManager.getProfiles(context).find {
+        it.file.absolutePath == sourceFile.absolutePath ||
+            it.file.name == sourceFile.name ||
+            it.id == sourceFile.nameWithoutExtension
+    }
+}
+
+private suspend fun buildUserConfigBody(
+    context: Context,
+    settings: SettingsManager,
+    sourceFile: File?,
+    activeProfile: ProfileItem?
+): String {
+    if (sourceFile == null || !sourceFile.exists()) {
+        Log.i(TAG, "Prepared default fallback config")
+        return """
+            proxies: []
+            proxy-groups:
+              - name: GLOBAL
+                type: select
+                proxies:
+                  - DIRECT
+            rules:
+              - MATCH,DIRECT
+        """.trimIndent()
+    }
+
+    val originalContent = sourceFile.readText()
+    val targetIds = if (settings.scriptingEnabled && activeProfile != null && activeProfile.scriptEnabled) {
+        activeProfile.scriptIds
+    } else {
+        emptyList()
+    }
+    val rawContent = if (targetIds.isNotEmpty()) {
+        Log.i(
+            TAG,
+            "Applying config rewrite scripts for profile: ${activeProfile?.name ?: sourceFile.name} " +
+                "(${targetIds.size} scripts)..."
+        )
+        executeProfileScriptsSafely(context, originalContent, targetIds)
+    } else {
+        originalContent
+    }
+    val sanitized = ConfigManager.sanitizeUserConfig(
+        rawContent,
+        overrides = ConfigOverrides(
+            prependRules = activeProfile?.prependRules ?: emptyList(),
+            hostsEntries = activeProfile?.hostsEntries ?: emptyList(),
+            dnsServersOverride = activeProfile?.dnsServersOverride ?: emptyList()
+        ),
+        blockThirdPartyDns = settings.blockThirdPartyDns
+    )
+    Log.i(TAG, "Prepared synthesized config with user profile: ${sourceFile.name}")
+    return sanitized
+}
+
+private fun syncConfigToClashHome(context: Context, finalContent: String) {
+    try {
+        com.github.kr328.clash.core.bridge.Bridge.init(context)
+        val clashHomeConfig = context.filesDir.resolve("clash").apply { mkdirs() }.resolve("config.yaml")
+        ConfigManager.writeTextAtomic(clashHomeConfig, finalContent)
+    } catch (t: Throwable) {
+        Log.w(TAG, "Failed to sync Clash home config.yaml", t)
     }
 }

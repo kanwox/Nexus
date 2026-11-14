@@ -61,7 +61,7 @@ internal object YamlSupport {
         override fun resolve(kind: NodeId, value: String?, implicit: Boolean): Tag {
             val tag = super.resolve(kind, value, implicit)
             if (implicit && tag == Tag.BOOL && value != null) {
-                val normalized = value.lowercase()
+                val normalized = value.lowercase(java.util.Locale.ROOT)
                 if (normalized != "true" && normalized != "false") return Tag.STR
             }
             return tag

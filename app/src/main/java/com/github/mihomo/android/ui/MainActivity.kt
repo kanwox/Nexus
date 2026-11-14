@@ -1,3 +1,5 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.ui
 
 import android.Manifest
@@ -8,12 +10,14 @@ import android.os.Bundle
 import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.data.LogRepository
 import com.github.mihomo.android.data.SettingsManager
@@ -22,6 +26,8 @@ import com.github.mihomo.android.service.VpnState
 import com.github.mihomo.android.ui.components.CupertinoToast
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.ui.theme.MihomoTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Activity shell: owns permission flows and theme wiring. All UI orchestration
@@ -62,6 +68,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         settingsManager = SettingsManager(this)
 
@@ -101,10 +108,12 @@ class MainActivity : ComponentActivity() {
         MihomoVpnService.isUiInForeground = true
         // The screen-state receiver lives in the VPN service; if the service was destroyed
         // while the screen was off, LogRepository (and the native core) could stay gated off.
-        // Refresh both from the authoritative PowerManager state whenever the UI comes back.
-        val interactive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
-        LogRepository.isScreenOff = !interactive
-        if (interactive) ClashCore.setSuspended(false)
+        // Refresh both from the authoritative PowerManager state off the main thread.
+        lifecycleScope.launch(Dispatchers.IO) {
+            val interactive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
+            LogRepository.isScreenOff = !interactive
+            if (interactive) ClashCore.setSuspended(false)
+        }
     }
 
     override fun onStop() {

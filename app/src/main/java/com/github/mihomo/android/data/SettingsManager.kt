@@ -16,8 +16,13 @@ enum class AppFont {
     SYSTEM, IOS
 }
 
-class SettingsManager(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("mihomo_settings", Context.MODE_PRIVATE)
+class SettingsManager internal constructor(
+    private val prefs: SharedPreferences,
+    private val lanPasswordCipher: LanPasswordCipher = LanPasswordCipher.defaultFor(prefs)
+) {
+    constructor(context: Context) : this(
+        context.getSharedPreferences("mihomo_settings", Context.MODE_PRIVATE)
+    )
 
     var selectedProfileId: String?
         get() = prefs.getString("selected_profile_id", null)
@@ -37,7 +42,8 @@ class SettingsManager(context: Context) {
     var perAppProxyMode: PerAppProxyMode
         get() {
             val raw = prefs.getString("per_app_proxy_mode", PerAppProxyMode.DISABLED.name)
-            return runCatching { PerAppProxyMode.valueOf(raw!!) }.getOrDefault(PerAppProxyMode.DISABLED)
+                ?: return PerAppProxyMode.DISABLED
+            return runCatching { PerAppProxyMode.valueOf(raw) }.getOrDefault(PerAppProxyMode.DISABLED)
         }
         set(value) = prefs.edit { putString("per_app_proxy_mode", value.name) }
 
@@ -84,10 +90,54 @@ class SettingsManager(context: Context) {
     /**
      * Access password for LAN proxy clients; the username is fixed to "nexus". Empty means
      * the mixed port is open without authentication. Only injected when allow-lan is on.
+     *
+     * Stored encrypted at rest under [KEY_ALLOW_LAN_PASSWORD_ENC] via [LanPasswordCipher]
+     * (Android Keystore AES-256-GCM on devices, software AES-256-GCM fallback in JVM tests).
+     * Legacy plaintext values under [KEY_ALLOW_LAN_PASSWORD_LEGACY] are transparently migrated
+     * and removed on first read.
      */
     var allowLanPassword: String
-        get() = prefs.getString("allow_lan_password", "") ?: ""
-        set(value) = prefs.edit { putString("allow_lan_password", value.trim()) }
+        get() = readAllowLanPassword()
+        set(value) = writeAllowLanPassword(value)
+
+    private fun readAllowLanPassword(): String {
+        val encoded = prefs.getString(KEY_ALLOW_LAN_PASSWORD_ENC, null)
+        if (!encoded.isNullOrBlank()) {
+            return lanPasswordCipher.decrypt(encoded) ?: ""
+        }
+        val legacy = prefs.getString(KEY_ALLOW_LAN_PASSWORD_LEGACY, null) ?: return ""
+        val clean = ConfigSanitizer.stripControlAndLineBreaks(legacy).trim()
+        if (clean.isEmpty()) {
+            runCatching { prefs.edit { remove(KEY_ALLOW_LAN_PASSWORD_LEGACY) } }
+            return ""
+        }
+        runCatching {
+            val encrypted = lanPasswordCipher.encrypt(clean)
+            prefs.edit {
+                putString(KEY_ALLOW_LAN_PASSWORD_ENC, encrypted)
+                remove(KEY_ALLOW_LAN_PASSWORD_LEGACY)
+            }
+        }
+        return clean
+    }
+
+    private fun writeAllowLanPassword(value: String) {
+        val clean = ConfigSanitizer.stripControlAndLineBreaks(value).trim()
+        if (clean.isEmpty()) {
+            prefs.edit {
+                remove(KEY_ALLOW_LAN_PASSWORD_ENC)
+                remove(KEY_ALLOW_LAN_PASSWORD_LEGACY)
+            }
+            return
+        }
+        val encrypted = runCatching { lanPasswordCipher.encrypt(clean) }.getOrNull()
+        prefs.edit {
+            if (encrypted != null) {
+                putString(KEY_ALLOW_LAN_PASSWORD_ENC, encrypted)
+            }
+            remove(KEY_ALLOW_LAN_PASSWORD_LEGACY)
+        }
+    }
 
     var dnsIpv6Enabled: Boolean
         get() = prefs.getBoolean("dns_ipv6_enabled", false)
@@ -161,7 +211,10 @@ class SettingsManager(context: Context) {
         const val LEGACY_STAGING_PROFILE_ID = "_legacy_restore_"
 
         /** Prefix of the pre-isolation global selection keys. */
-        private const val LEGACY_GLOBAL_PREFIX = "sel_node_"
+        internal const val LEGACY_GLOBAL_PREFIX = "sel_node_"
+
+        internal const val KEY_ALLOW_LAN_PASSWORD_LEGACY = "allow_lan_password"
+        internal const val KEY_ALLOW_LAN_PASSWORD_ENC = "allow_lan_password_enc"
     }
 
     // ------------------------------------------------------------------
@@ -198,7 +251,29 @@ class SettingsManager(context: Context) {
      * must still be able to read.
      */
     fun getSelectedNodesForProfile(profileId: String): Map<String, String> {
-        val prefix = selectedNodePrefix(profileId)
+        val (result, legacy, staging) = collectSelectionBuckets(selectedNodePrefix(profileId))
+        if (result.isEmpty() && staging.isNotEmpty()) {
+            applyFallbackSelections(
+                profileId = profileId,
+                result = result,
+                source = staging,
+                keysToRemove = staging.keys.map { selectedNodeKey(LEGACY_STAGING_PROFILE_ID, it) }
+            )
+        }
+        if (result.isEmpty() && legacy.isNotEmpty()) {
+            applyFallbackSelections(
+                profileId = profileId,
+                result = result,
+                source = legacy,
+                keysToRemove = legacy.keys.map { "${LEGACY_GLOBAL_PREFIX}$it" }
+            )
+        }
+        return result
+    }
+
+    private fun collectSelectionBuckets(
+        prefix: String
+    ): Triple<MutableMap<String, String>, Map<String, String>, Map<String, String>> {
         val result = mutableMapOf<String, String>()
         val legacy = mutableMapOf<String, String>()
         val staging = mutableMapOf<String, String>()
@@ -207,48 +282,53 @@ class SettingsManager(context: Context) {
             if (text.isBlank()) continue
             when {
                 key.startsWith(prefix) -> result[key.removePrefix(prefix)] = text
-                key.startsWith("sel_node_") -> {
-                    val rest = key.removePrefix("sel_node_")
-                    if (rest.contains('/')) {
-                        val scope = rest.substringBefore('/')
-                        if (scope == LEGACY_STAGING_PROFILE_ID) {
-                            staging[rest.substringAfter('/')] = text
-                        }
-                    } else {
-                        legacy[rest] = text
-                    }
-                }
+                key.startsWith(LEGACY_GLOBAL_PREFIX) ->
+                    classifyLegacySelection(key.removePrefix(LEGACY_GLOBAL_PREFIX), text, staging, legacy)
             }
         }
-        // Adopt staged backup restores only when this profile has no scoped choices yet.
-        if (staging.isNotEmpty() && result.isEmpty()) {
-            for ((group, node) in staging) {
-                result[group] = node
-                runCatching { prefs.edit { putString(selectedNodeKey(profileId, group), node) } }
-            }
-            runCatching { clearScopedSelections(LEGACY_STAGING_PROFILE_ID) }
-        }
-        // Migrate pre-isolation global keys on the first read; they belong to whatever
-        // profile is being read first, exactly as the old behavior implied.
-        if (legacy.isNotEmpty() && result.isEmpty()) {
-            for ((group, node) in legacy) {
-                result[group] = node
-                runCatching { prefs.edit { putString(selectedNodeKey(profileId, group), node) } }
-            }
-            runCatching { clearScopedSelections(LEGACY_GLOBAL_PREFIX) }
-        }
-        return result
+        return Triple(result, legacy, staging)
     }
 
-    /** Removes every selection key in the given scope ("sel_node_<group>" legacy form). */
-    private fun clearScopedSelections(prefix: String) {
-        val stale = prefs.all.keys.filter { it.startsWith(prefix) }
+    private fun classifyLegacySelection(
+        rest: String,
+        value: String,
+        staging: MutableMap<String, String>,
+        legacy: MutableMap<String, String>
+    ) {
+        if (!rest.contains('/')) {
+            legacy[rest] = value
+        } else if (rest.substringBefore('/') == LEGACY_STAGING_PROFILE_ID) {
+            staging[rest.substringAfter('/')] = value
+        }
+    }
+
+    private fun applyFallbackSelections(
+        profileId: String,
+        result: MutableMap<String, String>,
+        source: Map<String, String>,
+        keysToRemove: List<String>
+    ) {
+        // Adopt staged backup restores or pre-isolation global keys once into this profile scope,
+        // ignoring write-back errors on read-only prefs processes.
+        for ((group, node) in source) {
+            result[group] = node
+            runCatching { prefs.edit { putString(selectedNodeKey(profileId, group), node) } }
+        }
+        runCatching {
+            if (keysToRemove.isNotEmpty()) {
+                prefs.edit { keysToRemove.forEach { remove(it) } }
+            }
+        }
+    }
+
+    /** Clears every scoped selection and pinned group of [profileId] (used when a profile is deleted). */
+    fun clearSelectedNodesForProfile(profileId: String) {
+        val nodePrefix = selectedNodePrefix(profileId)
+        val groupKey = prefGroupKey(profileId)
+        val stale = prefs.all.keys.filter { it.startsWith(nodePrefix) || it == groupKey }
         if (stale.isEmpty()) return
         prefs.edit { stale.forEach { remove(it) } }
     }
-
-    /** Clears every scoped selection of [profileId] (used when a profile is deleted). */
-    fun clearSelectedNodesForProfile(profileId: String) = clearScopedSelections(selectedNodePrefix(profileId))
 
     // ------------------------------------------------------------------
     // Per-profile "home" strategy group (the dashboard / proxies default tab).
@@ -422,7 +502,8 @@ class SettingsManager(context: Context) {
     var themeMode: ThemeMode
         get() {
             val raw = prefs.getString("theme_mode", ThemeMode.SYSTEM.name)
-            return runCatching { ThemeMode.valueOf(raw!!) }.getOrDefault(ThemeMode.SYSTEM)
+                ?: return ThemeMode.SYSTEM
+            return runCatching { ThemeMode.valueOf(raw) }.getOrDefault(ThemeMode.SYSTEM)
         }
         set(value) = prefs.edit { putString("theme_mode", value.name) }
 
@@ -433,7 +514,8 @@ class SettingsManager(context: Context) {
     var appFont: AppFont
         get() {
             val raw = prefs.getString("app_font", AppFont.SYSTEM.name)
-            return runCatching { AppFont.valueOf(raw!!) }.getOrDefault(AppFont.SYSTEM)
+                ?: return AppFont.SYSTEM
+            return runCatching { AppFont.valueOf(raw) }.getOrDefault(AppFont.SYSTEM)
         }
         set(value) = prefs.edit { putString("app_font", value.name) }
 

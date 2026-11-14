@@ -46,8 +46,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.github.mihomo.android.i18n.AppStrings
 import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.*
@@ -84,7 +84,6 @@ fun LoonTrafficCard(
                 .clip(RoundedCornerShape(18.dp))
                 .background(gradient)
         ) {
-            // Primary Information (Title & Real-time speed)
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -93,20 +92,19 @@ fun LoonTrafficCard(
                 Text(
                     text = title,
                     color = LoonOnAccent.copy(alpha = 0.88f),
-                    fontSize = LoonTypeScale.footnote,
+                    style = LoonTextStyles.subtitle(),
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = if (speed.isBlank()) "--" else speed,
                     color = LoonOnAccent,
-                    fontSize = LoonTypeScale.bodyLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    style = LoonTextStyles.cellTitleStrong(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // iOS-Style Rounded Traffic Arrow (SF Symbols Morphology, Rounded Curves, Frosted Translucency)
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -122,10 +120,62 @@ fun LoonTrafficCard(
     }
 }
 
+private data class ArrowMetrics(
+    val cx: Float,
+    val rApex: Float,
+    val rWing: Float,
+    val rInner: Float,
+    val rBase: Float,
+    val wingLeft: Float,
+    val wingRight: Float,
+    val stemLeft: Float,
+    val stemRight: Float,
+    val topY: Float,
+    val bottomY: Float,
+    val wingY: Float
+)
+
+private fun buildUploadArrowPath(m: ArrowMetrics): Path = Path().apply {
+    moveTo(m.cx - m.rApex * 0.8f, m.topY + m.rApex * 0.8f)
+    quadraticTo(m.cx, m.topY, m.cx + m.rApex * 0.8f, m.topY + m.rApex * 0.8f)
+    lineTo(m.wingRight - m.rWing * 0.7f, m.wingY - m.rWing * 0.7f)
+    quadraticTo(m.wingRight, m.wingY, m.wingRight - m.rWing, m.wingY)
+    lineTo(m.stemRight + m.rInner, m.wingY)
+    quadraticTo(m.stemRight, m.wingY, m.stemRight, m.wingY + m.rInner)
+    lineTo(m.stemRight, m.bottomY - m.rBase)
+    quadraticTo(m.stemRight, m.bottomY, m.stemRight - m.rBase, m.bottomY)
+    lineTo(m.stemLeft + m.rBase, m.bottomY)
+    quadraticTo(m.stemLeft, m.bottomY, m.stemLeft, m.bottomY - m.rBase)
+    lineTo(m.stemLeft, m.wingY + m.rInner)
+    quadraticTo(m.stemLeft, m.wingY, m.stemLeft - m.rInner, m.wingY)
+    lineTo(m.wingLeft + m.rWing, m.wingY)
+    quadraticTo(m.wingLeft, m.wingY, m.wingLeft + m.rWing * 0.7f, m.wingY - m.rWing * 0.7f)
+    lineTo(m.cx - m.rApex * 0.8f, m.topY + m.rApex * 0.8f)
+    close()
+}
+
+private fun buildDownloadArrowPath(m: ArrowMetrics): Path = Path().apply {
+    moveTo(m.stemLeft, m.topY + m.rBase)
+    quadraticTo(m.stemLeft, m.topY, m.stemLeft + m.rBase, m.topY)
+    lineTo(m.stemRight - m.rBase, m.topY)
+    quadraticTo(m.stemRight, m.topY, m.stemRight, m.topY + m.rBase)
+    lineTo(m.stemRight, m.wingY - m.rInner)
+    quadraticTo(m.stemRight, m.wingY, m.stemRight + m.rInner, m.wingY)
+    lineTo(m.wingRight - m.rWing, m.wingY)
+    quadraticTo(m.wingRight, m.wingY, m.wingRight - m.rWing * 0.7f, m.wingY + m.rWing * 0.7f)
+    lineTo(m.cx + m.rApex * 0.8f, m.bottomY - m.rApex * 0.8f)
+    quadraticTo(m.cx, m.bottomY, m.cx - m.rApex * 0.8f, m.bottomY - m.rApex * 0.8f)
+    lineTo(m.wingLeft + m.rWing * 0.7f, m.wingY + m.rWing * 0.7f)
+    quadraticTo(m.wingLeft, m.wingY, m.wingLeft + m.rWing, m.wingY)
+    lineTo(m.stemLeft - m.rInner, m.wingY)
+    quadraticTo(m.stemLeft, m.wingY, m.stemLeft, m.wingY - m.rInner)
+    lineTo(m.stemLeft, m.topY + m.rBase)
+    close()
+}
+
 /**
  * Modern iOS SF Symbols rounded traffic arrow.
  * Features organic rounded apex, rounded wingtips, smooth concave fillets, and rounded base.
- * Employs frosted translucent gradients and subtle high-clarity contour for authentic iOS vibrancy.
  */
 @Composable
 private fun IosTrafficArrow(
@@ -136,157 +186,40 @@ private fun IosTrafficArrow(
         val w = size.width
         val h = size.height
         val cx = w * 0.5f
-
-        // iOS rounded proportions
-        val rApex = 2.4.dp.toPx()
-        val rWing = 2.4.dp.toPx()
-        val rInner = 2.8.dp.toPx()
-        val rBase = 2.6.dp.toPx()
-
         val wingW = w * 0.92f
-        val wingLeft = cx - wingW * 0.5f
-        val wingRight = cx + wingW * 0.5f
-
         val stemW = w * 0.36f
-        val stemLeft = cx - stemW * 0.5f
-        val stemRight = cx + stemW * 0.5f
+        val metrics = ArrowMetrics(
+            cx = cx,
+            rApex = 2.4.dp.toPx(),
+            rWing = 2.4.dp.toPx(),
+            rInner = 2.8.dp.toPx(),
+            rBase = 2.6.dp.toPx(),
+            wingLeft = cx - wingW * 0.5f,
+            wingRight = cx + wingW * 0.5f,
+            stemLeft = cx - stemW * 0.5f,
+            stemRight = cx + stemW * 0.5f,
+            topY = 1.5.dp.toPx(),
+            bottomY = h - 1.5.dp.toPx(),
+            wingY = if (isUpload) h * 0.52f else h * 0.48f
+        )
+        val path = if (isUpload) buildUploadArrowPath(metrics) else buildDownloadArrowPath(metrics)
 
-        val path = Path()
-
-        if (isUpload) {
-            // ==================== UPLOAD (Points UP) ====================
-            val topY = 1.5.dp.toPx()
-            val wingY = h * 0.52f
-            val bottomY = h - 1.5.dp.toPx()
-
-            path.apply {
-                // 1. Rounded Apex
-                moveTo(cx - rApex * 0.8f, topY + rApex * 0.8f)
-                quadraticTo(cx, topY, cx + rApex * 0.8f, topY + rApex * 0.8f)
-
-                // 2. Right downward wing slope
-                lineTo(wingRight - rWing * 0.7f, wingY - rWing * 0.7f)
-
-                // 3. Right wingtip curve
-                quadraticTo(wingRight, wingY, wingRight - rWing, wingY)
-
-                // 4. Horizontal notch in towards stem
-                lineTo(stemRight + rInner, wingY)
-
-                // 5. Right inner fillet curve (smooth concave corner)
-                quadraticTo(stemRight, wingY, stemRight, wingY + rInner)
-
-                // 6. Right stem vertical edge
-                lineTo(stemRight, bottomY - rBase)
-
-                // 7. Bottom-right base curve
-                quadraticTo(stemRight, bottomY, stemRight - rBase, bottomY)
-
-                // 8. Base horizontal edge
-                lineTo(stemLeft + rBase, bottomY)
-
-                // 9. Bottom-left base curve
-                quadraticTo(stemLeft, bottomY, stemLeft, bottomY - rBase)
-
-                // 10. Left stem vertical edge
-                lineTo(stemLeft, wingY + rInner)
-
-                // 11. Left inner fillet curve (smooth concave corner)
-                quadraticTo(stemLeft, wingY, stemLeft - rInner, wingY)
-
-                // 12. Horizontal notch out towards wing
-                lineTo(wingLeft + rWing, wingY)
-
-                // 13. Left wingtip curve
-                quadraticTo(wingLeft, wingY, wingLeft + rWing * 0.7f, wingY - rWing * 0.7f)
-
-                // 14. Left upward wing slope back to apex
-                lineTo(cx - rApex * 0.8f, topY + rApex * 0.8f)
-                close()
-            }
-        } else {
-            // ==================== DOWNLOAD (Points DOWN) ====================
-            val topY = 1.5.dp.toPx()
-            val wingY = h * 0.48f
-            val bottomY = h - 1.5.dp.toPx()
-
-            path.apply {
-                // 1. Top-left stem base curve
-                moveTo(stemLeft, topY + rBase)
-                quadraticTo(stemLeft, topY, stemLeft + rBase, topY)
-
-                // 2. Top base horizontal edge
-                lineTo(stemRight - rBase, topY)
-
-                // 3. Top-right stem base curve
-                quadraticTo(stemRight, topY, stemRight, topY + rBase)
-
-                // 4. Right stem vertical edge down to fillet
-                lineTo(stemRight, wingY - rInner)
-
-                // 5. Right inner fillet curve (smooth concave corner)
-                quadraticTo(stemRight, wingY, stemRight + rInner, wingY)
-
-                // 6. Horizontal notch out towards wing
-                lineTo(wingRight - rWing, wingY)
-
-                // 7. Right wingtip curve
-                quadraticTo(wingRight, wingY, wingRight - rWing * 0.7f, wingY + rWing * 0.7f)
-
-                // 8. Right downward slope to apex
-                lineTo(cx + rApex * 0.8f, bottomY - rApex * 0.8f)
-
-                // 9. Bottom apex curve
-                quadraticTo(cx, bottomY, cx - rApex * 0.8f, bottomY - rApex * 0.8f)
-
-                // 10. Left upward slope to wing
-                lineTo(wingLeft + rWing * 0.7f, wingY + rWing * 0.7f)
-
-                // 11. Left wingtip curve
-                quadraticTo(wingLeft, wingY, wingLeft + rWing, wingY)
-
-                // 12. Horizontal notch in towards stem
-                lineTo(stemLeft - rInner, wingY)
-
-                // 13. Left inner fillet curve (smooth concave corner)
-                quadraticTo(stemLeft, wingY, stemLeft, wingY - rInner)
-
-                // 14. Left stem vertical edge back to top
-                lineTo(stemLeft, topY + rBase)
-                close()
-            }
-        }
-
-        // Frosted translucent body fill (reveals vibrant card gradient underneath)
         val fillBrush = Brush.verticalGradient(
             colors = if (isUpload) {
-                listOf(
-                    LoonOnAccent.copy(alpha = 0.78f),
-                    LoonOnAccent.copy(alpha = 0.45f)
-                )
+                listOf(LoonOnAccent.copy(alpha = 0.78f), LoonOnAccent.copy(alpha = 0.45f))
             } else {
-                listOf(
-                    LoonOnAccent.copy(alpha = 0.45f),
-                    LoonOnAccent.copy(alpha = 0.78f)
-                )
+                listOf(LoonOnAccent.copy(alpha = 0.45f), LoonOnAccent.copy(alpha = 0.78f))
             },
             startY = 0f,
             endY = h
         )
         drawPath(path = path, brush = fillBrush)
 
-        // Crisp semi-translucent contour (clean iOS Vibrancy outline)
         val strokeBrush = Brush.verticalGradient(
             colors = if (isUpload) {
-                listOf(
-                    LoonOnAccent.copy(alpha = 0.95f),
-                    LoonOnAccent.copy(alpha = 0.65f)
-                )
+                listOf(LoonOnAccent.copy(alpha = 0.95f), LoonOnAccent.copy(alpha = 0.65f))
             } else {
-                listOf(
-                    LoonOnAccent.copy(alpha = 0.65f),
-                    LoonOnAccent.copy(alpha = 0.95f)
-                )
+                listOf(LoonOnAccent.copy(alpha = 0.65f), LoonOnAccent.copy(alpha = 0.95f))
             },
             startY = 0f,
             endY = h
@@ -314,26 +247,20 @@ fun LoonShortcutCard(
     onClick: () -> Unit
 ) {
     val haptic = rememberIosHaptic()
+    val cardShape = RoundedCornerShape(18.dp)
     Surface(
         modifier = modifier
-            // UI-A11Y-07: heightIn instead of a fixed height so the text is not clipped at
-            // 1.3x/2.0x font scale.
             .heightIn(min = 118.dp)
-            .shadow(1.5.dp, RoundedCornerShape(18.dp), spotColor = LoonExtraColors.shadowHairline)
-            .clip(RoundedCornerShape(18.dp))
-            .border(
-                width = 0.5.dp,
-                color = LoonCardBorder,
-                shape = RoundedCornerShape(18.dp)
-            )
-            .iosPressable(enabled = !isEditing, pressedScale = 0.982f) {
+            .iosPressable(enabled = !isEditing, pressedScale = 0.982f, focusShape = cardShape) {
                 haptic.lightTick()
                 onClick()
-            },
+            }
+            .shadow(1.5.dp, cardShape, spotColor = LoonExtraColors.shadowHairline)
+            .clip(cardShape)
+            .border(width = 0.5.dp, color = LoonCardBorder, shape = cardShape),
         color = LoonCard
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Text info on top-left
             Column(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -342,49 +269,31 @@ fun LoonShortcutCard(
                 Text(
                     text = title,
                     color = LoonTextPrimary,
-                    fontSize = LoonTypeScale.body,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
+                    style = LoonTextStyles.cellTitleStrong(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (subtitle.isNotBlank()) {
                     Spacer(modifier = Modifier.height(3.dp))
                     Text(
                         text = subtitle,
                         color = LoonTextSecondary,
-                        fontSize = LoonTypeScale.footnote,
-                        maxLines = 1
+                        style = LoonTextStyles.subtitle(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            // Bottom-left: clean chevron '>' button or drag handle (no background color block)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 14.dp, bottom = 14.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (isEditing) {
-                    val handleColor = LoonTextSecondary
-                    Canvas(modifier = Modifier.size(18.dp)) {
-                        val stroke = 2.dp.toPx()
-                        val w = size.width
-                        val h = size.height
-                        val color = handleColor
-                        drawLine(color, Offset(0f, h * 0.35f), Offset(w, h * 0.35f), stroke, StrokeCap.Round)
-                        drawLine(color, Offset(0f, h * 0.65f), Offset(w, h * 0.65f), stroke, StrokeCap.Round)
-                    }
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = LoonTextSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+                ShortcutCardTrailingHandle(isEditing = isEditing)
             }
 
-            // Bottom-right large floating illustration
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -395,36 +304,67 @@ fun LoonShortcutCard(
                 icon()
             }
 
-            // Red minus/remove button badge at top-right in edit mode
             if (isEditing && onDelete != null) {
-                val deleteLabel = AppStrings.get("profile_delete", LocalAppLanguage.current)
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-                        .clickable { onDelete() }
-                        .semantics {
-                            contentDescription = deleteLabel
-                            role = Role.Button
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(IosRed),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "\u2212",
-                            color = LoonOnAccent,
-                            fontSize = LoonTypeScale.body,
-                            fontWeight = FontWeight.ExtraBold
-                        )
-                    }
-                }
+                ShortcutCardDeleteBadge(
+                    onDelete = onDelete,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun ShortcutCardTrailingHandle(isEditing: Boolean) {
+    if (isEditing) {
+        val handleColor = LoonTextSecondary
+        Canvas(modifier = Modifier.size(18.dp)) {
+            val stroke = 2.dp.toPx()
+            val w = size.width
+            val h = size.height
+            drawLine(handleColor, Offset(0f, h * 0.35f), Offset(w, h * 0.35f), stroke, StrokeCap.Round)
+            drawLine(handleColor, Offset(0f, h * 0.65f), Offset(w, h * 0.65f), stroke, StrokeCap.Round)
+        }
+    } else {
+        Icon(
+            imageVector = Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = LoonTextSecondary,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+@Composable
+private fun ShortcutCardDeleteBadge(
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val deleteLabel = AppStrings.get("profile_delete", LocalAppLanguage.current)
+    Box(
+        modifier = modifier
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .iosFocusRing(CircleShape)
+            .clickable(onClick = onDelete)
+            .semantics {
+                contentDescription = deleteLabel
+                role = Role.Button
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(IosRed),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "\u2212",
+                color = LoonOnAccent,
+                style = LoonTextStyles.calloutLarge(),
+                fontWeight = FontWeight.ExtraBold
+            )
         }
     }
 }
@@ -807,9 +747,9 @@ fun LoonFloatingBottomBar(
     ) {
         Row(
             modifier = Modifier
-                .padding(horizontal = 28.dp, vertical = 7.dp)
+                .padding(horizontal = 20.dp, vertical = 7.dp)
                 .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(40.dp),
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             val lang = LocalAppLanguage.current
@@ -821,7 +761,7 @@ fun LoonFloatingBottomBar(
             )
             BottomNavItem(
                 customIcon = { tint ->
-                    StandardCubeIcon(tint = tint)
+                    StandardCubeIcon(tint = tint, modifier = Modifier.size(22.dp))
                 },
                 label = AppStrings.get("nav_proxies", lang),
                 isSelected = selectedTab == 1,
@@ -840,7 +780,7 @@ fun LoonFloatingBottomBar(
 @Composable
 fun StandardCubeIcon(
     tint: Color,
-    modifier: Modifier = Modifier.size(22.dp)
+    modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
         val w = size.width
@@ -898,27 +838,16 @@ private fun BottomNavItem(
 ) {
     val haptic = rememberIosHaptic()
     val reduceMotion = LocalReduceMotion.current
+    val targetTint = if (isSelected) LoonInfoText else LoonTextSecondary
     val tint by animateColorAsState(
-        targetValue = if (isSelected) IosBlue else IosGray,
+        targetValue = targetTint,
         animationSpec = if (reduceMotion) snap() else tween(durationMillis = LoonMotion.normalMs),
         label = "nav_tint"
-    )
-    val scale by animateFloatAsState(
-        targetValue = if (isSelected && !reduceMotion) 1.08f else 1.0f,
-        animationSpec = if (reduceMotion) {
-            snap()
-        } else {
-            spring(dampingRatio = LoonMotion.navDampingRatio, stiffness = LoonMotion.navStiffness)
-        },
-        label = "nav_scale"
     )
 
     Column(
         modifier = Modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .widthIn(min = 56.dp, max = 96.dp)
             .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
             .iosFocusRing(RoundedCornerShape(LoonRadii.control))
             .selectable(
@@ -939,7 +868,7 @@ private fun BottomNavItem(
         } else if (icon != null) {
             Icon(
                 imageVector = icon,
-                contentDescription = label,
+                contentDescription = null,
                 tint = tint,
                 modifier = Modifier.size(22.dp)
             )
@@ -948,7 +877,9 @@ private fun BottomNavItem(
         Text(
             text = label,
             color = tint,
-            style = if (isSelected) LoonTextStyles.tabStrong() else LoonTextStyles.tab()
+            style = LoonTextStyles.tab(strong = isSelected),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -965,98 +896,110 @@ fun rememberBounceOverscrollConnection(
 ): Pair<NestedScrollConnection, State<Float>> {
     val coroutineScope = rememberCoroutineScope()
     val overscrollOffset = remember { mutableFloatStateOf(0f) }
-    var springJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val density = androidx.compose.ui.platform.LocalDensity.current
     val reduceMotion = LocalReduceMotion.current
     val maxPullPx = with(density) { 110.dp.toPx() }.coerceAtLeast(1f)
     val dampingZonePx = with(density) { 250.dp.toPx() }.coerceAtLeast(1f)
 
     val connection = remember(allowTop, allowBottom, maxPullPx, dampingZonePx, reduceMotion) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (reduceMotion) return Offset.Zero
-                val current = overscrollOffset.floatValue
-                if (current == 0f) return Offset.Zero
-                // Scroll back toward zero synchronously before passing delta to the list
-                if (current > 0f && available.y < 0f) {
-                    springJob?.cancel()
-                    val consumed = available.y.coerceAtLeast(-current)
-                    overscrollOffset.floatValue = current + consumed
-                    return Offset(0f, consumed)
-                } else if (current < 0f && available.y > 0f) {
-                    springJob?.cancel()
-                    val consumed = available.y.coerceAtMost(-current)
-                    overscrollOffset.floatValue = current + consumed
-                    return Offset(0f, consumed)
-                }
+        BounceOverscrollConnection(
+            coroutineScope = coroutineScope,
+            overscrollOffset = overscrollOffset,
+            allowTop = allowTop,
+            allowBottom = allowBottom,
+            maxPullPx = maxPullPx,
+            dampingZonePx = dampingZonePx,
+            reduceMotion = reduceMotion
+        )
+    }
+    return Pair(connection, overscrollOffset)
+}
+
+private class BounceOverscrollConnection(
+    private val coroutineScope: kotlinx.coroutines.CoroutineScope,
+    private val overscrollOffset: MutableFloatState,
+    private val allowTop: Boolean,
+    private val allowBottom: Boolean,
+    private val maxPullPx: Float,
+    private val dampingZonePx: Float,
+    private val reduceMotion: Boolean
+) : NestedScrollConnection {
+    private var springJob: kotlinx.coroutines.Job? = null
+
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        if (reduceMotion) return Offset.Zero
+        val current = overscrollOffset.floatValue
+        if (current == 0f) return Offset.Zero
+        if (current > 0f && available.y < 0f) {
+            springJob?.cancel()
+            val consumed = available.y.coerceAtLeast(-current)
+            overscrollOffset.floatValue = current + consumed
+            return Offset(0f, consumed)
+        } else if (current < 0f && available.y > 0f) {
+            springJob?.cancel()
+            val consumed = available.y.coerceAtMost(-current)
+            overscrollOffset.floatValue = current + consumed
+            return Offset(0f, consumed)
+        }
+        return Offset.Zero
+    }
+
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource
+    ): Offset {
+        if (reduceMotion) return Offset.Zero
+        if (source == NestedScrollSource.UserInput && available.y != 0f) {
+            val blocked = if (available.y > 0f) !allowTop else !allowBottom
+            if (blocked) {
                 return Offset.Zero
             }
+            springJob?.cancel()
+            val current = overscrollOffset.floatValue
+            val resistance = (1f - (kotlin.math.abs(current) / dampingZonePx).coerceIn(0f, 0.85f)) * 0.42f
+            val delta = available.y * resistance
+            overscrollOffset.floatValue = (current + delta).coerceIn(-maxPullPx, maxPullPx)
+            return Offset(0f, available.y)
+        }
+        return Offset.Zero
+    }
 
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                if (reduceMotion) return Offset.Zero
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                    // available.y > 0 → pulling down past top edge (top overscroll)
-                    // available.y < 0 → pushing up past bottom edge (bottom overscroll)
-                    val isTopOverscroll = available.y > 0f
-                    val isBottomOverscroll = available.y < 0f
-                    if (isTopOverscroll && !allowTop) {
-                        return Offset.Zero
-                    }
-                    if (isBottomOverscroll && !allowBottom) {
-                        return Offset.Zero
-                    }
-                    springJob?.cancel()
-                    val current = overscrollOffset.floatValue
-                    val resistance = (1f - (kotlin.math.abs(current) / dampingZonePx).coerceIn(0f, 0.85f)) * 0.42f
-                    val delta = available.y * resistance
-                    overscrollOffset.floatValue = (current + delta).coerceIn(-maxPullPx, maxPullPx)
-                    return Offset(0f, available.y)
-                }
-                return Offset.Zero
-            }
-
-            private fun animateBackToZero() {
-                val startValue = overscrollOffset.floatValue
-                if (startValue == 0f) return
-                springJob?.cancel()
-                if (reduceMotion) {
-                    overscrollOffset.floatValue = 0f
-                    return
-                }
-                springJob = coroutineScope.launch {
-                    animate(
-                        initialValue = startValue,
-                        targetValue = 0f,
-                        animationSpec = spring(
-                            dampingRatio = LoonMotion.accordionDampingRatio,
-                            stiffness = LoonMotion.accordionStiffness
-                        )
-                    ) { value, _ ->
-                        overscrollOffset.floatValue = value
-                    }
-                }
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                if (overscrollOffset.floatValue != 0f) {
-                    animateBackToZero()
-                }
-                return Velocity.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (overscrollOffset.floatValue != 0f) {
-                    animateBackToZero()
-                }
-                return Velocity.Zero
+    private fun animateBackToZero() {
+        val startValue = overscrollOffset.floatValue
+        if (startValue == 0f) return
+        springJob?.cancel()
+        if (reduceMotion) {
+            overscrollOffset.floatValue = 0f
+            return
+        }
+        springJob = coroutineScope.launch {
+            animate(
+                initialValue = startValue,
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = LoonMotion.accordionDampingRatio,
+                    stiffness = LoonMotion.accordionStiffness
+                )
+            ) { value, _ ->
+                overscrollOffset.floatValue = value
             }
         }
     }
-    return Pair(connection, overscrollOffset)
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+        if (overscrollOffset.floatValue != 0f) {
+            animateBackToZero()
+        }
+        return Velocity.Zero
+    }
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+        if (overscrollOffset.floatValue != 0f) {
+            animateBackToZero()
+        }
+        return Velocity.Zero
+    }
 }
 
 // iOS-style Rubber-Band Bounce Overscroll

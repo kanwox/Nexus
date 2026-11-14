@@ -1,3 +1,5 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.ui
 
 import android.content.Context
@@ -268,10 +270,10 @@ object UpdateDownloadManager {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-        }.onFailure {
+        }.onFailure { err ->
             CupertinoToast.show(
                 AppStrings.get("settings_update_install_failed", lang)
-                    .replace("{reason}", it.message ?: ""),
+                    .replace("{reason}", err.message ?: ""),
                 isDestructive = true
             )
         }
@@ -285,96 +287,132 @@ object UpdateDownloadManager {
         ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
     ): UpdateDownloadResult = withContext(ioDispatcher) {
-        val fail = { reason: String ->
-            runCatching { File(context.cacheDir, "updates").deleteRecursively() }
-            UpdateDownloadResult.Failure(reason)
-        }
-
-        runCatching {
+        try {
             val mixedPort = SettingsManager(context).mixedPort
             val vpnRunning = MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
-
-            val expected = sumsAsset?.let { sums ->
-                fetchTextAsset(sums, mixedPort, vpnRunning)?.let { text ->
-                    UpdateVerifier.parseSha256Sums(text)[asset.name]
-                }
-            }
+            val expectedHash = resolveExpectedHash(sumsAsset, asset.name, mixedPort, vpnRunning)
 
             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
             val target = File(dir, "nexus-update.apk")
-            if (expected != null && target.isFile) {
-                val cachedHash = UpdateVerifier.sha256HexOfFile(target)
-                if (cachedHash != null && UpdateVerifier.verifySha256(cachedHash, expected)) {
-                    return@withContext UpdateDownloadResult.Success(target, verified = true)
-                }
+            if (isCachedApkValid(target, expectedHash)) {
+                return@withContext UpdateDownloadResult.Success(target, verified = true)
             }
 
-            dir.listFiles()?.forEach { it.delete() }
-            val request = Request.Builder().url(asset.browserDownloadUrl).build()
-
-            var response: okhttp3.Response? = null
-            var lastError: Throwable? = null
-            for (client in downloadCandidateClients(mixedPort, vpnRunning)) {
-                val attempt = runCatching { client.newCall(request).execute() }
-                val resp = attempt.getOrNull()
-                if (resp != null && resp.isSuccessful) {
-                    response = resp
-                    break
-                } else {
-                    resp?.close()
-                    lastError = attempt.exceptionOrNull()
-                }
+            clearDirectoryContents(dir)
+            val response = openSuccessfulApkResponse(asset.browserDownloadUrl, mixedPort, vpnRunning)
+            response.use { resp ->
+                copyApkBody(
+                    body = resp.body,
+                    target = target,
+                    tooLargeMessage = AppStrings.get("update_apk_too_large", lang),
+                    checkActive = { coroutineContext.let { ensureActive() } },
+                    onProgress = onProgress
+                )
             }
-            val activeResponse = response ?: run {
-                if (lastError != null) throw lastError else error("Download failed")
-            }
+            verifyDownloadedApk(context, target, expectedHash, lang)
+        } catch (e: CancellationException) {
+            clearUpdatesDir(context)
+            throw e
+        } catch (_: Exception) {
+            clearUpdatesDir(context)
+            UpdateDownloadResult.Failure(AppStrings.get("download_failed_short", lang))
+        }
+    }
 
-            activeResponse.use { resp ->
-                val body = resp.body
-                val declaredLength = body.contentLength()
-                if (declaredLength > MAX_UPDATE_APK_BYTES) {
-                    error(AppStrings.get("update_apk_too_large", lang))
-                }
-                body.byteStream().use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(UPDATE_COPY_BUFFER_BYTES)
-                        var total = 0L
-                        var lastReported = 0L
-                        while (true) {
-                            ensureActive()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            total += read
-                            if (total > MAX_UPDATE_APK_BYTES) {
-                                error(AppStrings.get("update_apk_too_large", lang))
-                            }
-                            output.write(buffer, 0, read)
-                            if (total - lastReported >= UPDATE_PROGRESS_CHUNK_BYTES) {
-                                lastReported = total
-                                onProgress(total, declaredLength)
-                            }
-                        }
+    private fun resolveExpectedHash(
+        sumsAsset: UpdateChecker.ReleaseAsset?,
+        assetName: String,
+        mixedPort: Int,
+        vpnRunning: Boolean
+    ): String? = sumsAsset?.let { sums ->
+        fetchTextAsset(sums, mixedPort, vpnRunning)?.let { text ->
+            UpdateVerifier.parseSha256Sums(text)[assetName]
+        }
+    }
+
+    private fun isCachedApkValid(target: File, expectedHash: String?): Boolean {
+        if (expectedHash == null || !target.isFile) return false
+        val cachedHash = UpdateVerifier.sha256HexOfFile(target) ?: return false
+        return UpdateVerifier.verifySha256(cachedHash, expectedHash)
+    }
+
+    private fun clearDirectoryContents(dir: File) {
+        dir.listFiles()?.forEach { entry -> entry.delete() }
+    }
+
+    private fun clearUpdatesDir(context: Context) {
+        runCatching { File(context.cacheDir, "updates").deleteRecursively() }
+    }
+
+    private fun openSuccessfulApkResponse(
+        url: String,
+        mixedPort: Int,
+        vpnRunning: Boolean
+    ): okhttp3.Response {
+        val request = Request.Builder().url(url).build()
+        var lastError: Throwable? = null
+        for (client in downloadCandidateClients(mixedPort, vpnRunning)) {
+            val attempt = runCatching { client.newCall(request).execute() }
+            val resp = attempt.getOrNull()
+            if (resp != null && resp.isSuccessful) {
+                return resp
+            }
+            resp?.close()
+            lastError = attempt.exceptionOrNull()
+        }
+        if (lastError != null) throw lastError else error("Download failed")
+    }
+
+    private fun copyApkBody(
+        body: okhttp3.ResponseBody,
+        target: File,
+        tooLargeMessage: String,
+        checkActive: () -> Unit,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit
+    ) {
+        val declaredLength = body.contentLength()
+        if (declaredLength > MAX_UPDATE_APK_BYTES) {
+            error(tooLargeMessage)
+        }
+        body.byteStream().use { input ->
+            target.outputStream().use { output ->
+                val buffer = ByteArray(UPDATE_COPY_BUFFER_BYTES)
+                var total = 0L
+                var lastReported = 0L
+                while (true) {
+                    checkActive()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > MAX_UPDATE_APK_BYTES) {
+                        error(tooLargeMessage)
+                    }
+                    output.write(buffer, 0, read)
+                    if (total - lastReported >= UPDATE_PROGRESS_CHUNK_BYTES) {
+                        lastReported = total
                         onProgress(total, declaredLength)
                     }
                 }
+                onProgress(total, declaredLength)
             }
-
-            if (expected != null) {
-                val actual = UpdateVerifier.sha256HexOfFile(target)
-                if (actual == null || !UpdateVerifier.verifySha256(actual, expected)) {
-                    return@withContext fail(AppStrings.get("settings_update_verify_failed", lang))
-                }
-                UpdateDownloadResult.Success(target, verified = true)
-            } else {
-                UpdateDownloadResult.Success(target, verified = false)
-            }
-        }.getOrElse { throwable ->
-            if (throwable is CancellationException) {
-                runCatching { File(context.cacheDir, "updates").deleteRecursively() }
-                throw throwable
-            }
-            fail(AppStrings.get("download_failed_short", lang))
         }
+    }
+
+    private fun verifyDownloadedApk(
+        context: Context,
+        target: File,
+        expectedHash: String?,
+        lang: String
+    ): UpdateDownloadResult {
+        if (expectedHash == null) {
+            return UpdateDownloadResult.Success(target, verified = false)
+        }
+        val actual = UpdateVerifier.sha256HexOfFile(target)
+        if (actual == null || !UpdateVerifier.verifySha256(actual, expectedHash)) {
+            clearUpdatesDir(context)
+            return UpdateDownloadResult.Failure(AppStrings.get("settings_update_verify_failed", lang))
+        }
+        return UpdateDownloadResult.Success(target, verified = true)
     }
 
     private fun preInstallCheck(context: Context, apk: File, lang: String): String? {
@@ -411,9 +449,9 @@ object UpdateDownloadManager {
                 val installedCerts = pm.getPackageInfo(
                     context.packageName,
                     PackageManager.GET_SIGNING_CERTIFICATES
-                ).signingInfo?.apkContentsSigners?.map { it.toByteArray() } ?: emptyList()
-                val incomingCerts = archiveInfo.signingInfo?.apkContentsSigners?.map {
-                    it.toByteArray()
+                ).signingInfo?.apkContentsSigners?.map { sig -> sig.toByteArray() } ?: emptyList()
+                val incomingCerts = archiveInfo.signingInfo?.apkContentsSigners?.map { sig ->
+                    sig.toByteArray()
                 } ?: emptyList()
                 UpdateVerifier.signaturesMatch(installedCerts, incomingCerts)
             } else {
@@ -421,9 +459,9 @@ object UpdateDownloadManager {
                 val installedCerts = pm.getPackageInfo(
                     context.packageName,
                     PackageManager.GET_SIGNATURES
-                ).signatures?.map { it.toByteArray() } ?: emptyList()
+                ).signatures?.map { sig -> sig.toByteArray() } ?: emptyList()
                 @Suppress("DEPRECATION")
-                val incomingCerts = archiveInfo.signatures?.map { it.toByteArray() } ?: emptyList()
+                val incomingCerts = archiveInfo.signatures?.map { sig -> sig.toByteArray() } ?: emptyList()
                 UpdateVerifier.signaturesMatch(installedCerts, incomingCerts)
             }
         }.getOrDefault(false)

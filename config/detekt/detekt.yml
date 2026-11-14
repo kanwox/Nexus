@@ -107,8 +107,8 @@ complexity:
     ignoreOverloaded: false
   CyclomaticComplexMethod:
     active: true
-    threshold: 70
-    excludes: ['**/test/**', '**/androidTest/**', '**/ui/**', '**/screens/**', '**/components/**']
+    threshold: 20
+    excludes: ['**/test/**', '**/androidTest/**']
     ignoreSingleWhenExpression: false
     ignoreSimpleWhenEntries: false
     ignoreNestingFunctions: false
@@ -127,19 +127,20 @@ complexity:
     ignoredLabels: []
   LargeClass:
     active: true
-    threshold: 1200
+    threshold: 600
+    excludes: ['**/test/**', '**/androidTest/**']
   LongMethod:
     active: true
-    threshold: 200
-    excludes: ['**/test/**', '**/androidTest/**', '**/ui/**', '**/screens/**', '**/components/**']
+    threshold: 100
+    excludes: ['**/test/**', '**/androidTest/**']
   LongParameterList:
     active: true
-    functionThreshold: 25
-    constructorThreshold: 25
+    functionThreshold: 8
+    constructorThreshold: 10
     ignoreDefaultParameters: true
     ignoreDataClasses: true
     ignoreAnnotatedParameter: []
-    excludes: ['**/test/**', '**/androidTest/**', '**/ui/**', '**/screens/**', '**/components/**']
+    excludes: ['**/test/**', '**/androidTest/**']
   MethodOverloading:
     active: false
     threshold: 6
@@ -149,7 +150,7 @@ complexity:
     ignoreArgumentsMatchingNames: false
   NestedBlockDepth:
     active: true
-    threshold: 10
+    threshold: 5
   NestedScopeFunctions:
     active: false
     threshold: 1
@@ -171,13 +172,13 @@ complexity:
   TooManyFunctions:
     active: true
     excludes: ['**/test/**', '**/androidTest/**', '**/commonTest/**', '**/jvmTest/**', '**/androidUnitTest/**', '**/androidInstrumentedTest/**', '**/jsTest/**', '**/iosTest/**']
-    thresholdInFiles: 50
-    thresholdInClasses: 50
-    thresholdInInterfaces: 50
-    thresholdInObjects: 50
-    thresholdInEnums: 50
+    thresholdInFiles: 30
+    thresholdInClasses: 30
+    thresholdInInterfaces: 30
+    thresholdInObjects: 30
+    thresholdInEnums: 30
     ignoreDeprecated: false
-    ignorePrivate: false
+    ignorePrivate: true
     ignoreOverridden: false
     ignoreAnnotatedFunctions: []
 
@@ -196,7 +197,7 @@ coroutines:
   SleepInsteadOfDelay:
     active: true
   SuspendFunSwallowedCancellation:
-    active: false
+    active: true
   SuspendFunWithCoroutineScopeReceiver:
     active: false
   SuspendFunWithFlowReturnType:
@@ -261,7 +262,13 @@ exceptions:
     active: true
     ignoreLabeled: false
   SwallowedException:
-    active: false
+    active: true
+    ignoredExceptionTypes:
+      - 'InterruptedException'
+      - 'MalformedURLException'
+      - 'NumberFormatException'
+      - 'ParseException'
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
   ThrowingExceptionFromFinally:
     active: true
   ThrowingExceptionInMain:

@@ -1,9 +1,14 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,7 +16,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -30,10 +38,11 @@ import java.util.concurrent.atomic.AtomicLong
  * diagnostics. The public API (recordsFlow, activeCountFlow, applySnapshot) is unchanged.
  */
 object RequestRepository {
-    private const val MAX_RECORDS = 500
+    internal const val MAX_RECORDS = 500
     private const val PUBLISH_INTERVAL_MS = 400L
     private const val POLL_INTERVAL_MS = 1000L
     private const val BACKGROUND_POLL_INTERVAL_MS = 5000L
+    private const val SOCKET_WAIT_STEP_MS = 200L
 
     /** Transport identifiers published through [transportModeFlow]. */
     const val TRANSPORT_WEBSOCKET = "websocket"
@@ -52,9 +61,21 @@ object RequestRepository {
     private const val BASE_WS_BACKOFF_MS = 1000L
     private const val MAX_WS_BACKOFF_MS = 30_000L
 
+    private val recordsLock = Any()
+    private val transportLock = Any()
+
     private val nextId = AtomicLong(1)
-    // O(1) lookup map preserving insertion order. Eldest entries are at the beginning.
+
+    // O(1) lookup map preserving insertion order. Guarded by [recordsLock].
     private val recordMap = LinkedHashMap<String, RequestRecord>(MAX_RECORDS)
+
+    /**
+     * Immutable snapshot atomically published whenever [recordMap] changes.
+     * Read methods ([topHostsByTraffic], [closeConnection], [publisher]) read this
+     * volatile reference without contending on [recordsLock].
+     */
+    @Volatile
+    private var currentRecordsSnapshot: List<RequestRecord> = emptyList()
 
     private val _recordsFlow = MutableStateFlow<List<RequestRecord>>(emptyList())
     val recordsFlow: StateFlow<List<RequestRecord>> = _recordsFlow.asStateFlow()
@@ -68,8 +89,7 @@ object RequestRepository {
     val transportModeFlow: StateFlow<String> = _transportModeFlow.asStateFlow()
 
     private val publisher = ThrottledPublisher(PUBLISH_INTERVAL_MS, _recordsFlow.subscriptionCount) {
-        val snapshot = synchronized(this) { recordMap.values.reversed() }
-        _recordsFlow.value = snapshot
+        _recordsFlow.value = currentRecordsSnapshot
     }
 
     @Volatile
@@ -80,23 +100,24 @@ object RequestRepository {
     private var streamJob: Job? = null
 
     /**
-     * The live WebSocket handle. `newConnectionsWebSocket` runs on the stream-loop
-     * coroutine, and okhttp delivers callbacks on its own dispatcher threads, so the
-     * reference is volatile; `stopPolling` may cancel it from any thread.
+     * The live WebSocket handle. Guarded by [transportLock] for state transitions and
+     * marked volatile for fast wait checks.
      */
     @Volatile
     private var activeSocket: okhttp3.WebSocket? = null
 
     /**
      * True from [stopPolling] until the next [startPolling]. This is the ONLY signal
-     * that distinguishes "the user stopped the VPN" from "the socket died": the socket
-     * death itself is always observable as activeSocket becoming null (the listener
-     * callbacks null it), so the supervisor must not infer a stop from that.
+     * that distinguishes "the user stopped the VPN" from "the socket died".
      */
     @Volatile
     private var streamStopped: Boolean = true
 
-    /** Counts consecutive WS failures (open errors, abnormal closes, parse errors). */
+    /** Monotonic session generation to fence off stale supervisor/degrade callbacks. */
+    @Volatile
+    private var streamGeneration: Long = 0L
+
+    /** Default failure counter used when [openWebSocket] is invoked directly in tests. */
     private val wsFailureCounter = AtomicInteger(0)
 
     @Volatile
@@ -105,50 +126,74 @@ object RequestRepository {
     @Volatile
     private var uidResolver: ((Int, String, String) -> Int)? = null
 
-    /**
-     * Consecutive controller failures. `MihomoApi.connections()` returns null on ANY
-     * failure, and a plain `?: continue` would swallow a dead controller forever without
-     * a trace. After [MAX_CONSECUTIVE_FAILURES] the poll loop says so.
-     */
-    private var consecutiveFailures = 0
+    // Lock-free cache: uid -> (display label, package name); accessed outside [recordsLock].
+    private val uidLabelCache = ConcurrentHashMap<Int, Pair<String, String?>>()
 
-    // uid -> (display label, package name); a long session with many apps must not hammer
-    // PackageManager on every new connection.
-    private val uidLabelCache = HashMap<Int, Pair<String, String?>>()
+    internal var webSocketFactory: (okhttp3.WebSocketListener) -> okhttp3.WebSocket? = { listener ->
+        MihomoApi.newConnectionsWebSocket(listener)
+    }
+
+    internal var connectionsFetcher: () -> MihomoApi.ConnectionsSnapshot? = {
+        MihomoApi.connections()
+    }
+
+    internal var isUiInForegroundProvider: () -> Boolean = {
+        com.github.mihomo.android.service.MihomoVpnService.isUiInForeground
+    }
+
+    internal var reconnectDelayMsOverride: Long? = null
+    internal var pollIntervalOverrideMs: Long? = null
 
     /**
      * Starts connection tracking: WebSocket stream first, REST polling as the fallback.
-     *
-     * The supervisor loop launches WS attempts with exponential backoff; after
-     * [MAX_WS_RECONNECTS] failed attempts it gives up on the stream, starts the poll
-     * loop, and stays there — the controller port/secret never change within a process,
-     * so a transport that failed 3 times in a row is very unlikely to succeed by
-     * hammering it, while the poll loop still delivers correct (only coarser-grained)
-     * data. `startPolling` remains as the entry point name so the VPN-service call site
-     * does not change; it now means "start the streaming supervisor".
      */
     fun startPolling(scope: CoroutineScope, context: Context, resolver: (Int, String, String) -> Int) {
         appContext = context.applicationContext
         uidResolver = resolver
-        if (pollJob?.isActive == true || streamJob?.isActive == true) return
-        streamStopped = false
-        wsFailureCounter.set(0)
-        streamJob = scope.launch(Dispatchers.IO) { runStreamSupervisor(scope) }
-        // The poll loop is created LAZILY by the supervisor on permanent degradation, so
-        // both transports never run at once.
+        launchSupervisorLocked(scope)
+    }
+
+    internal fun startStreamingForTest(scope: CoroutineScope) {
+        launchSupervisorLocked(scope)
+    }
+
+    private fun launchSupervisorLocked(scope: CoroutineScope) {
+        synchronized(transportLock) {
+            if (pollJob?.isActive == true || streamJob?.isActive == true) return
+            streamStopped = false
+            val generation = ++streamGeneration
+            val sessionFailures = AtomicInteger(0)
+            wsFailureCounter.set(0)
+            streamJob = launchOnIo(scope) { runStreamSupervisor(scope, generation, sessionFailures) }
+        }
     }
 
     fun stopPolling() {
-        streamStopped = true
-        streamJob?.cancel()
-        streamJob = null
-        runCatching { activeSocket?.cancel() }
-        activeSocket = null
-        pollJob?.cancel()
-        pollJob = null
-        _transportModeFlow.value = TRANSPORT_POLLING
-        wsFailureCounter.set(0)
+        val streamToCancel: Job?
+        val pollToCancel: Job?
+        val socketToCancel: okhttp3.WebSocket?
+        synchronized(transportLock) {
+            streamStopped = true
+            streamGeneration++
+            streamToCancel = streamJob
+            streamJob = null
+            socketToCancel = activeSocket
+            activeSocket = null
+            pollToCancel = pollJob
+            pollJob = null
+            _transportModeFlow.value = TRANSPORT_POLLING
+            wsFailureCounter.set(0)
+        }
+        streamToCancel?.cancel()
+        cancelSocketQuietly(socketToCancel)
+        pollToCancel?.cancel()
     }
+
+    private fun launchOnIo(
+        scope: CoroutineScope,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+        block: suspend CoroutineScope.() -> Unit
+    ): Job = scope.launch(dispatcher, block = block)
 
     // ------------------------------------------------------------------
     // WebSocket-first transport with polling fallback
@@ -158,126 +203,218 @@ object RequestRepository {
      * Owns the WS lifecycle until it permanently degrades into the poll loop. Exposed
      * backoff computation stays pure via [wsBackoffMs] so retries are unit-testable.
      */
-    private suspend fun runStreamSupervisor(scope: CoroutineScope) {
+    private suspend fun runStreamSupervisor(
+        scope: CoroutineScope,
+        generation: Long,
+        sessionFailures: AtomicInteger
+    ) {
         var reconnectAttempt = 0
-        while (kotlinx.coroutines.currentCoroutineContext().isActive && !streamStopped) {
-            val opened = openWebSocket()
+        while (currentCoroutineContext().isActive && isGenerationActive(generation)) {
+            val opened = openWebSocket(generation, sessionFailures)
             if (!opened) {
-                wsFailureCounter.incrementAndGet()
-                if (wsFailureCounter.get() >= MAX_WS_FAILURES || reconnectAttempt + 1 >= MAX_WS_RECONNECTS) {
-                    degradeToPolling(scope, "websocket unavailable (${wsFailureCounter.get()} failures)")
+                if (!isGenerationActive(generation)) return
+                val failures = sessionFailures.incrementAndGet()
+                if (failures >= MAX_WS_FAILURES || reconnectAttempt + 1 >= MAX_WS_RECONNECTS) {
+                    degradeToPolling(scope, "websocket unavailable ($failures failures)", generation)
                     return
                 }
-                delay(wsBackoffMs(reconnectAttempt))
+                delay(reconnectDelayMsOverride ?: wsBackoffMs(reconnectAttempt))
                 reconnectAttempt++
                 continue
             }
-            // The socket is up; callbacks drive everything now. Wait until the socket
-            // dies (cancel/failure/close) before deciding whether to retry.
-            waitWhileSocketActive()
-            if (!kotlinx.coroutines.currentCoroutineContext().isActive || streamStopped) return
-            // Socket death: the listener nulled activeSocket. Retry with backoff unless
-            // the failure budget is exhausted.
-            wsFailureCounter.incrementAndGet()
-            if (wsFailureCounter.get() >= MAX_WS_FAILURES) {
-                degradeToPolling(scope, "websocket failed ${wsFailureCounter.get()} times")
+            waitWhileSocketActive(generation)
+            if (!currentCoroutineContext().isActive || !isGenerationActive(generation)) return
+            val failures = sessionFailures.incrementAndGet()
+            if (failures >= MAX_WS_FAILURES) {
+                degradeToPolling(scope, "websocket failed $failures times", generation)
                 return
             }
-            delay(wsBackoffMs(reconnectAttempt))
+            delay(reconnectDelayMsOverride ?: wsBackoffMs(reconnectAttempt))
             reconnectAttempt++
         }
     }
 
-    /** Opens one WS; returns false when the controller is not ready or the call threw. */
-    private fun openWebSocket(): Boolean {
-        val listener = object : okhttp3.WebSocketListener() {
-            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
-                val snapshot = runCatching {
-                    MihomoApi.parseConnections(
-                        kotlinx.serialization.json.Json.parseToJsonElement(text).jsonObject
-                    )
-                }.getOrNull()
-                if (snapshot == null) {
-                    // A malformed frame is a transport-quality problem too: after
-                    // MAX_WS_FAILURES of them the stream is treated as broken.
-                    if (wsFailureCounter.incrementAndGet() >= MAX_WS_FAILURES) {
-                        runCatching { webSocket.cancel() }
-                        runCatching { activeSocket = null }
-                    }
-                    return
+    private fun isGenerationActive(generation: Long): Boolean =
+        !streamStopped && streamGeneration == generation
+
+    /**
+     * Listener that tracks its own termination and socket identity so that:
+     * 1) Callbacks firing BEFORE [webSocketFactory] returns cannot leave a dead socket in [activeSocket].
+     * 2) Late callbacks from an old socket cannot null out or overwrite a newly opened [activeSocket].
+     */
+    private class ConnectionsSocketListener(
+        val generation: Long,
+        val failureCounter: AtomicInteger
+    ) : okhttp3.WebSocketListener() {
+        @Volatile
+        var attachedSocket: okhttp3.WebSocket? = null
+
+        @Volatile
+        var terminated: Boolean = false
+
+        override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+            if (!isCurrentSocket(webSocket)) {
+                cancelSocketQuietly(webSocket)
+                return
+            }
+            val snapshot = parseSnapshotText(text)
+            if (snapshot == null) {
+                if (failureCounter.incrementAndGet() >= MAX_WS_FAILURES) {
+                    markSocketTerminated(webSocket)
+                    cancelSocketQuietly(webSocket)
                 }
-                wsFailureCounter.set(0)
-                applySnapshot(snapshot)
+                return
+            }
+            failureCounter.set(0)
+            applySnapshot(snapshot)
+        }
+
+        override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+            markSocketTerminated(webSocket)
+        }
+
+        override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+            markSocketTerminated(webSocket)
+        }
+
+        private fun isCurrentSocket(webSocket: okhttp3.WebSocket): Boolean =
+            synchronized(transportLock) {
+                if (!isGenerationActive(generation) || terminated) {
+                    false
+                } else {
+                    attachedSocket == null || activeSocket === webSocket
+                }
             }
 
-            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
-                // A clean server-side close still ends the stream: nulling the handle
-                // wakes the supervisor, which retries or degrades. stopPolling() sets
-                // streamStopped first, so a clean shutdown short-circuits there.
-                runCatching { activeSocket = null }
-            }
-
-            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
-                runCatching { activeSocket = null }
+        fun markSocketTerminated(webSocket: okhttp3.WebSocket?) {
+            synchronized(transportLock) {
+                terminated = true
+                val current = activeSocket
+                if (current != null && (current === webSocket || current === attachedSocket)) {
+                    activeSocket = null
+                }
             }
         }
-        val socket = MihomoApi.newConnectionsWebSocket(listener) ?: return false
-        activeSocket = socket
-        _transportModeFlow.value = TRANSPORT_WEBSOCKET
-        return true
     }
 
-    /** Suspends until the active socket is gone (failed/closed/cancelled) or streaming is stopped. */
-    private suspend fun waitWhileSocketActive() {
-        while (activeSocket != null &&
-            !streamStopped &&
-            kotlinx.coroutines.currentCoroutineContext().isActive
-        ) {
-            delay(200)
+    /** Opens one WS; returns false when the controller is not ready, stopped, or immediately failed. */
+    internal fun openWebSocket(
+        generation: Long = streamGeneration,
+        failureCounter: AtomicInteger = wsFailureCounter
+    ): Boolean {
+        synchronized(transportLock) {
+            if (!isGenerationActive(generation)) return false
         }
+        val listener = ConnectionsSocketListener(generation, failureCounter)
+        val socket = createSocketSafely(listener) ?: return false
+
+        var socketToCancel: okhttp3.WebSocket? = null
+        val activated = synchronized(transportLock) {
+            listener.attachedSocket = socket
+            if (!isGenerationActive(generation)) {
+                socketToCancel = socket
+                false
+            } else if (listener.terminated) {
+                if (activeSocket === socket) {
+                    activeSocket = null
+                }
+                false
+            } else {
+                val previous = activeSocket
+                if (previous != null && previous !== socket) {
+                    socketToCancel = previous
+                }
+                activeSocket = socket
+                _transportModeFlow.value = TRANSPORT_WEBSOCKET
+                true
+            }
+        }
+        cancelSocketQuietly(socketToCancel)
+        return activated
+    }
+
+    private fun createSocketSafely(listener: okhttp3.WebSocketListener): okhttp3.WebSocket? =
+        try {
+            webSocketFactory(listener)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+
+    /** Suspends until the active socket is gone (failed/closed/cancelled) or streaming is stopped. */
+    private suspend fun waitWhileSocketActive(generation: Long) {
+        while (currentCoroutineContext().isActive && canKeepWaitingOnSocket(generation)) {
+            delay(SOCKET_WAIT_STEP_MS)
+        }
+    }
+
+    private fun canKeepWaitingOnSocket(generation: Long): Boolean =
+        activeSocket != null && isGenerationActive(generation)
+
+    internal fun currentGenerationForTest(): Long = streamGeneration
+
+    internal fun degradeToPollingForTest(scope: CoroutineScope, reason: String, generation: Long) {
+        degradeToPolling(scope, reason, generation)
     }
 
     /** Permanently switches to the REST poll loop (foreground/background/screen-off logic unchanged). */
-    private fun degradeToPolling(scope: CoroutineScope, reason: String) {
-        if (_transportModeFlow.value == TRANSPORT_WEBSOCKET) {
+    private fun degradeToPolling(scope: CoroutineScope, reason: String, generation: Long) {
+        var oldSocket: okhttp3.WebSocket? = null
+        var shouldLogDegrade = false
+        synchronized(transportLock) {
+            if (!isGenerationActive(generation)) return
+            shouldLogDegrade = _transportModeFlow.value == TRANSPORT_WEBSOCKET
+            _transportModeFlow.value = TRANSPORT_POLLING
+            oldSocket = activeSocket
+            activeSocket = null
+            startPollLoopLocked(scope, generation)
+        }
+        cancelSocketQuietly(oldSocket)
+        if (shouldLogDegrade) {
             LogRepository.addLog("info", "连接流降级为轮询模式: $reason")
         }
-        _transportModeFlow.value = TRANSPORT_POLLING
-        runCatching { activeSocket?.cancel() }
-        activeSocket = null
-        startPollLoop(scope)
     }
 
-    /** The historical poll loop, byte-for-byte the old behavior. */
-    private fun startPollLoop(scope: CoroutineScope) {
-        if (pollJob?.isActive == true) return
-        pollJob = scope.launch(Dispatchers.IO) {
-            while (isActive) {
-                val pollInterval = if (com.github.mihomo.android.service.MihomoVpnService.isUiInForeground) {
-                    POLL_INTERVAL_MS
-                } else {
-                    BACKGROUND_POLL_INTERVAL_MS
-                }
-                delay(pollInterval)
-                // Screen-off pauses everything non-essential (same gate as LogRepository).
-                if (LogRepository.isScreenOff) continue
-                val snapshot = MihomoApi.connections()
-                if (snapshot == null) {
-                    consecutiveFailures++
-                    if (consecutiveFailures == MAX_CONSECUTIVE_FAILURES) {
-                        // "warning" survives the screen-off gate, so a dead controller
-                        // stays visible even when the user has not opened the app.
-                        LogRepository.addLog(
-                            "warning",
-                            "连续 $MAX_CONSECUTIVE_FAILURES 次无法连接内核控制器，请求记录可能已停止更新"
-                        )
-                    }
-                    continue
-                }
-                consecutiveFailures = 0
-                applySnapshot(snapshot)
-            }
+    /** Starts the historical poll loop under [transportLock], fenced by [generation]. */
+    private fun startPollLoopLocked(scope: CoroutineScope, generation: Long) {
+        if (!isGenerationActive(generation) || pollJob?.isActive == true) return
+        pollJob = launchOnIo(scope) {
+            runPollLoop(generation)
         }
+    }
+
+    private suspend fun runPollLoop(generation: Long) {
+        var consecutiveFailures = 0
+        while (currentCoroutineContext().isActive && isGenerationActive(generation)) {
+            val pollInterval = pollIntervalOverrideMs ?: resolvePollIntervalMs()
+            delay(pollInterval)
+            if (!isGenerationActive(generation) || LogRepository.isScreenOff) continue
+            val snapshot = fetchConnectionsSafely(connectionsFetcher)
+            if (!isGenerationActive(generation)) return
+            if (snapshot == null) {
+                consecutiveFailures = recordPollFailure(consecutiveFailures)
+                continue
+            }
+            consecutiveFailures = 0
+            applySnapshot(snapshot)
+        }
+    }
+
+    private fun resolvePollIntervalMs(): Long =
+        if (isUiInForegroundProvider()) POLL_INTERVAL_MS else BACKGROUND_POLL_INTERVAL_MS
+
+    private fun recordPollFailure(currentFailures: Int): Int {
+        val next = currentFailures + 1
+        if (next == MAX_CONSECUTIVE_FAILURES) {
+            // "warning" survives the screen-off gate, so a dead controller
+            // stays visible even when the user has not opened the app.
+            LogRepository.addLog(
+                "warning",
+                "连续 $MAX_CONSECUTIVE_FAILURES 次无法连接内核控制器，请求记录可能已停止更新"
+            )
+        }
+        return next
     }
 
     /**
@@ -289,77 +426,46 @@ object RequestRepository {
         return (BASE_WS_BACKOFF_MS shl shift).coerceAtMost(MAX_WS_BACKOFF_MS)
     }
 
-    @Synchronized
+    /**
+     * Applies a connections snapshot from WebSocket or REST polling.
+     *
+     * App label / UID / PackageManager resolution is performed OUTSIDE [recordsLock] so that
+     * Binder IPC or UID lookups never block [recordsLock] or UI readers ([topHostsByTraffic]).
+     */
     internal fun applySnapshot(snapshot: MihomoApi.ConnectionsSnapshot) {
+        val resolvedLabels = resolveMissingLabelsOutsideLock(snapshot.connections)
         val now = System.currentTimeMillis()
-        val liveIds = HashSet<String>(snapshot.connections.size)
         var changed = false
+        var activeCount = 0
 
-        for (conn in snapshot.connections) {
-            liveIds.add(conn.id)
-            val existing = recordMap[conn.id]
-            if (existing == null) {
-                if (recordMap.size >= MAX_RECORDS) {
-                    val eldestKey = recordMap.keys.first()
-                    recordMap.remove(eldestKey)
-                }
-                val (label, pkg) = resolveAppLabel(conn)
-                recordMap[conn.id] = RequestRecord(
-                    id = nextId.getAndIncrement(),
-                    connectionId = conn.id,
-                    host = conn.host,
-                    destinationIp = conn.destinationIp.ifBlank { conn.host },
-                    destinationPort = conn.destinationPort,
-                    network = conn.network,
-                    sourceApp = label,
-                    packageName = pkg,
-                    rule = conn.rule.ifBlank { "Match" },
-                    rulePayload = conn.rulePayload,
-                    outbound = conn.chains.firstOrNull()?.uppercase().orEmpty().ifBlank { "DIRECT" },
-                    chain = conn.chains.asReversed(),
-                    uploadBytes = conn.uploadBytes,
-                    downloadBytes = conn.downloadBytes,
-                    isActive = isActiveConnection(conn),
-                    timestamp = if (conn.startMs > 0) conn.startMs else now,
-                    lastSeenMs = now
-                )
+        synchronized(recordsLock) {
+            val liveIds = HashSet<String>(snapshot.connections.size)
+            for (conn in snapshot.connections) {
+                liveIds.add(conn.id)
+            }
+            // Mark disappeared connections as closed FIRST so that if MAX_RECORDS is full,
+            // newly closed connections are immediately eligible for eviction before active ones.
+            if (closeMissingRecordsLocked(recordMap, liveIds, now)) {
                 changed = true
-            } else {
-                val active = isActiveConnection(conn)
-                if (existing.uploadBytes != conn.uploadBytes || existing.downloadBytes != conn.downloadBytes || existing.isActive != active) {
-                    recordMap[conn.id] = existing.copy(
-                        uploadBytes = conn.uploadBytes,
-                        downloadBytes = conn.downloadBytes,
-                        // The SAME rule as on the insert path: a rejected connection must
-                        // not flip back to "active". The old code set it to true
-                        // unconditionally, so a REJECT rule re-activated the record on
-                        // the next poll, and the `!existing.isActive` trigger re-opened
-                        // records that had just been closed.
-                        isActive = active,
-                        lastSeenMs = now
-                    )
+            }
+            for (conn in snapshot.connections) {
+                val insertedOrUpdated = upsertRecordLocked(
+                    recordMap = recordMap,
+                    nextId = nextId,
+                    conn = conn,
+                    resolvedLabels = resolvedLabels,
+                    now = now
+                )
+                if (insertedOrUpdated) {
                     changed = true
-                } else if (now - existing.lastSeenMs > 5000L) {
-                    // Keep lastSeen fresh without triggering a publish; a stale lastSeen would
-                    // inflate durations when the poll loop resumes after a long pause.
-                    recordMap[conn.id] = existing.copy(lastSeenMs = now)
                 }
             }
-        }
-
-        for ((connId, record) in recordMap) {
-            if (record.isActive && connId !in liveIds) {
-                val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: now
-                recordMap[connId] = record.copy(
-                    isActive = false,
-                    durationMs = (closedAt - record.timestamp).coerceAtLeast(0L),
-                    lastSeenMs = now
-                )
-                changed = true
+            activeCount = recordMap.values.count { it.isActive }
+            if (changed) {
+                currentRecordsSnapshot = recordMap.values.reversed()
             }
         }
 
-        val activeCount = recordMap.values.count { it.isActive }
         if (_activeCountFlow.value != activeCount) {
             _activeCountFlow.value = activeCount
         }
@@ -368,56 +474,29 @@ object RequestRepository {
         }
     }
 
-    private fun MihomoApi.ApiConnection.outboundEqualsReject(): Boolean =
-        chains.firstOrNull()?.equals("REJECT", ignoreCase = true) == true
-
-    /**
-     * Whether a connection counts as "active" in the request list.
-     *
-     * A connection that the core rejected (a REJECT rule, or a REJECT outbound) is never
-     * active — it is blocked, not routed. This single definition is used by BOTH the
-     * insert and the update path: the update path used to force `isActive = true`, so a
-     * rejected connection flipped back to "active" on the next poll.
-     */
-    private fun isActiveConnection(conn: MihomoApi.ApiConnection): Boolean =
-        !conn.rule.equals("Reject", ignoreCase = true) && !conn.outboundEqualsReject()
-
-    private fun resolveAppLabel(conn: MihomoApi.ApiConnection): Pair<String, String?> {
-        val resolver = uidResolver ?: return "" to null
-        val uid = runCatching {
-            resolver(
-                if (conn.network == "UDP") android.system.OsConstants.IPPROTO_UDP
-                else android.system.OsConstants.IPPROTO_TCP,
-                "${conn.sourceIp}:${conn.sourcePort}",
-                "${conn.destinationIp.ifBlank { conn.host }}:${conn.destinationPort}"
-            )
-        }.getOrDefault(0)
-        if (uid <= 0) return "" to null
-        synchronized(uidLabelCache) {
-            uidLabelCache[uid]?.let { return it }
+    private fun resolveMissingLabelsOutsideLock(
+        connections: List<MihomoApi.ApiConnection>
+    ): Map<String, Pair<String, String?>> {
+        if (connections.isEmpty()) return emptyMap()
+        val unknownConns = synchronized(recordsLock) {
+            connections.filter { !recordMap.containsKey(it.id) }
         }
-        val context = appContext
-        val pkg = context?.packageManager?.getPackagesForUid(uid)?.firstOrNull()
-        val label = pkg?.let { name ->
-            runCatching {
-                context.packageManager.getApplicationLabel(
-                    context.packageManager.getApplicationInfo(name, 0)
-                ).toString()
-            }.getOrNull()
-        } ?: "UID $uid"
-        val pair = label to pkg
-        synchronized(uidLabelCache) {
-            if (uidLabelCache.size > 500) uidLabelCache.clear()
-            uidLabelCache[uid] = pair
+        if (unknownConns.isEmpty()) return emptyMap()
+        val resolved = HashMap<String, Pair<String, String?>>(unknownConns.size)
+        for (conn in unknownConns) {
+            resolved[conn.id] = resolveAppLabel(conn, uidResolver, appContext, uidLabelCache)
         }
-        return pair
+        return resolved
     }
 
     /** Asks the core to drop the connection behind [id]; only marks closed when the core confirms. */
-    suspend fun closeConnection(id: Long): Boolean = withContext(Dispatchers.IO) {
-        val connectionId = synchronized(this@RequestRepository) {
-            recordMap.values.firstOrNull { it.id == id }?.connectionId
-        }
+    suspend fun closeConnection(id: Long): Boolean = closeConnectionOnIo(id)
+
+    private suspend fun closeConnectionOnIo(
+        id: Long,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO
+    ): Boolean = withContext(dispatcher) {
+        val connectionId = currentRecordsSnapshot.firstOrNull { it.id == id }?.connectionId
         val requested = if (connectionId != null) MihomoApi.closeConnection(connectionId) else false
         if (requested) {
             markClosed(id)
@@ -425,47 +504,284 @@ object RequestRepository {
         requested
     }
 
-    @Synchronized
     private fun markClosed(id: Long) {
-        val record = recordMap.values.firstOrNull { it.id == id }
-        if (record != null && record.connectionId != null && record.isActive) {
-            val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: System.currentTimeMillis()
-            recordMap[record.connectionId] = record.copy(
-                isActive = false,
-                durationMs = (closedAt - record.timestamp).coerceAtLeast(0L)
-            )
-            _activeCountFlow.value = recordMap.values.count { it.isActive }
+        var changed = false
+        var activeCount = 0
+        synchronized(recordsLock) {
+            val record = recordMap.values.firstOrNull { it.id == id }
+            val connId = record?.connectionId
+            if (record != null && connId != null && record.isActive) {
+                val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: System.currentTimeMillis()
+                recordMap[connId] = record.copy(
+                    isActive = false,
+                    durationMs = (closedAt - record.timestamp).coerceAtLeast(0L)
+                )
+                currentRecordsSnapshot = recordMap.values.reversed()
+                activeCount = recordMap.values.count { it.isActive }
+                changed = true
+            }
+        }
+        if (changed) {
+            _activeCountFlow.value = activeCount
             publisher.request()
         }
     }
 
-    @Synchronized
     fun clearClosed() {
-        recordMap.entries.removeAll { !it.value.isActive }
+        synchronized(recordsLock) {
+            recordMap.entries.removeAll { !it.value.isActive }
+            currentRecordsSnapshot = recordMap.values.reversed()
+        }
         publisher.publishNow()
     }
 
-    @Synchronized
     fun clearAll() {
-        recordMap.clear()
+        synchronized(recordsLock) {
+            recordMap.clear()
+            currentRecordsSnapshot = emptyList()
+        }
         _activeCountFlow.value = 0
         publisher.publishNow()
     }
 
-    /** Aggregated per-host totals over the currently tracked records (for the ranking card). */
-    @Synchronized
-    fun topHostsByTraffic(limit: Int = 5): List<Triple<String, Long, Long>> {
-        return recordMap.values.asSequence()
-            .filter { it.host.isNotBlank() }
-            .groupBy { it.host.lowercase() }
-            .map { (host, records) ->
-                Triple(
-                    host,
-                    records.sumOf { it.uploadBytes },
-                    records.sumOf { it.downloadBytes }
-                )
-            }
-            .sortedByDescending { it.second + it.third }
-            .take(limit)
+    /**
+     * Aggregated per-host totals over the currently tracked records (for the ranking card).
+     * Lock-free: reads the volatile immutable [currentRecordsSnapshot] so UI calls never block.
+     */
+    fun topHostsByTraffic(limit: Int = 5): List<Triple<String, Long, Long>> =
+        computeTopHosts(currentRecordsSnapshot, limit)
+
+    internal fun setUidResolverForTest(resolver: ((Int, String, String) -> Int)?) {
+        uidResolver = resolver
+        uidLabelCache.clear()
+    }
+
+    internal fun resetTransportForTest() {
+        stopPolling()
+        webSocketFactory = { listener -> MihomoApi.newConnectionsWebSocket(listener) }
+        connectionsFetcher = { MihomoApi.connections() }
+        isUiInForegroundProvider = {
+            com.github.mihomo.android.service.MihomoVpnService.isUiInForeground
+        }
+        reconnectDelayMsOverride = null
+        pollIntervalOverrideMs = null
+        uidResolver = null
+        uidLabelCache.clear()
     }
 }
+
+private const val MAX_UID_CACHE_ENTRIES = 500
+private const val LAST_SEEN_REFRESH_MS = 5000L
+private const val FALLBACK_IPPROTO_TCP = 6
+private const val FALLBACK_IPPROTO_UDP = 17
+
+private fun cancelSocketQuietly(socket: okhttp3.WebSocket?) {
+    if (socket == null) return
+    try {
+        socket.cancel()
+    } catch (_: Exception) {
+        // Ignore cancellation errors on closing socket
+    }
+}
+
+private fun parseSnapshotText(text: String): MihomoApi.ConnectionsSnapshot? =
+    try {
+        MihomoApi.parseConnections(Json.parseToJsonElement(text).jsonObject)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+private fun fetchConnectionsSafely(
+    fetcher: () -> MihomoApi.ConnectionsSnapshot?
+): MihomoApi.ConnectionsSnapshot? =
+    try {
+        fetcher()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+private fun resolveProtocol(network: String): Int =
+    if (network.equals("UDP", ignoreCase = true)) {
+        android.system.OsConstants.IPPROTO_UDP.takeIf { it != 0 } ?: FALLBACK_IPPROTO_UDP
+    } else {
+        android.system.OsConstants.IPPROTO_TCP.takeIf { it != 0 } ?: FALLBACK_IPPROTO_TCP
+    }
+
+private fun queryPackageLabelForUid(context: Context?, uid: Int): Pair<String, String?> {
+    if (context == null) return "UID $uid" to null
+    val pm = context.packageManager
+    val pkg = try {
+        pm.getPackagesForUid(uid)?.firstOrNull()
+    } catch (_: Exception) {
+        null
+    }
+    val label = pkg?.let { name ->
+        try {
+            pm.getApplicationLabel(pm.getApplicationInfo(name, 0)).toString()
+        } catch (_: Exception) {
+            null
+        }
+    } ?: "UID $uid"
+    return label to pkg
+}
+
+private fun resolveAppLabel(
+    conn: MihomoApi.ApiConnection,
+    uidResolver: ((Int, String, String) -> Int)?,
+    appContext: Context?,
+    uidLabelCache: ConcurrentHashMap<Int, Pair<String, String?>>
+): Pair<String, String?> {
+    val resolver = uidResolver ?: return "" to null
+    val proto = resolveProtocol(conn.network)
+    val uid = try {
+        resolver(
+            proto,
+            "${conn.sourceIp}:${conn.sourcePort}",
+            "${conn.destinationIp.ifBlank { conn.host }}:${conn.destinationPort}"
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        0
+    }
+    if (uid <= 0) return "" to null
+    uidLabelCache[uid]?.let { return it }
+    val pair = queryPackageLabelForUid(appContext, uid)
+    if (uidLabelCache.size >= MAX_UID_CACHE_ENTRIES) {
+        uidLabelCache.clear()
+    }
+    uidLabelCache[uid] = pair
+    return pair
+}
+
+private fun upsertRecordLocked(
+    recordMap: LinkedHashMap<String, RequestRecord>,
+    nextId: AtomicLong,
+    conn: MihomoApi.ApiConnection,
+    resolvedLabels: Map<String, Pair<String, String?>>,
+    now: Long
+): Boolean {
+    val existing = recordMap[conn.id]
+    if (existing == null) {
+        if (recordMap.size >= RequestRepository.MAX_RECORDS) {
+            evictOneRecordLocked(recordMap)
+        }
+        val labelPkg = resolvedLabels[conn.id] ?: ("" to null)
+        recordMap[conn.id] = buildNewRequestRecord(nextId.getAndIncrement(), conn, labelPkg, now)
+        return true
+    }
+    val active = isActiveConnection(conn)
+    if (hasRecordChanged(existing, conn, active)) {
+        recordMap[conn.id] = existing.copy(
+            uploadBytes = conn.uploadBytes,
+            downloadBytes = conn.downloadBytes,
+            isActive = active,
+            lastSeenMs = now
+        )
+        return true
+    }
+    if (now - existing.lastSeenMs > LAST_SEEN_REFRESH_MS) {
+        recordMap[conn.id] = existing.copy(lastSeenMs = now)
+    }
+    return false
+}
+
+private fun closeMissingRecordsLocked(
+    recordMap: LinkedHashMap<String, RequestRecord>,
+    liveIds: Set<String>,
+    now: Long
+): Boolean {
+    var changed = false
+    for ((connId, record) in recordMap) {
+        if (record.isActive && connId !in liveIds) {
+            val closedAt = record.lastSeenMs.takeIf { it > 0 } ?: now
+            recordMap[connId] = record.copy(
+                isActive = false,
+                durationMs = (closedAt - record.timestamp).coerceAtLeast(0L),
+                lastSeenMs = closedAt
+            )
+            changed = true
+        }
+    }
+    return changed
+}
+
+/**
+ * Evicts one entry when [recordMap] reaches [RequestRepository.MAX_RECORDS]:
+ * 1. Prefer closed/inactive records (`!isActive`), evicting the one least recently active (`minBy(lastSeenMs)`).
+ * 2. Only when all entries are active, evict the least recently active one (`minBy(lastSeenMs)`).
+ */
+private fun evictOneRecordLocked(recordMap: LinkedHashMap<String, RequestRecord>) {
+    val victimKey = recordMap.entries
+        .asSequence()
+        .filter { !it.value.isActive }
+        .minByOrNull { it.value.lastSeenMs }
+        ?.key
+        ?: recordMap.entries.minByOrNull { it.value.lastSeenMs }?.key
+        ?: recordMap.keys.firstOrNull()
+    if (victimKey != null) {
+        recordMap.remove(victimKey)
+    }
+}
+
+private fun buildNewRequestRecord(
+    id: Long,
+    conn: MihomoApi.ApiConnection,
+    labelPkg: Pair<String, String?>,
+    now: Long
+): RequestRecord = RequestRecord(
+    id = id,
+    connectionId = conn.id,
+    host = conn.host,
+    destinationIp = conn.destinationIp.ifBlank { conn.host },
+    destinationPort = conn.destinationPort,
+    network = conn.network,
+    sourceApp = labelPkg.first,
+    packageName = labelPkg.second,
+    rule = conn.rule.ifBlank { "Match" },
+    rulePayload = conn.rulePayload,
+    outbound = conn.chains.firstOrNull()?.uppercase(Locale.ROOT).orEmpty().ifBlank { "DIRECT" },
+    chain = conn.chains.asReversed(),
+    uploadBytes = conn.uploadBytes,
+    downloadBytes = conn.downloadBytes,
+    isActive = isActiveConnection(conn),
+    timestamp = if (conn.startMs > 0) conn.startMs else now,
+    lastSeenMs = now
+)
+
+private fun hasRecordChanged(
+    existing: RequestRecord,
+    conn: MihomoApi.ApiConnection,
+    active: Boolean
+): Boolean =
+    existing.uploadBytes != conn.uploadBytes ||
+        existing.downloadBytes != conn.downloadBytes ||
+        existing.isActive != active
+
+private fun MihomoApi.ApiConnection.outboundEqualsReject(): Boolean =
+    chains.firstOrNull()?.equals("REJECT", ignoreCase = true) == true
+
+private fun isActiveConnection(conn: MihomoApi.ApiConnection): Boolean =
+    !conn.rule.equals("Reject", ignoreCase = true) && !conn.outboundEqualsReject()
+
+private fun computeTopHosts(
+    records: List<RequestRecord>,
+    limit: Int
+): List<Triple<String, Long, Long>> =
+    records.asSequence()
+        .filter { it.host.isNotBlank() }
+        .groupBy { it.host.lowercase(Locale.ROOT) }
+        .map { (host, grouped) ->
+            Triple(
+                host,
+                grouped.sumOf { it.uploadBytes },
+                grouped.sumOf { it.downloadBytes }
+            )
+        }
+        .sortedByDescending { it.second + it.third }
+        .take(limit)
+        .toList()

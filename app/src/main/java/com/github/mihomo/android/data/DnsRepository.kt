@@ -3,6 +3,7 @@ package com.github.mihomo.android.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 object DnsRepository {
@@ -29,6 +30,8 @@ object DnsRepository {
         val snapshot = synchronized(this) { recordList.toList() }
         _recordsFlow.value = snapshot
     }
+
+    private val whitespaceRegex = Regex("""\s+""")
 
     // Handles:
     // [DNS] www.google.com --> 142.250.190.46
@@ -60,7 +63,7 @@ object DnsRepository {
         isCacheHit: Boolean = false
     ) {
         val cleanDomain = domain.trim()
-        val cleanIp = ip.trim().trim('[', ']').split(Regex("""\s+""")).joinToString(", ")
+        val cleanIp = ip.trim().trim('[', ']').split(whitespaceRegex).joinToString(", ")
         if (cleanDomain.isBlank() || cleanIp.isBlank()) return
 
         val cleanServer = server?.trim()
@@ -70,41 +73,29 @@ object DnsRepository {
 
         val effectiveFakeIp = isFakeIp || cleanIp.startsWith("198.18.") || cleanIp.startsWith("198.19.")
         val isResolving = cleanIp.equals("Resolving...", ignoreCase = true)
-        val resolvedType = type.ifBlank {
-            if (!isResolving && cleanIp.contains(':') && !cleanIp.contains('.')) "AAAA" else "A"
-        }
+        val resolvedType = resolveRecordType(type, isResolving, cleanIp)
 
         if (!isResolving) {
-            domainToIpMap[cleanDomain.lowercase()] = cleanIp
+            domainToIpMap[cleanDomain.lowercase(Locale.ROOT)] = cleanIp
         }
 
-        // If there was an in-progress "Resolving..." entry for this domain, update it in place
-        val pendingIndex = recordList.indexOfFirst {
-            it.domain.equals(cleanDomain, ignoreCase = true) && it.isResolving
-        }
-        if (pendingIndex != -1 && !isResolving) {
-            val old = recordList[pendingIndex]
-            recordList[pendingIndex] = old.copy(
-                ip = cleanIp,
-                isFakeIp = effectiveFakeIp,
-                latencyMs = latencyMs,
-                server = cleanServer ?: old.server,
-                type = type.ifBlank { old.type.ifBlank { resolvedType } },
-                isCacheHit = isCacheHit
-            )
-            publisher.request()
-            return
-        }
-        if (pendingIndex != -1 && isResolving) {
+        val pendingInput = PendingDnsRecord(
+            domain = cleanDomain,
+            ip = cleanIp,
+            isFakeIp = effectiveFakeIp,
+            latencyMs = latencyMs,
+            server = cleanServer,
+            rawType = type,
+            resolvedType = resolvedType,
+            isCacheHit = isCacheHit
+        )
+        if (tryUpdatePendingResolving(pendingInput, isResolving)) {
             return
         }
 
         // Avoid duplicate identical queries spamming in consecutive 1.5 seconds
         val first = recordList.firstOrNull()
-        if (first != null && first.domain.equals(cleanDomain, ignoreCase = true) && first.ip == cleanIp) {
-            val now = System.currentTimeMillis()
-            if (now - first.timestamp < 1500L) return
-        }
+        if (isConsecutiveDuplicate(first, cleanDomain, cleanIp)) return
 
         val record = DnsRecord(
             id = nextId.getAndIncrement(),
@@ -124,6 +115,48 @@ object DnsRepository {
         publisher.request()
     }
 
+    private fun resolveRecordType(type: String, isResolving: Boolean, cleanIp: String): String =
+        type.ifBlank {
+            if (!isResolving && cleanIp.contains(':') && !cleanIp.contains('.')) "AAAA" else "A"
+        }
+
+    private data class PendingDnsRecord(
+        val domain: String,
+        val ip: String,
+        val isFakeIp: Boolean,
+        val latencyMs: Int,
+        val server: String?,
+        val rawType: String,
+        val resolvedType: String,
+        val isCacheHit: Boolean
+    )
+
+    private fun tryUpdatePendingResolving(input: PendingDnsRecord, isResolving: Boolean): Boolean {
+        val pendingIndex = recordList.indexOfFirst {
+            it.domain.equals(input.domain, ignoreCase = true) && it.isResolving
+        }
+        if (pendingIndex == -1) return false
+        if (!isResolving) {
+            val old = recordList[pendingIndex]
+            recordList[pendingIndex] = old.copy(
+                ip = input.ip,
+                isFakeIp = input.isFakeIp,
+                latencyMs = input.latencyMs,
+                server = input.server ?: old.server,
+                type = input.rawType.ifBlank { old.type.ifBlank { input.resolvedType } },
+                isCacheHit = input.isCacheHit
+            )
+            publisher.request()
+        }
+        return true
+    }
+
+    private fun isConsecutiveDuplicate(first: DnsRecord?, cleanDomain: String, cleanIp: String): Boolean {
+        if (first == null) return false
+        if (!first.domain.equals(cleanDomain, ignoreCase = true) || first.ip != cleanIp) return false
+        return System.currentTimeMillis() - first.timestamp < 1500L
+    }
+
     @Synchronized
     fun clear() {
         recordList.clear()
@@ -133,7 +166,7 @@ object DnsRepository {
 
     @Synchronized
     fun findIpForDomain(domain: String): String? {
-        val clean = domain.trim().lowercase()
+        val clean = domain.trim().lowercase(Locale.ROOT)
         return domainToIpMap[clean]
     }
 
@@ -146,7 +179,7 @@ object DnsRepository {
             if (arrowMatch != null) {
                 val isCacheHit = arrowMatch.groupValues[1].isNotBlank()
                 val domain = arrowMatch.groupValues[2]
-                val recordType = arrowMatch.groupValues[3].uppercase()
+                val recordType = arrowMatch.groupValues[3].uppercase(Locale.ROOT)
                 val ipRaw = arrowMatch.groupValues[4]
                 val tail = arrowMatch.groupValues[5]
                 val server = serverSuffixRegex.find(tail)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
@@ -168,12 +201,12 @@ object DnsRepository {
                 val recordType = resolveMatch.groupValues[2]
                 val server = resolveMatch.groupValues[3]
                 // Recorded as in-progress or pending resolution if not yet resolved
-                if (!domainToIpMap.containsKey(domain.lowercase())) {
+                if (!domainToIpMap.containsKey(domain.lowercase(Locale.ROOT))) {
                     addRecord(domain = domain, ip = "Resolving...", type = recordType, server = server)
                 }
             }
-        } catch (e: Exception) {
-            android.util.Log.d(TAG, "parseFromLog failed: ${e.message}")
+        } catch (ignored: Exception) {
+            android.util.Log.d(TAG, "parseFromLog failed: ${ignored.message}", ignored)
         }
     }
 }

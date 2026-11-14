@@ -93,11 +93,8 @@ object LoonTextStyles {
 
     @Composable
     @ReadOnlyComposable
-    fun segmentedLabel(): TextStyle = base(13f, FontWeight.Normal, -0.15f)
-
-    @Composable
-    @ReadOnlyComposable
-    fun segmentedLabelStrong(): TextStyle = base(13f, FontWeight.SemiBold, -0.15f)
+    fun segmentedLabel(strong: Boolean = false): TextStyle =
+        base(13f, if (strong) FontWeight.SemiBold else FontWeight.Normal, -0.15f)
 
     /**
      * Detail-sheet label role (13sp). Used by the shared [CupertinoDetailRow] so every
@@ -155,11 +152,8 @@ object LoonTextStyles {
 
     @Composable
     @ReadOnlyComposable
-    fun tab(): TextStyle = base(10.5f, FontWeight.Normal, -0.10f)
-
-    @Composable
-    @ReadOnlyComposable
-    fun tabStrong(): TextStyle = base(10.5f, FontWeight.SemiBold, -0.10f)
+    fun tab(strong: Boolean = false): TextStyle =
+        base(10.5f, if (strong) FontWeight.SemiBold else FontWeight.Normal, -0.10f)
 
     @Composable
     @ReadOnlyComposable

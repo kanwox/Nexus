@@ -1,95 +1,110 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.ui
 
-import android.util.Log
-import androidx.activity.compose.BackHandler
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.zIndex
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.github.kr328.clash.core.model.Proxy
-import com.github.kr328.clash.core.model.ProxyGroup
 import com.github.mihomo.android.core.ClashCore
 import com.github.mihomo.android.core.model.TunnelMode
-import com.github.mihomo.android.data.*
+import com.github.mihomo.android.data.AppFont
+import com.github.mihomo.android.data.AppInfoManager
+import com.github.mihomo.android.data.ConfigManager
+import com.github.mihomo.android.data.MihomoApi
+import com.github.mihomo.android.data.SettingsManager
+import com.github.mihomo.android.data.ThemeMode
+import com.github.mihomo.android.data.UpdateChecker
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
-import androidx.compose.animation.*
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.tween
-import androidx.compose.material3.Text
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import com.github.mihomo.android.ui.components.CupertinoAlertDialog
-import com.github.mihomo.android.ui.components.CupertinoTextField
 import com.github.mihomo.android.ui.components.CupertinoToast
 import com.github.mihomo.android.ui.components.CupertinoToastHost
 import com.github.mihomo.android.ui.components.LoonFloatingBottomBar
-import com.github.mihomo.android.ui.screens.*
-import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.ui.screens.DashboardActions
+import com.github.mihomo.android.ui.screens.DashboardNavigation
+import com.github.mihomo.android.ui.screens.DashboardProxySummary
+import com.github.mihomo.android.ui.screens.DashboardScreen
+import com.github.mihomo.android.ui.screens.DashboardShortcutsState
+import com.github.mihomo.android.ui.screens.DashboardStatusState
+import com.github.mihomo.android.ui.screens.ProxiesCallbacks
+import com.github.mihomo.android.ui.screens.ProxiesDisplayConfig
+import com.github.mihomo.android.ui.screens.ProxiesScreen
+import com.github.mihomo.android.ui.screens.ProxiesState
+import com.github.mihomo.android.ui.screens.SettingsScreen
+import com.github.mihomo.android.ui.theme.LocalReduceMotion
 import com.github.mihomo.android.ui.theme.LoonBg
 import com.github.mihomo.android.ui.theme.LoonMotion
 import com.github.mihomo.android.ui.theme.LoonResponsiveContent
-import com.github.mihomo.android.ui.theme.LoonTextSecondary
-import com.github.mihomo.android.ui.theme.LoonTypeScale
-import com.github.mihomo.android.i18n.LocalAppLanguage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class SubScreen {
-    PROFILES,
-    PROFILE_OVERRIDE,
-    APP_ROUTING,
-    LOGS,
-    SCRIPTS,
-    RULES,
-    DNS,
-    DNS_SETTINGS,
-    REQUESTS,
-    NETWORK_SHARE,
-    APPEARANCE,
-    CORE,
-    QR_SCAN,
-    VPN_TUNNEL,
-    ABOUT
+@Composable
+private fun rememberProfileImportLauncher(
+    activity: Context,
+    vm: ProxiesViewModel,
+    getLanguage: () -> String,
+    coroutineScope: CoroutineScope
+) = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.GetContent()
+) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    val lang = getLanguage()
+    coroutineScope.launch(Dispatchers.IO) {
+        val res = ConfigManager.importProfileFromUri(activity, uri)
+        withContext(Dispatchers.Main) {
+            if (res.isSuccess) {
+                vm.reloadProfiles()
+                CupertinoToast.show(
+                    AppStrings.get("imported_toast", lang)
+                        .replace("{name}", res.getOrNull()?.name.orEmpty())
+                )
+            } else {
+                CupertinoToast.show(
+                    AppStrings.get("import_failed", lang)
+                        .replace("{msg}", res.exceptionOrNull()?.message.orEmpty()),
+                    isDestructive = true
+                )
+            }
+        }
+    }
 }
 
-/** Persists the current sub-screen across configuration changes. */
-private val subScreenSaver: Saver<SubScreen?, String> = Saver(
-    save = { it?.name },
-    restore = { name -> runCatching { SubScreen.valueOf(name) }.getOrNull() }
-)
-
-@Suppress("LargeClass")
 @Composable
 fun MainAppScreen(
     settingsManager: SettingsManager,
@@ -99,1301 +114,398 @@ fun MainAppScreen(
     onThemeModeChanged: (ThemeMode) -> Unit,
     onAppFontChanged: (AppFont) -> Unit
 ) {
-    // The composable is only hosted by MainActivity; data-layer calls need its Context.
-    // Only the Context API is used (contentResolver), so no Activity cast is needed —
-    // casting LocalContext to ComponentActivity breaks on hosts that use a different
-    // Activity type and is flagged by the ContextCastToActivity lint check.
     val activity = LocalContext.current
-
-    // Profiles / proxies / speed-test state lives in the ViewModel so an in-flight group
-    // speed test survives rotation and its measured delays are not wiped.
     val vm: ProxiesViewModel = viewModel()
-    val profiles = vm.profiles
-    val selectedProfileId = vm.selectedProfileId
-    val parsedProfile = vm.parsedProfile
-    val proxyGroups = vm.proxyGroups
-    val liveGroupMap = vm.liveGroupMap
-    val selectedGroupName = vm.selectedGroupName
-    val currentGroupData = vm.currentGroupData
-    val activeNodeName = vm.activeNodeName
-    val delayCache = vm.delayCache
-    val testingNodes = vm.testingNodes
-    val mainProxyGroupName = vm.mainProxyGroupName
+    val state = rememberMainAppState(settingsManager, onThemeModeChanged, onAppFontChanged)
+    val scrollStates = rememberMainScrollStates()
+    val coroutineScope = rememberCoroutineScope()
 
-    // Primary Tabs: 0: 仪表, 1: 策略, 2: 配置
-    var currentTab by rememberSaveable { mutableStateOf(0) }
-    var currentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
-        mutableStateOf<SubScreen?>(null)
-    }
-    var parentSubScreen by rememberSaveable(stateSaver = subScreenSaver) {
-        mutableStateOf<SubScreen?>(null)
-    }
-    var overrideTargetProfileId by rememberSaveable {
-        mutableStateOf<String?>(null)
-    }
-
-    // Field-level derived reads: vpnState updates once per second (traffic strings), and
-    // reading the whole object here would recompose this entire screen (and the three
-    // persistent pager tabs) on every tick. Status/error/version change rarely; the traffic
-    // values are only read inside DashboardTrafficRow via vpnTraffic.
     val vpnTraffic = MihomoVpnService.vpnState.collectAsStateWithLifecycle()
     val vpnStatus by remember { derivedStateOf { vpnTraffic.value.status } }
-    val vpnError by remember { derivedStateOf { vpnTraffic.value.error } }
-    val vpnCoreVersion by remember { derivedStateOf { vpnTraffic.value.coreVersion } }
     val coreActive = vpnStatus == VpnState.Status.RUNNING || ClashCore.isCoreLoaded
+    val pagerState = rememberPagerState(initialPage = state.currentTab, pageCount = { 3 })
 
-    var tunnelMode by remember { mutableStateOf(TunnelMode.fromString(settingsManager.tunnelMode)) }
-    var appLanguage by remember { mutableStateOf(settingsManager.appLanguage) }
+    MainAppEffects(activity, vm, state, scrollStates, pagerState, vpnStatus)
+    val profileImportLauncher = rememberProfileImportLauncher(
+        activity = activity,
+        vm = vm,
+        getLanguage = { state.appLanguage },
+        coroutineScope = coroutineScope
+    )
 
-    // Initial profile listing (disk IO) is owned by the ViewModel; silent update check runs
-    // in the background at most once every 24h when enabled.
+    val subScreenEnv = SubScreenEnvironment(
+        state = state,
+        vm = vm,
+        vpnStatus = vpnStatus,
+        coreActive = coreActive,
+        activity = activity,
+        coroutineScope = coroutineScope
+    )
+    val subScreenTheme = SubScreenThemeCallbacks(
+        currentThemeMode = currentThemeMode,
+        currentAppFont = currentAppFont,
+        onThemeModeChanged = onThemeModeChanged,
+        onAppFontChanged = onAppFontChanged,
+        onPickProfileFile = { profileImportLauncher.launch("*/*") }
+    )
+
+    CompositionLocalProvider(LocalAppLanguage provides state.appLanguage) {
+        Box(modifier = Modifier.fillMaxSize().background(LoonBg)) {
+            MainTabsPager(
+                pagerState = pagerState,
+                env = subScreenEnv,
+                scrollStates = scrollStates,
+                vpnTraffic = vpnTraffic,
+                currentThemeMode = currentThemeMode,
+                onToggleVpn = onToggleVpn
+            )
+            MainSubScreenOverlay(env = subScreenEnv, theme = subScreenTheme)
+            MainBottomBarContainer(state.currentTab, vpnStatus, vm, state::selectTab)
+            CupertinoToastHost()
+        }
+        MainAppBackupDialogs(state, vm, coreActive, activity, coroutineScope)
+    }
+}
+
+@Composable
+private fun MainAppEffects(
+    activity: Context,
+    vm: ProxiesViewModel,
+    state: MainAppState,
+    scrollStates: MainScrollStates,
+    pagerState: PagerState,
+    vpnStatus: VpnState.Status
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val reduceMotion = LocalReduceMotion.current
+
     LaunchedEffect(Unit) {
         vm.reloadProfiles()
+        state.loadEncryptedPreferences()
         UpdateChecker.checkIfDue(activity)
     }
 
-    var visibleShortcuts by remember { mutableStateOf(settingsManager.visibleShortcuts) }
-    var shortcutOrder by remember { mutableStateOf(settingsManager.shortcutOrder) }
-    var proxiesViewMode by remember { mutableStateOf(settingsManager.proxiesViewMode) }
-    var showGroupIcons by remember { mutableStateOf(settingsManager.showGroupIcons) }
-    var nodeColumns by remember { mutableIntStateOf(settingsManager.nodeColumns) }
-    var nodeSortMode by remember { mutableStateOf(settingsManager.nodeSortMode) }
-    var scriptingEnabled by remember { mutableStateOf(settingsManager.scriptingEnabled) }
-    var rewriteEnabled by remember { mutableStateOf(settingsManager.rewriteEnabled) }
-
-    var perAppMode by remember { mutableStateOf(settingsManager.perAppProxyMode) }
-    var selectedPackages by remember { mutableStateOf(settingsManager.selectedPackages) }
-    var installedApps by remember { mutableStateOf(listOf<InstalledApp>()) }
-    var isAppsLoading by remember { mutableStateOf(false) }
-
-    var tunStack by remember { mutableStateOf(settingsManager.tunStack) }
-    var bootOnStartup by remember { mutableStateOf(settingsManager.bootOnStartup) }
-    var allowLan by remember { mutableStateOf(settingsManager.allowLan) }
-    var ipv6Enabled by remember { mutableStateOf(settingsManager.ipv6Enabled) }
-    var allowLanPassword by remember { mutableStateOf(settingsManager.allowLanPassword) }
-    var fakeIpEnabled by remember { mutableStateOf(settingsManager.fakeIpEnabled) }
-    var dnsNameservers by remember { mutableStateOf(settingsManager.dnsNameservers) }
-    var dnsFallbackServers by remember { mutableStateOf(settingsManager.dnsFallbackServers) }
-    var blockThirdPartyDns by remember { mutableStateOf(settingsManager.blockThirdPartyDns) }
-    var appRoutingDirty by remember { mutableStateOf(false) }
-
-    // Tunnel-page settings lifted as observable state: reading the settings store directly
-    // inside composition is not reactive, so a flipped switch would instantly snap back.
-    var killSwitchEnabled by remember { mutableStateOf(settingsManager.killSwitchEnabled) }
-    var allowBypassEnabled by remember { mutableStateOf(settingsManager.allowBypassEnabled) }
-    var allowPrivateSubs by remember { mutableStateOf(settingsManager.allowPrivateSubscriptionHosts) }
-    var mixedPort by remember { mutableIntStateOf(settingsManager.mixedPort) }
-    var tunMtu by remember { mutableIntStateOf(settingsManager.tunMtu) }
-
-    // QR subscription import: a scanned URL pre-fills the add dialog on the profiles screen.
-    var qrPrefillUrl by remember { mutableStateOf<String?>(null) }
-
-    // Backup password flow. The backup holds the subscription address, the script code and
-    // the LAN sharing password, so the export is encrypted with a user-chosen password and an
-    // encrypted import asks for that password first.
-    var showBackupPasswordDialog by remember { mutableStateOf(false) }
-    var showBackupImportPasswordDialog by remember { mutableStateOf(false) }
-    var showBackupPlainConfirmDialog by remember { mutableStateOf(false) }
-    var backupImportFailures by remember { mutableStateOf<List<String>>(emptyList()) }
-    var backupPassword by remember { mutableStateOf("") }
-    var pendingExportUri by remember { mutableStateOf<android.net.Uri?>(null) }
-    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
-
-    fun reloadSettingsState() {
-        tunnelMode = TunnelMode.fromString(settingsManager.tunnelMode)
-        appLanguage = settingsManager.appLanguage
-        visibleShortcuts = settingsManager.visibleShortcuts
-        shortcutOrder = settingsManager.shortcutOrder
-        proxiesViewMode = settingsManager.proxiesViewMode
-        showGroupIcons = settingsManager.showGroupIcons
-        nodeColumns = settingsManager.nodeColumns
-        nodeSortMode = settingsManager.nodeSortMode
-        scriptingEnabled = settingsManager.scriptingEnabled
-        rewriteEnabled = settingsManager.rewriteEnabled
-        perAppMode = settingsManager.perAppProxyMode
-        selectedPackages = settingsManager.selectedPackages
-        tunStack = settingsManager.tunStack
-        bootOnStartup = settingsManager.bootOnStartup
-        allowLan = settingsManager.allowLan
-        ipv6Enabled = settingsManager.ipv6Enabled
-        allowLanPassword = settingsManager.allowLanPassword
-        fakeIpEnabled = settingsManager.fakeIpEnabled
-        dnsNameservers = settingsManager.dnsNameservers
-        dnsFallbackServers = settingsManager.dnsFallbackServers
-        blockThirdPartyDns = settingsManager.blockThirdPartyDns
-        killSwitchEnabled = settingsManager.killSwitchEnabled
-        allowBypassEnabled = settingsManager.allowBypassEnabled
-        allowPrivateSubs = settingsManager.allowPrivateSubscriptionHosts
-        mixedPort = settingsManager.mixedPort
-        tunMtu = settingsManager.tunMtu
-        onThemeModeChanged(settingsManager.themeMode)
-        onAppFontChanged(settingsManager.appFont)
+    LaunchedEffect(vm.selectedProfileId) {
+        scrollStates.proxiesScrollState.perGroupTabStates.clear()
     }
 
-    val settingsScrollState = rememberScrollState()
-    val dashboardScrollState = rememberScrollState()
-    val proxiesTabsListState = rememberLazyListState()
-    val proxiesListModeState = rememberLazyListState()
-    val proxiesGroupRowState = rememberLazyListState()
-    val proxiesExpandedGroups = rememberSaveable(
-        saver = Saver<SnapshotStateMap<String, Boolean>, HashMap<String, Boolean>>(
-            save = { HashMap(it) },
-            restore = { saved ->
-                mutableStateMapOf<String, Boolean>().apply {
-                    putAll(saved)
-                }
-            }
-        )
-    ) { mutableStateMapOf<String, Boolean>() }
-    val proxiesPerGroupTabStates = remember { mutableStateMapOf<String, LazyListState>() }
-    // Group tab scroll states are keyed by group name; a different profile's groups would
-    // otherwise accumulate in this map forever as the user switches subscriptions.
-    LaunchedEffect(selectedProfileId) {
-        proxiesPerGroupTabStates.clear()
-    }
-    // currentTab is the single source of truth for the selected tab. The pager is driven from
-    // it, so a configuration change restores the tab (rememberSaveable) AND the pager page.
-    // The previous mirror (pagerState.currentPage -> currentTab) let the two drift apart.
-    val pagerState = rememberPagerState(initialPage = currentTab, pageCount = { 3 })
-    val coroutineScope = rememberCoroutineScope()
-    // rememberPagerState only reads `initialPage` on the first composition, so the restored
-    // tab has to be pushed into the pager once after a configuration change. The flag is a
-    // plain `remember` so it resets on every new composition instance.
     var pagerSyncedToTab by remember { mutableStateOf(false) }
-    LaunchedEffect(currentTab) {
+    LaunchedEffect(state.currentTab) {
         if (!pagerSyncedToTab) {
             pagerSyncedToTab = true
-            if (pagerState.currentPage != currentTab) {
-                pagerState.scrollToPage(currentTab)
+            if (pagerState.currentPage != state.currentTab) {
+                pagerState.scrollToPage(state.currentTab)
             }
-        } else if (pagerState.currentPage != currentTab) {
-            pagerState.animateScrollToPage(
-                page = currentTab,
-                animationSpec = tween(durationMillis = LoonMotion.normalMs, easing = FastOutSlowInEasing)
-            )
+        } else if (pagerState.currentPage != state.currentTab) {
+            if (reduceMotion) {
+                pagerState.scrollToPage(state.currentTab)
+            } else {
+                pagerState.animateScrollToPage(
+                    page = state.currentTab,
+                    animationSpec = tween(durationMillis = LoonMotion.normalMs, easing = FastOutSlowInEasing)
+                )
+            }
         }
     }
 
-    // ---- Delegates to ProxiesViewModel (state + speed-test engine live there) ----
-
-    fun handleSelectProxy(group: String, proxy: Proxy) {
-        vm.selectProxy(group, proxy, dispatchToCore = vpnStatus == VpnState.Status.RUNNING)
-    }
-
-    fun parseActiveProfile() = vm.parseActiveProfile()
-
-    fun refreshProxiesOnline() = vm.refreshProxiesOnline()
-
-    fun runSpeedTestForGroup(groupName: String, isAutoTest: Boolean = false): Job =
-        vm.runSpeedTestForGroup(groupName, isAutoTest)
-
-    fun runSpeedTestForSingleNode(groupName: String?, nodeName: String) =
-        vm.runSpeedTestForSingleNode(groupName, nodeName)
-
-    fun triggerAutoSpeedTest() = vm.triggerAutoSpeedTest()
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Trigger initial auto speed test once when VPN transitions to RUNNING
     LaunchedEffect(vpnStatus) {
         if (vpnStatus == VpnState.Status.RUNNING) {
-            triggerAutoSpeedTest()
-            refreshProxiesOnline()
+            vm.triggerAutoSpeedTest()
+            vm.refreshProxiesOnline()
         }
     }
 
-    // Dynamic refresh when VPN is connected and user is actively viewing Dashboard or Proxies tab
     val shouldPollProxies = vpnStatus == VpnState.Status.RUNNING &&
-        currentSubScreen == null &&
-        (currentTab == 0 || currentTab == 1)
+        state.currentSubScreen == null &&
+        (state.currentTab == 0 || state.currentTab == 1)
 
     LaunchedEffect(shouldPollProxies, lifecycleOwner) {
         if (shouldPollProxies) {
             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (isActive) {
                     delay(20_000L)
-                    refreshProxiesOnline()
+                    vm.refreshProxiesOnline()
                 }
             }
         }
     }
 
-    // Load apps when entering App Routing screen (delayed so the transition completes smoothly),
-    // and coalesce VPN restarts when leaving App Routing after any package/mode modification.
-    LaunchedEffect(currentSubScreen) {
-        if (currentSubScreen != SubScreen.APP_ROUTING && appRoutingDirty) {
-            appRoutingDirty = false
+    LaunchedEffect(state.currentSubScreen) {
+        if (state.currentSubScreen != SubScreen.APP_ROUTING && state.appRoutingDirty) {
+            state.appRoutingDirty = false
             if (vpnStatus == VpnState.Status.RUNNING) {
                 MihomoVpnService.restart(activity)
             }
         }
-        if (currentSubScreen == SubScreen.APP_ROUTING && installedApps.isEmpty()) {
-            isAppsLoading = true
+        if (state.currentSubScreen == SubScreen.APP_ROUTING && state.installedApps.isEmpty()) {
+            state.isAppsLoading = true
             try {
                 delay(300L)
-                // Child of the effect, so leaving the screen cancels the load instead of leaking it.
-                installedApps = withContext(Dispatchers.IO) {
+                state.installedApps = withContext(Dispatchers.IO) {
                     AppInfoManager.getInstalledApps(activity)
                 }
             } finally {
-                isAppsLoading = false
+                state.isAppsLoading = false
             }
         }
     }
+}
 
-    // The LAN password is committed explicitly from the network-share screen, which reloads
-    // the config once per save instead of once per typing pause.
+@Composable
+private fun MainTabsPager(
+    pagerState: PagerState,
+    env: SubScreenEnvironment,
+    scrollStates: MainScrollStates,
+    vpnTraffic: State<VpnState>,
+    currentThemeMode: ThemeMode,
+    onToggleVpn: () -> Unit
+) {
+    val state = env.state
+    HorizontalPager(
+        state = pagerState,
+        userScrollEnabled = false,
+        beyondViewportPageCount = 0,
+        modifier = Modifier.fillMaxSize()
+    ) { page ->
+        LoonResponsiveContent(maxWidth = 680.dp) {
+            when (page) {
+                0 -> DashboardTabContent(
+                    env = env,
+                    scrollStates = scrollStates,
+                    vpnTraffic = vpnTraffic,
+                    onToggleVpn = onToggleVpn
+                )
+                1 -> ProxiesTabContent(
+                    state = state,
+                    scrollStates = scrollStates,
+                    vm = env.vm,
+                    vpnStatus = env.vpnStatus
+                )
+                2 -> SettingsScreen(
+                    scrollState = scrollStates.settingsScrollState,
+                    tunStack = state.tunStack,
+                    fakeIpEnabled = state.fakeIpEnabled,
+                    themeMode = currentThemeMode,
+                    onNavigateToScripts = { state.openSubScreen(SubScreen.SCRIPTS) },
+                    onNavigateToProfiles = { state.openSubScreen(SubScreen.PROFILES) },
+                    onNavigateToAppRouting = { state.openSubScreen(SubScreen.APP_ROUTING) },
+                    onNavigateToLogs = { state.openSubScreen(SubScreen.LOGS) },
+                    onNavigateToAppearance = { state.openSubScreen(SubScreen.APPEARANCE) },
+                    onNavigateToDnsSettings = { state.openSubScreen(SubScreen.DNS_SETTINGS) },
+                    onNavigateToCore = { state.openSubScreen(SubScreen.CORE) },
+                    onNavigateToVpnTunnel = { state.openSubScreen(SubScreen.VPN_TUNNEL) },
+                    onNavigateToNetworkShare = { state.openSubScreen(SubScreen.NETWORK_SHARE) },
+                    onNavigateToAbout = { state.openSubScreen(SubScreen.ABOUT) }
+                )
+            }
+        }
+    }
+}
 
-    val profileImportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            // SAF grants are scoped to the picker-launching component: read the URI with
-            // the activity context (some providers deny the application context), then
-            // hand the result back to the ViewModel for the list reload.
-            coroutineScope.launch(Dispatchers.IO) {
-                val res = ConfigManager.importProfileFromUri(activity, uri)
-                withContext(Dispatchers.Main) {
-                    if (res.isSuccess) {
-                        vm.reloadProfiles()
-                        CupertinoToast.show(
-                            AppStrings.get("imported_toast", settingsManager.appLanguage)
-                                .replace("{name}", res.getOrNull()?.name.orEmpty())
-                        )
-                    } else {
-                        CupertinoToast.show(
-                            AppStrings.get("import_failed", settingsManager.appLanguage)
-                                .replace("{msg}", res.exceptionOrNull()?.message.orEmpty()),
-                            isDestructive = true
-                        )
-                    }
+private fun updateTunnelModeWithRollback(
+    newMode: TunnelMode,
+    state: MainAppState,
+    vm: ProxiesViewModel,
+    vpnStatus: VpnState.Status,
+    coreActive: Boolean,
+    activity: Context,
+    coroutineScope: CoroutineScope
+) {
+    val prevMode = state.tunnelMode
+    state.tunnelMode = newMode
+    state.settingsManager.tunnelMode = newMode.value
+    if (vpnStatus != VpnState.Status.RUNNING && !coreActive) return
+    coroutineScope.reloadCoreWithRollback(
+        context = activity,
+        appLanguage = state.appLanguage,
+        reloadAction = {
+            if (vpnStatus == VpnState.Status.RUNNING) {
+                MihomoApi.patchMode(newMode.value) || ClashCore.reloadActiveConfig(activity)
+            } else {
+                ClashCore.reloadActiveConfig(activity)
+            }
+        },
+        onRollback = {
+            state.tunnelMode = prevMode
+            state.settingsManager.tunnelMode = prevMode.value
+        },
+        onSuccess = { vm.refreshProxiesOnline() }
+    )
+}
+
+@Composable
+private fun DashboardTabContent(
+    env: SubScreenEnvironment,
+    scrollStates: MainScrollStates,
+    vpnTraffic: State<VpnState>,
+    onToggleVpn: () -> Unit
+) {
+    val state = env.state
+    val vm = env.vm
+    val vpnStatus = env.vpnStatus
+    val coreActive = env.coreActive
+    val activity = env.activity
+    val coroutineScope = env.coroutineScope
+    val vpnError by remember { derivedStateOf { vpnTraffic.value.error } }
+    val vpnCoreVersion by remember { derivedStateOf { vpnTraffic.value.coreVersion } }
+    val mainGroupName = vm.mainProxyGroupName
+    val mainGroupProxies by remember(mainGroupName) {
+        derivedStateOf {
+            vm.liveGroupMap[mainGroupName]?.proxies
+                ?: (vm.parsedProfile.groups[mainGroupName]?.proxies ?: emptyList())
+        }
+    }
+    val currentMainActiveNode = (vm.liveGroupMap[mainGroupName]?.now
+        ?: vm.parsedProfile.groups[mainGroupName]?.now
+        ?: vm.selectedNodes[mainGroupName]
+        ?: vm.activeNodeName).ifBlank { vm.parsedProfile.activeNode }
+    val activeProfileName = vm.profiles.firstOrNull { profile -> profile.id == vm.selectedProfileId }?.name
+        ?: AppStrings.get("default_profile_name", state.appLanguage)
+
+    DashboardScreen(
+        status = DashboardStatusState(
+            vpnStatus, vpnError, vpnCoreVersion, vpnTraffic, state.tunnelMode, activeProfileName, state.mixedPort
+        ),
+        proxySummary = DashboardProxySummary(
+            mainGroupName, mainGroupProxies, vm.delayCache, currentMainActiveNode,
+            vm.parsedProfile.totalNodes, vm.parsedProfile.totalRules
+        ),
+        shortcuts = DashboardShortcutsState(
+            visibleShortcuts = state.visibleShortcuts,
+            shortcutOrder = state.shortcutOrder,
+            onUpdateVisibleShortcuts = { updated ->
+                state.visibleShortcuts = updated
+                state.settingsManager.visibleShortcuts = updated
+            },
+            onUpdateShortcutOrder = { updated ->
+                state.shortcutOrder = updated
+                state.settingsManager.shortcutOrder = updated
+            }
+        ),
+        actions = DashboardActions(
+            onToggleVpn = onToggleVpn,
+            onModeSelected = { newMode ->
+                updateTunnelModeWithRollback(newMode, state, vm, vpnStatus, coreActive, activity, coroutineScope)
+            },
+            onSelectProxy = { _, proxy ->
+                vm.selectProxy(mainGroupName, proxy, dispatchToCore = vpnStatus == VpnState.Status.RUNNING)
+            },
+            onHealthCheck = { group -> vm.runSpeedTestForGroup(group) }
+        ),
+        navigation = DashboardNavigation(
+            onNavigateToProfiles = { state.openSubScreen(SubScreen.PROFILES) },
+            onNavigateToAppRouting = { state.openSubScreen(SubScreen.APP_ROUTING) },
+            onNavigateToRules = { state.openSubScreen(SubScreen.RULES) },
+            onNavigateToRequests = { state.openSubScreen(SubScreen.REQUESTS) },
+            onNavigateToDns = { state.openSubScreen(SubScreen.DNS) },
+            onNavigateToNetworkShare = { state.openSubScreen(SubScreen.NETWORK_SHARE) },
+            onNavigateToCore = { state.openSubScreen(SubScreen.CORE) }
+        ),
+        scrollState = scrollStates.dashboardScrollState
+    )
+}
+
+@Composable
+private fun ProxiesTabContent(
+    state: MainAppState,
+    scrollStates: MainScrollStates,
+    vm: ProxiesViewModel,
+    vpnStatus: VpnState.Status
+) {
+    val computedGroupMap by remember {
+        derivedStateOf {
+            val parsed = vm.parsedProfile
+            val liveMap = vm.liveGroupMap
+            val savedNodes = vm.selectedNodes
+            val allGroupKeys = (parsed.groups.keys + liveMap.keys).distinct()
+            allGroupKeys.mapNotNull { gName ->
+                val baseGroup = parsed.groups[gName] ?: liveMap[gName] ?: return@mapNotNull null
+                val live = liveMap[gName]
+                val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live.proxies else baseGroup.proxies
+                val liveProxyMap = live?.proxies?.associateBy { item -> item.name } ?: emptyMap()
+                val savedNode = savedNodes[gName]
+                val resolvedNow = if (!savedNode.isNullOrBlank() && sourceProxies.any { p -> p.name == savedNode }) {
+                    savedNode
+                } else {
+                    live?.now?.ifBlank { baseGroup.now } ?: baseGroup.now
                 }
-            }
-        }
-    }
-
-    val handleSubScreenBack: () -> Unit = {
-        val parent = parentSubScreen
-        if (parent != null) {
-            parentSubScreen = if (parent == SubScreen.PROFILE_OVERRIDE) SubScreen.PROFILES else null
-            currentSubScreen = parent
-        } else {
-            currentSubScreen = null
-        }
-    }
-
-    // Handle Android system back button
-    BackHandler(enabled = currentSubScreen != null) {
-        handleSubScreenBack()
-    }
-
-    // ---- Backup export / import with an optional password ----
-
-    /** Writes the backup, encrypting it when [password] is not blank. */
-    fun doExportBackup(uri: android.net.Uri, password: String?) {
-        coroutineScope.launch(Dispatchers.IO) {
-            val result = runCatching {
-                val inner = activity.contentResolver.openOutputStream(uri)?.use { output ->
-                    BackupManager.exportBackup(activity, output, password)
-                } ?: error(AppStrings.get("backup_write_failed", settingsManager.appLanguage))
-                inner.getOrThrow()
-            }
-            kotlinx.coroutines.withContext(Dispatchers.Main) {
-                result.fold(
-                    onSuccess = { CupertinoToast.show(AppStrings.get("settings_backup_done", appLanguage)) },
-                    onFailure = {
-                        CupertinoToast.show(
-                            AppStrings.get("settings_backup_failed", appLanguage)
-                                .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
-                            isDestructive = true
-                        )
-                    }
+                gName to baseGroup.copy(
+                    now = resolvedNow,
+                    proxies = sourceProxies.map { bp -> liveProxyMap[bp.name] ?: bp }
                 )
-            }
+            }.toMap()
         }
     }
+    val effectiveCurrentGroup = computedGroupMap[vm.selectedGroupName] ?: vm.currentGroupData
 
-    /** Restores the backup; [password] is null for a plain-text backup. */
-    fun doImportBackup(uri: android.net.Uri, password: String?) {
-        coroutineScope.launch(Dispatchers.IO) {
-            val result = runCatching {
-                val inner = activity.contentResolver.openInputStream(uri)?.use { input ->
-                    BackupManager.importBackupDetailed(
-                        activity,
-                        input,
-                        AppStrings.get("backup_too_large", settingsManager.appLanguage),
-                        password
-                    )
-                } ?: error(AppStrings.get("backup_read_failed", settingsManager.appLanguage))
-                inner.getOrThrow()
-            }
-            kotlinx.coroutines.withContext(Dispatchers.Main) {
-                result.fold(
-                    onSuccess = { importRes ->
-                        reloadSettingsState()
-                        vm.reloadProfiles()
-                        if (coreActive) {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                ClashCore.reloadActiveConfig(activity)
-                                refreshProxiesOnline()
-                            }
-                        }
-                        if (importRes.failures.isNotEmpty()) {
-                            backupImportFailures = importRes.failures
-                        }
-                        CupertinoToast.show(
-                            AppStrings.get("settings_backup_restored", appLanguage)
-                                .replace("{n}", importRes.imported.toString())
-                        )
-                    },
-                    onFailure = {
-                        CupertinoToast.show(
-                            AppStrings.get("settings_backup_failed", appLanguage)
-                                .replace("{reason}", it.message ?: AppStrings.get("unknown_error", settingsManager.appLanguage)),
-                            isDestructive = true
-                        )
-                    }
-                )
-            }
-        }
-    }
+    ProxiesScreen(
+        state = ProxiesState(
+            groups = vm.proxyGroups,
+            groupMap = computedGroupMap,
+            currentGroup = effectiveCurrentGroup,
+            selectedGroupName = vm.selectedGroupName,
+            groupIcons = vm.parsedProfile.groupIcons,
+            delayCache = vm.delayCache,
+            testingNodes = vm.testingNodes
+        ),
+        display = ProxiesDisplayConfig(
+            currentViewMode = state.proxiesViewMode,
+            showGroupIcons = state.showGroupIcons,
+            nodeColumns = state.nodeColumns,
+            nodeSortMode = state.nodeSortMode
+        ),
+        callbacks = ProxiesCallbacks(
+            onViewModeChanged = { mode ->
+                state.proxiesViewMode = mode
+                state.settingsManager.proxiesViewMode = mode
+            },
+            onShowGroupIconsChanged = { show ->
+                state.showGroupIcons = show
+                state.settingsManager.showGroupIcons = show
+            },
+            onNodeColumnsChanged = { cols ->
+                state.nodeColumns = cols
+                state.settingsManager.nodeColumns = cols
+            },
+            onNodeSortModeChanged = { sortMode ->
+                state.nodeSortMode = sortMode
+                state.settingsManager.nodeSortMode = sortMode
+            },
+            onSelectGroup = { gName -> vm.selectGroup(gName, vpnStatus == VpnState.Status.RUNNING) },
+            onSelectProxy = { group, proxy -> vm.selectProxy(group, proxy, vpnStatus == VpnState.Status.RUNNING) },
+            onHealthCheck = { group -> vm.runSpeedTestForGroup(group) },
+            onTestSingleNode = { group, nodeName -> vm.runSpeedTestForSingleNode(group, nodeName) }
+        ),
+        scrollState = scrollStates.proxiesScrollState
+    )
+}
 
-    CompositionLocalProvider(LocalAppLanguage provides appLanguage) {
+@Composable
+private fun BoxScope.MainBottomBarContainer(
+    currentTab: Int,
+    vpnStatus: VpnState.Status,
+    vm: ProxiesViewModel,
+    onSelectTab: (Int) -> Unit
+) {
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .background(LoonBg)
+            .align(Alignment.BottomCenter)
+            .wrapContentSize(Alignment.BottomCenter)
+            .navigationBarsPadding()
+            .padding(bottom = 16.dp)
     ) {
-        // 1. Primary main tabs: HorizontalPager keeps all 3 tabs persistently composed!
-        HorizontalPager(
-            state = pagerState,
-            userScrollEnabled = false,
-            // Only the visible tab is composed. Keeping the other two alive held the whole
-            // node list of the proxies tab in memory and recomposed it on every traffic tick.
-            beyondViewportPageCount = 0,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            LoonResponsiveContent(maxWidth = 680.dp) {
-                when (page) {
-                0 -> {
-                    // The derived blocks below MUST read vm.* state properties directly:
-                    // capturing the dereferenced local vals (val parsedProfile = vm.parsedProfile)
-                    // freezes the first-composition values, and derivedStateOf never sees a
-                    // state dependency to invalidate on — the quick node list stayed empty
-                    // forever on a cold start with existing data.
-                    val mainGroupProxies by remember(mainProxyGroupName) {
-                        derivedStateOf {
-                            vm.liveGroupMap[mainProxyGroupName]?.proxies
-                                ?: (vm.parsedProfile.groups[mainProxyGroupName]?.proxies ?: emptyList())
-                        }
-                    }
-                    val currentMainActiveNode = (liveGroupMap[mainProxyGroupName]?.now
-                        ?: parsedProfile.groups[mainProxyGroupName]?.now
-                        ?: vm.selectedNodes[mainProxyGroupName]
-                        ?: activeNodeName).ifBlank { parsedProfile.activeNode }
-                    DashboardScreen(
-                        scrollState = dashboardScrollState,
-                        vpnStatus = vpnStatus,
-                        vpnError = vpnError,
-                        coreVersion = vpnCoreVersion,
-                        vpnTraffic = vpnTraffic,
-                        currentMode = tunnelMode,
-                        activeProfileName = profiles.firstOrNull { it.id == selectedProfileId }?.name
-                            ?: AppStrings.get("default_profile_name", appLanguage),
-                        mainGroupName = mainProxyGroupName,
-                        mainGroupProxies = mainGroupProxies,
-                        delayCache = delayCache,
-                        activeNodeName = currentMainActiveNode,
-                        totalNodes = parsedProfile.totalNodes,
-                        totalRules = parsedProfile.totalRules,
-                        visibleShortcuts = visibleShortcuts,
-                        shortcutOrder = shortcutOrder,
-                        onToggleVpn = { onToggleVpn() },
-                        onModeSelected = { newMode ->
-                            val prevMode = tunnelMode
-                            tunnelMode = newMode
-                            settingsManager.tunnelMode = newMode.value
-                            if (vpnStatus == VpnState.Status.RUNNING || coreActive) {
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    val ok = if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoApi.patchMode(newMode.value) || ClashCore.reloadActiveConfig(activity)
-                                    } else {
-                                        ClashCore.reloadActiveConfig(activity)
-                                    }
-                                    if (!ok) {
-                                        withContext(Dispatchers.Main) {
-                                            tunnelMode = prevMode
-                                            settingsManager.tunnelMode = prevMode.value
-                                            CupertinoToast.show(
-                                                AppStrings.get("core_reload_failed", appLanguage),
-                                                isDestructive = true
-                                            )
-                                        }
-                                    } else {
-                                        refreshProxiesOnline()
-                                    }
-                                }
-                            }
-                        },
-                        onSelectProxy = { group, proxy -> handleSelectProxy(mainProxyGroupName, proxy) },
-                        onHealthCheck = { group -> runSpeedTestForGroup(group) },
-                        onNavigateToProfiles = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.PROFILES
-                        },
-                        onNavigateToAppRouting = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.APP_ROUTING
-                        },
-                        onNavigateToRules = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.RULES
-                        },
-                        onNavigateToRequests = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.REQUESTS
-                        },
-                        onNavigateToDns = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.DNS
-                        },
-                        onNavigateToNetworkShare = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.NETWORK_SHARE
-                        },
-                        onNavigateToCore = {
-                            parentSubScreen = null
-                            currentSubScreen = SubScreen.CORE
-                        },
-                        mixedPort = mixedPort,
-                        onUpdateVisibleShortcuts = { updated ->
-                            visibleShortcuts = updated
-                            settingsManager.visibleShortcuts = updated
-                        },
-                        onUpdateShortcutOrder = { updated ->
-                            shortcutOrder = updated
-                            settingsManager.shortcutOrder = updated
-                        }
-                    )
-                }
-                1 -> {
-                    // Reads vm.* properties inside the calculation so the derived state has
-                    // real dependencies (see the note on page 0): with captured local vals
-                    // this map froze empty at first composition and every LIST-mode group
-                    // rendered blank after a cold start.
-                    //
-                    // The persisted selection comes from vm.selectedNodes: reading
-                    // settingsManager.getSelectedNode() here would be a SharedPreferences disk
-                    // read per group, on the main thread, on every speed-test refresh.
-                    val computedGroupMap by remember {
-                        derivedStateOf {
-                            val parsed = vm.parsedProfile
-                            val liveMap = vm.liveGroupMap
-                            val savedNodes = vm.selectedNodes
-                            val allGroupKeys = (parsed.groups.keys + liveMap.keys).distinct()
-                            allGroupKeys.associateWith { gName ->
-                                val baseGroup = parsed.groups[gName] ?: liveMap.getValue(gName)
-                                val live = liveMap[gName]
-                                val sourceProxies = if (!live?.proxies.isNullOrEmpty()) live.proxies else baseGroup.proxies
-                                val liveProxyMap = live?.proxies?.associateBy { it.name } ?: emptyMap()
-                                val savedNode = savedNodes[gName]
-                                val resolvedNow = if (!savedNode.isNullOrBlank() && sourceProxies.any { it.name == savedNode }) {
-                                    savedNode
-                                } else {
-                                    live?.now?.ifBlank { baseGroup.now } ?: baseGroup.now
-                                }
-                                baseGroup.copy(
-                                    now = resolvedNow,
-                                    proxies = sourceProxies.map { bp -> liveProxyMap[bp.name] ?: bp }
-                                )
-                            }
-                        }
-                    }
-                    val effectiveCurrentGroup = computedGroupMap[selectedGroupName] ?: currentGroupData
-
-                    ProxiesScreen(
-                        groups = proxyGroups,
-                        groupMap = computedGroupMap,
-                        groupIcons = parsedProfile.groupIcons,
-                        currentGroup = effectiveCurrentGroup,
-                        selectedGroupName = selectedGroupName,
-                        currentViewMode = proxiesViewMode,
-                        showGroupIcons = showGroupIcons,
-                        nodeColumns = nodeColumns,
-                        nodeSortMode = nodeSortMode,
-                        delayCache = delayCache,
-                        tabsListState = proxiesTabsListState,
-                        listModeState = proxiesListModeState,
-                        groupRowState = proxiesGroupRowState,
-                        expandedGroups = proxiesExpandedGroups,
-                        perGroupTabStates = proxiesPerGroupTabStates,
-                        onViewModeChanged = { mode ->
-                            proxiesViewMode = mode
-                            settingsManager.proxiesViewMode = mode
-                        },
-                        onShowGroupIconsChanged = { show ->
-                            showGroupIcons = show
-                            settingsManager.showGroupIcons = show
-                        },
-                        onNodeColumnsChanged = { cols ->
-                            nodeColumns = cols
-                            settingsManager.nodeColumns = cols
-                        },
-                        onNodeSortModeChanged = { sortMode ->
-                            nodeSortMode = sortMode
-                            settingsManager.nodeSortMode = sortMode
-                        },
-                        onSelectGroup = { gName ->
-                            vm.selectGroup(gName, vpnStatus == VpnState.Status.RUNNING)
-                        },
-                        onSelectProxy = { group, proxy -> handleSelectProxy(group, proxy) },
-                        onHealthCheck = { group -> runSpeedTestForGroup(group) },
-                        testingNodes = testingNodes,
-                        onTestSingleNode = { group, nodeName -> runSpeedTestForSingleNode(group, nodeName) }
-                    )
-                }
-                2 -> SettingsScreen(
-                    scrollState = settingsScrollState,
-                    tunStack = tunStack,
-                    fakeIpEnabled = fakeIpEnabled,
-                    themeMode = currentThemeMode,
-                    onNavigateToScripts = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.SCRIPTS
-                    },
-                    onNavigateToProfiles = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.PROFILES
-                    },
-                    onNavigateToAppRouting = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.APP_ROUTING
-                    },
-                    onNavigateToLogs = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.LOGS
-                    },
-                    onNavigateToAppearance = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.APPEARANCE
-                    },
-                    onNavigateToDnsSettings = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.DNS_SETTINGS
-                    },
-                    onNavigateToCore = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.CORE
-                    },
-                    onNavigateToVpnTunnel = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.VPN_TUNNEL
-                    },
-                    onNavigateToNetworkShare = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.NETWORK_SHARE
-                    },
-                    onNavigateToAbout = {
-                        parentSubScreen = null
-                        currentSubScreen = SubScreen.ABOUT
-                    }
-                )
-                }
-            }
-        }
-
-        var lastActiveSubScreen by remember { mutableStateOf<SubScreen?>(null) }
-        LaunchedEffect(currentSubScreen) {
-            if (currentSubScreen != null) {
-                lastActiveSubScreen = currentSubScreen
-            }
-        }
-        val displayedSubScreen = currentSubScreen ?: lastActiveSubScreen
-
-        // The drag phase writes a plain float state: launching a coroutine per frame to call
-        // Animatable.snapTo() cancelled the previous snap every time, so the offset could lag
-        // the finger. The settle animation is the only place a coroutine is used.
-        var edgeOffset by remember { mutableFloatStateOf(0f) }
-        var isEdgeDragging by remember { mutableStateOf(false) }
-        val density = LocalDensity.current
-        val edgeZonePx = with(density) { 32.dp.toPx() }
-        val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-
-        LaunchedEffect(currentSubScreen) {
-            isEdgeDragging = false
-        }
-
-        // 2. Sub-screens overlay (smooth slide in / out over the main tabs with iOS edge swipe back)
-        AnimatedVisibility(
-            visible = currentSubScreen != null,
-            // RTL mirrors the whole navigation: the sub-screen is pushed in from the LEFT and
-            // the interactive back gesture starts at the RIGHT edge and drags the content
-            // leftwards. Both halves agree, so the mirroring below stays as it is (UI-I18N-04).
-            enter = slideInHorizontally(
-                initialOffsetX = { if (isRtl) -it else it },
-                animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing)
-            ),
-            exit = slideOutHorizontally(
-                targetOffsetX = { if (isRtl) -it else it },
-                animationSpec = tween(LoonMotion.normalMs, easing = FastOutSlowInEasing)
-            ),
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(20f)
-                .pointerInput(currentSubScreen, isRtl) {
-                    if (currentSubScreen == null) return@pointerInput
-                    detectHorizontalDragGestures(
-                        onDragStart = { startOffset ->
-                            // The interactive back zone lives on the *start* edge; in RTL that
-                            // is the right side of the screen and the drag goes left.
-                            isEdgeDragging = if (isRtl) {
-                                startOffset.x >= size.width - edgeZonePx
-                            } else {
-                                startOffset.x <= edgeZonePx
-                            }
-                        },
-                        onHorizontalDrag = { change, dragAmount ->
-                            val delta = if (isRtl) -dragAmount else dragAmount
-                            if (isEdgeDragging && (delta > 0f || edgeOffset > 0f)) {
-                                change.consume()
-                                edgeOffset = (edgeOffset + delta).coerceAtLeast(0f)
-                            }
-                        },
-                        onDragEnd = {
-                            if (isEdgeDragging) {
-                                isEdgeDragging = false
-                                val screenWidth = size.width.toFloat()
-                                if (edgeOffset > screenWidth * 0.30f) {
-                                    // Completing the back gesture: slide the rest of the way
-                                    // out, then pop the sub-screen.
-                                    coroutineScope.launch {
-                                        animate(
-                                            initialValue = edgeOffset,
-                                            targetValue = screenWidth,
-                                            animationSpec = tween(
-                                                durationMillis = LoonMotion.fastMs,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        ) { value, _ -> edgeOffset = value }
-                                        handleSubScreenBack()
-                                        edgeOffset = 0f
-                                    }
-                                } else {
-                                    // Cancelling the gesture: spring back to the resting place.
-                                    coroutineScope.launch {
-                                        animate(
-                                            initialValue = edgeOffset,
-                                            targetValue = 0f,
-                                            animationSpec = androidx.compose.animation.core.spring(
-                                                dampingRatio = LoonMotion.edgeSettleDampingRatio,
-                                                stiffness = LoonMotion.edgeSettleStiffness
-                                            )
-                                        ) { value, _ -> edgeOffset = value }
-                                    }
-                                }
-                            }
-                        },
-                        onDragCancel = {
-                            if (isEdgeDragging) {
-                                isEdgeDragging = false
-                                coroutineScope.launch {
-                                    animate(
-                                        initialValue = edgeOffset,
-                                        targetValue = 0f,
-                                        animationSpec = androidx.compose.animation.core.spring(
-                                            dampingRatio = LoonMotion.edgeSettleDampingRatio,
-                                            stiffness = LoonMotion.edgeSettleStiffness
-                                        )
-                                    ) { value, _ -> edgeOffset = value }
-                                }
-                            }
-                        }
-                    )
-                }
-                .graphicsLayer {
-                    translationX = if (isRtl) -edgeOffset else edgeOffset
-                }
-        ) {
-            val rtlSign = if (isRtl) -1 else 1
-            AnimatedContent(
-                targetState = displayedSubScreen,
-                transitionSpec = {
-                    fun getDepth(s: SubScreen?): Int = when (s) {
-                        null -> 0
-                        SubScreen.QR_SCAN, SubScreen.PROFILE_OVERRIDE -> 2
-                        SubScreen.SCRIPTS -> if (initialState == SubScreen.PROFILE_OVERRIDE || targetState == SubScreen.PROFILE_OVERRIDE) 3 else 2
-                        SubScreen.DNS_SETTINGS -> if (initialState == SubScreen.DNS || targetState == SubScreen.DNS) 2 else 1
-                        SubScreen.PROFILES, SubScreen.APP_ROUTING, SubScreen.LOGS,
-                        SubScreen.RULES, SubScreen.DNS, SubScreen.REQUESTS, SubScreen.NETWORK_SHARE,
-                        SubScreen.APPEARANCE, SubScreen.CORE,
-                        SubScreen.VPN_TUNNEL, SubScreen.ABOUT -> 1
-                    }
-                    val initialDepth = getDepth(initialState)
-                    val targetDepth = getDepth(targetState)
-
-                    if (targetDepth > initialDepth) {
-                        slideInHorizontally(initialOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
-                            .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
-                            ).using(SizeTransform(clip = false) { _, _ -> tween(0) })
-                    } else {
-                        slideInHorizontally(initialOffsetX = { -rtlSign * it / 3 }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
-                            .togetherWith(
-                                slideOutHorizontally(targetOffsetX = { rtlSign * it }, animationSpec = tween(LoonMotion.slowMs, easing = FastOutSlowInEasing))
-                            ).using(SizeTransform(clip = false) { _, _ -> tween(0) }).apply { targetContentZIndex = -1f }
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                label = "SubScreenOverlayTransition"
-            ) { subScreen ->
-                if (subScreen != null) {
-                Box(modifier = Modifier.fillMaxSize().background(LoonBg)) {
-                    when (subScreen) {
-                        SubScreen.PROFILES -> {
-                            ProfilesScreen(
-                                profiles = vm.profiles,
-                                selectedProfileId = vm.selectedProfileId,
-                                onBack = handleSubScreenBack,
-                                preFillSubscriptionUrl = qrPrefillUrl,
-                                onPreFillConsumed = { qrPrefillUrl = null },
-                                onSelectProfile = { profile ->
-                                    vm.selectProfile(profile, coreActive)
-                                },
-                                onAddSubscription = { name, url ->
-                                    vm.addSubscription(name, url)
-                                },
-                                onUpdateProfile = { profile ->
-                                    vm.reloadProfiles()
-                                    if (vm.selectedProfileId == profile.id) {
-                                        parseActiveProfile()
-                                        if (coreActive) {
-                                            coroutineScope.launch(Dispatchers.IO) {
-                                                ClashCore.reloadActiveConfig(activity)
-                                                refreshProxiesOnline()
-                                            }
-                                        }
-                                    }
-                                },
-                                onRefreshSubscription = { profile ->
-                                    vm.refreshSubscription(profile, coreActive)
-                                },
-                                isUpdatingAll = vm.isRefreshingAll,
-                                onRefreshAllSubscriptions = {
-                                    vm.refreshAllSubscriptions(coreActive)
-                                },
-                                onDeleteProfile = { profile ->
-                                    vm.deleteProfile(profile, coreActive)
-                                },
-                                onImportLocalFile = {
-                                    profileImportLauncher.launch("*/*")
-                                },
-                                onReorderProfiles = { newOrderList ->
-                                    vm.reorderProfiles(newOrderList)
-                                },
-                                onNavigateToQrScan = {
-                                    parentSubScreen = SubScreen.PROFILES
-                                    currentSubScreen = SubScreen.QR_SCAN
-                                },
-                                onNavigateToOverride = { profile ->
-                                    overrideTargetProfileId = profile.id
-                                    parentSubScreen = SubScreen.PROFILES
-                                    currentSubScreen = SubScreen.PROFILE_OVERRIDE
-                                }
-                            )
-                        }
-                        SubScreen.PROFILE_OVERRIDE -> {
-                            val targetProfile = vm.profiles.find { it.id == overrideTargetProfileId }
-                                ?: vm.profiles.firstOrNull { it.id == vm.selectedProfileId }
-                                ?: vm.profiles.firstOrNull()
-                            if (targetProfile != null) {
-                                ProfileOverrideScreen(
-                                    profile = targetProfile,
-                                    onBack = handleSubScreenBack,
-                                    onNavigateToScripts = {
-                                        parentSubScreen = SubScreen.PROFILE_OVERRIDE
-                                        currentSubScreen = SubScreen.SCRIPTS
-                                    },
-                                    onProfileUpdated = {
-                                        vm.onProfileMetadataUpdated()
-                                    }
-                                )
-                            }
-                        }
-                        SubScreen.SCRIPTS -> {
-                            ScriptsScreen(
-                                onBack = handleSubScreenBack,
-                                onScriptsChanged = {
-                                    vm.onScriptsChanged(coreActive)
-                                }
-                            )
-                        }
-                        SubScreen.APP_ROUTING -> {
-                            AppRoutingScreen(
-                                currentMode = perAppMode,
-                                selectedPackages = selectedPackages,
-                                apps = installedApps,
-                                isLoading = isAppsLoading,
-                                onBack = handleSubScreenBack,
-                                onModeChanged = { mode ->
-                                    perAppMode = mode
-                                    settingsManager.perAppProxyMode = mode
-                                    appRoutingDirty = true
-                                },
-                                onTogglePackage = { pkg ->
-                                    val updated = if (selectedPackages.contains(pkg)) {
-                                        selectedPackages - pkg
-                                    } else {
-                                        selectedPackages + pkg
-                                    }
-                                    selectedPackages = updated
-                                    settingsManager.selectedPackages = updated
-                                    appRoutingDirty = true
-                                },
-                                onUpdateSelectedPackages = { updated ->
-                                    selectedPackages = updated
-                                    settingsManager.selectedPackages = updated
-                                    appRoutingDirty = true
-                                }
-                            )
-                        }
-                        SubScreen.LOGS -> {
-                            LogsScreen(
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.RULES -> {
-                            RulesScreen(
-                                rules = parsedProfile.rules,
-                                totalRules = parsedProfile.totalRules,
-                                tunnelMode = tunnelMode,
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.DNS -> {
-                            DnsScreen(
-                                onNavigateToSettings = {
-                                    parentSubScreen = SubScreen.DNS
-                                    currentSubScreen = SubScreen.DNS_SETTINGS
-                                },
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.DNS_SETTINGS -> {
-                            DnsSettingsScreen(
-                                fakeIpEnabled = fakeIpEnabled,
-                                onFakeIpEnabledChanged = { enabled ->
-                                    val prev = fakeIpEnabled
-                                    fakeIpEnabled = enabled
-                                    settingsManager.fakeIpEnabled = enabled
-                                    if (coreActive) {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val ok = ClashCore.reloadActiveConfig(activity)
-                                            if (!ok) {
-                                                withContext(Dispatchers.Main) {
-                                                    fakeIpEnabled = prev
-                                                    settingsManager.fakeIpEnabled = prev
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("core_reload_failed", appLanguage),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                nameservers = dnsNameservers,
-                                fallbackServers = dnsFallbackServers,
-                                blockThirdPartyDns = blockThirdPartyDns,
-                                onSaveDns = { nameservers, fallback, blockDns ->
-                                    val prevNs = dnsNameservers
-                                    val prevFb = dnsFallbackServers
-                                    val prevBlock = blockThirdPartyDns
-                                    dnsNameservers = nameservers
-                                    dnsFallbackServers = fallback
-                                    blockThirdPartyDns = blockDns
-                                    settingsManager.dnsNameservers = nameservers
-                                    settingsManager.dnsFallbackServers = fallback
-                                    settingsManager.blockThirdPartyDns = blockDns
-                                    if (coreActive) {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val ok = ClashCore.reloadActiveConfig(activity)
-                                            if (!ok) {
-                                                withContext(Dispatchers.Main) {
-                                                    dnsNameservers = prevNs
-                                                    dnsFallbackServers = prevFb
-                                                    blockThirdPartyDns = prevBlock
-                                                    settingsManager.dnsNameservers = prevNs
-                                                    settingsManager.dnsFallbackServers = prevFb
-                                                    settingsManager.blockThirdPartyDns = prevBlock
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("core_reload_failed", appLanguage),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.REQUESTS -> {
-                            RequestLogsScreen(
-                                vpnStatus = vpnStatus,
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.NETWORK_SHARE -> {
-                            NetworkShareScreen(
-                                allowLan = allowLan,
-                                onAllowLanChanged = { enabled ->
-                                    val prev = allowLan
-                                    allowLan = enabled
-                                    settingsManager.allowLan = enabled
-                                    if (coreActive) {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val ok = ClashCore.reloadActiveConfig(activity)
-                                            if (!ok) {
-                                                withContext(Dispatchers.Main) {
-                                                    allowLan = prev
-                                                    settingsManager.allowLan = prev
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("core_reload_failed", appLanguage),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                allowLanPassword = allowLanPassword,
-                                onAllowLanPasswordChanged = { pwd ->
-                                    val prev = allowLanPassword
-                                    allowLanPassword = pwd
-                                    settingsManager.allowLanPassword = pwd
-                                    // Committed explicitly by the screen; one reload per save.
-                                    if (coreActive) {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val ok = ClashCore.reloadActiveConfig(activity)
-                                            if (!ok) {
-                                                withContext(Dispatchers.Main) {
-                                                    allowLanPassword = prev
-                                                    settingsManager.allowLanPassword = prev
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("core_reload_failed", appLanguage),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                mixedPort = mixedPort,
-                                vpnStatus = vpnStatus,
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.APPEARANCE -> {
-                            AppearanceScreen(
-                                themeMode = currentThemeMode,
-                                onThemeModeChanged = onThemeModeChanged,
-                                onBack = handleSubScreenBack,
-                                appFont = currentAppFont,
-                                onAppFontChanged = onAppFontChanged,
-                                appLanguage = appLanguage,
-                                onAppLanguageChanged = { code ->
-                                    appLanguage = code
-                                    settingsManager.appLanguage = code
-                                }
-                            )
-                        }
-                        SubScreen.CORE -> {
-                            CoreScreen(
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.QR_SCAN -> {
-                            QrScanScreen(
-                                onBack = handleSubScreenBack,
-                                onResult = { url ->
-                                    qrPrefillUrl = url
-                                    CupertinoToast.show(AppStrings.get("qr_scan_result", appLanguage))
-                                    parentSubScreen = null
-                                    currentSubScreen = SubScreen.PROFILES
-                                }
-                            )
-                        }
-                        SubScreen.VPN_TUNNEL -> {
-                            VpnTunnelScreen(
-                                tunStack = tunStack,
-                                onTunStackChanged = { stack ->
-                                    tunStack = stack
-                                    settingsManager.tunStack = stack
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
-                                },
-                                tunMtu = tunMtu,
-                                onTunMtuChanged = { mtu ->
-                                    tunMtu = mtu
-                                    settingsManager.tunMtu = mtu
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
-                                },
-                                mixedPort = mixedPort,
-                                onMixedPortChanged = { port ->
-                                    val prevPort = mixedPort
-                                    mixedPort = port
-                                    settingsManager.mixedPort = port
-                                    if (coreActive) {
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val ok = ClashCore.reloadActiveConfig(activity)
-                                            if (!ok) {
-                                                withContext(Dispatchers.Main) {
-                                                    mixedPort = prevPort
-                                                    settingsManager.mixedPort = prevPort
-                                                    CupertinoToast.show(
-                                                        AppStrings.get("core_reload_failed", appLanguage),
-                                                        isDestructive = true
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                ipv6Enabled = ipv6Enabled,
-                                onIpv6EnabledChanged = { enabled ->
-                                    ipv6Enabled = enabled
-                                    settingsManager.ipv6Enabled = enabled
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
-                                },
-                                killSwitchEnabled = killSwitchEnabled,
-                                onKillSwitchChanged = { enabled ->
-                                    killSwitchEnabled = enabled
-                                    settingsManager.killSwitchEnabled = enabled
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
-                                },
-                                allowBypassEnabled = allowBypassEnabled,
-                                onAllowBypassChanged = { enabled ->
-                                    allowBypassEnabled = enabled
-                                    settingsManager.allowBypassEnabled = enabled
-                                    if (vpnStatus == VpnState.Status.RUNNING) {
-                                        MihomoVpnService.restart(activity)
-                                    }
-                                },
-                                allowPrivateSubs = allowPrivateSubs,
-                                onAllowPrivateSubsChanged = { enabled ->
-                                    allowPrivateSubs = enabled
-                                    settingsManager.allowPrivateSubscriptionHosts = enabled
-                                },
-                                bootOnStartup = bootOnStartup,
-                                onBootOnStartupChanged = { enabled ->
-                                    bootOnStartup = enabled
-                                    settingsManager.bootOnStartup = enabled
-                                },
-                                onBack = handleSubScreenBack
-                            )
-                        }
-                        SubScreen.ABOUT -> {
-                            AboutScreen(
-                                onExportBackup = { uri ->
-                                    // The backup contains the subscription address, the script
-                                    // code and the LAN sharing password: the user picks a
-                                    // password before the file is written.
-                                    pendingExportUri = uri
-                                    backupPassword = ""
-                                    showBackupPasswordDialog = true
-                                },
-                                onImportBackup = { uri ->
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        // Peek at the magic header to find out whether the
-                                        // backup is encrypted; an encrypted file needs the
-                                        // password BEFORE it is imported.
-                                        val head = runCatching {
-                                            activity.contentResolver.openInputStream(uri)?.use { input ->
-                                                val buffer = ByteArray(32)
-                                                val read = input.read(buffer)
-                                                if (read <= 0) null else buffer.copyOf(read)
-                                            }
-                                        }.getOrNull()
-                                        val encrypted = head != null && BackupManager.isEncrypted(head)
-                                        kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                            pendingImportUri = uri
-                                            backupPassword = ""
-                                            if (encrypted) {
-                                                showBackupImportPasswordDialog = true
-                                            } else {
-                                                doImportBackup(uri, null)
-                                            }
-                                        }
-                                    }
-                                },
-                                onBack = handleSubScreenBack,
-                                onCoreReset = { vm.onCoreReset() }
-                            )
-                        }
+        LoonFloatingBottomBar(
+            selectedTab = currentTab,
+            onTabSelected = { tabIndex ->
+                onSelectTab(tabIndex)
+                if (tabIndex == 1) {
+                    if (vpnStatus == VpnState.Status.RUNNING) {
+                        vm.refreshProxiesOnline()
+                    } else if (vm.parsedProfile.groups.isEmpty()) {
+                        vm.parseActiveProfile()
                     }
                 }
             }
-            }
-        }
-
-        // 3. Floating Bottom Bar (stays stable underneath sliding sub-screens)
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .wrapContentSize(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 16.dp)
-        ) {
-            // currentTab is the single source of truth for the selected tab (it is the
-            // rememberSaveable one), so the bar must not read the pager's target page.
-            LoonFloatingBottomBar(
-                selectedTab = currentTab,
-                onTabSelected = { tabIndex ->
-                    if (tabIndex != currentTab) {
-                        currentTab = tabIndex
-                    }
-                    if (tabIndex == 1) {
-                        if (vpnStatus == VpnState.Status.RUNNING) {
-                            refreshProxiesOnline()
-                        } else if (parsedProfile.groups.isEmpty()) {
-                            parseActiveProfile()
-                        }
-                    }
-                }
-            )
-        }
-
-        // Global iOS Dynamic Island / Pill HUD notification host
-        CupertinoToastHost()
-    }
-    } // end CompositionLocalProvider
-
-    // =====================================================================
-    // Backup password dialogs
-    // =====================================================================
-
-    if (showBackupPasswordDialog) {
-        CupertinoAlertDialog(
-            title = AppStrings.get("backup_password_title", appLanguage),
-            message = AppStrings.get("backup_password_warning", appLanguage),
-            confirmText = AppStrings.get("action_save", appLanguage),
-            dismissText = AppStrings.get("cancel", appLanguage),
-            onConfirm = {
-                showBackupPasswordDialog = false
-                val uri = pendingExportUri
-                pendingExportUri = null
-                if (uri == null) return@CupertinoAlertDialog
-                val password = backupPassword
-                backupPassword = ""
-                if (password.isBlank()) {
-                    // A blank password writes a plain-text JSON backup: ask once more.
-                    showBackupPlainConfirmDialog = true
-                    pendingExportUri = uri
-                } else {
-                    doExportBackup(uri, password)
-                }
-            },
-            onDismiss = {
-                showBackupPasswordDialog = false
-                pendingExportUri = null
-                backupPassword = ""
-            },
-            onDismissRequest = {
-                showBackupPasswordDialog = false
-                pendingExportUri = null
-                backupPassword = ""
-            }
-        ) {
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = AppStrings.get("backup_password_hint", appLanguage),
-                color = LoonTextSecondary,
-                fontSize = LoonTypeScale.footnote
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            CupertinoTextField(
-                value = backupPassword,
-                onValueChange = { backupPassword = it },
-                placeholder = AppStrings.get("backup_password_hint", appLanguage),
-                visualTransformation = PasswordVisualTransformation()
-            )
-        }
-    }
-
-    if (showBackupPlainConfirmDialog) {
-        CupertinoAlertDialog(
-            title = AppStrings.get("backup_password_title", appLanguage),
-            message = AppStrings.get("backup_password_plain_warning", appLanguage),
-            confirmText = AppStrings.get("action_save", appLanguage),
-            dismissText = AppStrings.get("cancel", appLanguage),
-            isDestructive = true,
-            onConfirm = {
-                showBackupPlainConfirmDialog = false
-                val uri = pendingExportUri
-                pendingExportUri = null
-                if (uri != null) doExportBackup(uri, null)
-            },
-            onDismiss = {
-                showBackupPlainConfirmDialog = false
-                pendingExportUri = null
-            },
-            onDismissRequest = {
-                showBackupPlainConfirmDialog = false
-                pendingExportUri = null
-            }
-        )
-    }
-
-    if (showBackupImportPasswordDialog) {
-        CupertinoAlertDialog(
-            title = AppStrings.get("backup_password_import_title", appLanguage),
-            message = AppStrings.get("backup_password_import_hint", appLanguage),
-            confirmText = AppStrings.get("action_ok", appLanguage),
-            dismissText = AppStrings.get("cancel", appLanguage),
-            onConfirm = {
-                showBackupImportPasswordDialog = false
-                val uri = pendingImportUri
-                pendingImportUri = null
-                val password = backupPassword
-                backupPassword = ""
-                if (uri != null) doImportBackup(uri, password)
-            },
-            onDismiss = {
-                showBackupImportPasswordDialog = false
-                pendingImportUri = null
-                backupPassword = ""
-            },
-            onDismissRequest = {
-                showBackupImportPasswordDialog = false
-                pendingImportUri = null
-                backupPassword = ""
-            }
-        ) {
-            Spacer(modifier = Modifier.height(10.dp))
-            CupertinoTextField(
-                value = backupPassword,
-                onValueChange = { backupPassword = it },
-                placeholder = AppStrings.get("backup_password_import_hint", appLanguage),
-                visualTransformation = PasswordVisualTransformation()
-            )
-        }
-    }
-
-    if (backupImportFailures.isNotEmpty()) {
-        CupertinoAlertDialog(
-            title = AppStrings.get("settings_backup_import", appLanguage),
-            message = backupImportFailures.joinToString("\n• ", prefix = "• "),
-            confirmText = AppStrings.get("dialog_ok", appLanguage),
-            dismissText = null,
-            onConfirm = { backupImportFailures = emptyList() },
-            onDismissRequest = { backupImportFailures = emptyList() }
         )
     }
 }

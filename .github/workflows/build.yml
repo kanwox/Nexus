@@ -16,15 +16,17 @@ on:
   merge_group:
   workflow_dispatch:
 
-# A newer push supersedes an in-flight build of the same ref. PR runs are
-# grouped separately so a push to main does not cancel an open PR check.
+permissions: {}
+
+# A newer push supersedes an in-flight branch/PR build of the same ref. Tag
+# pushes are excluded so a release publish workflow is never cancelled mid-run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # The four quality gates run on every push and pull request. This job has NO
-  # write permission: it must never be able to publish anything.
+  # The quality gates run on every push, pull request, and merge group. This job
+  # has NO write permission: it must never be able to publish anything.
   quality:
     name: Quality Gates
     runs-on: ubuntu-latest
@@ -54,22 +56,6 @@ jobs:
           # ("build-tools;37.0.0").
           packages: "platform-tools platforms;android-37.0 build-tools;37.0.0"
 
-      - name: Install required Android SDK packages
-        run: |
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | head -n 1)"
-          fi
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "sdkmanager not found (ANDROID_HOME=$ANDROID_HOME)" >&2
-            exit 1
-          fi
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          # Explicit install as a safety net: AGP's own SDK download is disabled, so the
-          # packages must exist before Gradle configures the project.
-          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
-          "$SDKMANAGER" --list_installed | grep -E 'platform-tools|platforms;android-37|build-tools;37.0.0'
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
 
@@ -85,25 +71,30 @@ jobs:
           java -version
           ./gradlew --version
 
-      # All four gates must stay green; they are also what CONTRIBUTING-level local
-      # checks run (`./gradlew testDebugUnitTest detekt lintDebug checkUiTokens`).
-      - name: Static analysis (detekt)
-        run: ./gradlew detekt --no-configuration-cache --stacktrace
+      # All gates must stay green; matches the local verification suite.
+      # AGP 9.4.1 uses built-in Kotlin (without org.jetbrains.kotlin.android), so
+      # Detekt 1.23.8 registers `:app:detekt` rather than variant `detektDebug`.
+      - name: Static analysis (Detekt)
+        run: ./gradlew detekt --stacktrace
 
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --no-configuration-cache --stacktrace
+        run: ./gradlew testDebugUnitTest --stacktrace
 
       - name: Android lint
-        run: ./gradlew lintDebug --no-configuration-cache --stacktrace
+        run: ./gradlew lintDebug --stacktrace
 
       - name: UI token guard
-        run: ./gradlew checkUiTokens --no-configuration-cache --stacktrace
+        run: ./gradlew checkUiTokens --stacktrace
 
-  # Only runs after the quality gates passed, and only for a release-worthy ref.
+      - name: Compile AndroidTest sources
+        run: ./gradlew compileDebugAndroidTestKotlin --stacktrace
+
+  # Only runs after the quality gates passed, and ONLY on explicit version tags
+  # so regular pushes to main or manual runs never overwrite an existing release.
   release:
     name: Build Android APK
     needs: quality
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -125,19 +116,6 @@ jobs:
           # See the note in the quality job: from API 37 the platform package id
           # carries the minor version ("platforms;android-37.0").
           packages: "platform-tools platforms;android-37.0 build-tools;37.0.0"
-
-      - name: Install required Android SDK packages
-        run: |
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | head -n 1)"
-          fi
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "sdkmanager not found (ANDROID_HOME=$ANDROID_HOME)" >&2
-            exit 1
-          fi
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@da187c8e6ffbd3802e00f2477aa5a822b25f2dda # v4.4.4
@@ -176,11 +154,7 @@ jobs:
         run: |
           VERSION_NAME=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}"
-          else
-            TAG="v${VERSION_NAME}"
-          fi
+          TAG="${{ github.ref_name }}"
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "RELEASE_TITLE=Nexus $TAG" >> "$GITHUB_ENV"
           # Any tag carrying a pre-release marker is published as a GitHub pre-release.
@@ -191,15 +165,13 @@ jobs:
           fi
 
       # Release notes live in CHANGELOG.md (Keep a Changelog format). The workflow extracts
-      # the section matching the current versionName, so a release body can never drift from
-      # the code again. Bump versionName in app/build.gradle.kts and add the matching
-      # "## [x.y.z]" section in the same commit.
+      # the section matching the current versionName literally so dots are never wildcards.
       - name: Extract Release Notes
         run: |
           mkdir -p build_output
           awk -v ver="$VERSION_NAME" '
-            $0 ~ "^## \\[" ver "\\]" { in_section = 1; next }
-            in_section && /^## \[/ { exit }
+            index($0, "## [" ver "]") == 1 { in_section = 1; next }
+            in_section && index($0, "## [") == 1 { exit }
             in_section { print }
           ' CHANGELOG.md > build_output/release-notes.md
           if [ ! -s build_output/release-notes.md ]; then
@@ -211,7 +183,7 @@ jobs:
       # marker (v1.0.4-Alpha.1, v1.0.1-Beta.2, v2.0.0-RC1, …) are marked as pre-releases.
       - name: Publish Automatic Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}

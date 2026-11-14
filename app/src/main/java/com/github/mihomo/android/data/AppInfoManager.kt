@@ -1,3 +1,5 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
@@ -30,23 +32,19 @@ object AppInfoManager {
         apps.mapNotNull { appInfo ->
             if (appInfo.packageName == context.packageName) return@mapNotNull null
 
-            val label = runCatching { pm.getApplicationLabel(appInfo).toString() }.getOrDefault(appInfo.packageName)
+            val label = safeAppLabel(pm, appInfo)
             val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
 
             // Do not preload all Drawables synchronously; load on-demand in the UI list to save memory.
             InstalledApp(appInfo.packageName, label, isSystem, null)
-        }.sortedWith(compareBy({ it.isSystem }, { it.label.lowercase() }))
+        }.sortedWith(compareBy({ it.isSystem }, { it.label.lowercase(java.util.Locale.ROOT) }))
     }
 
     suspend fun loadAppIcon(context: Context, packageName: String): ImageBitmap? = withContext(Dispatchers.IO) {
         synchronized(iconCache) {
             iconCache.get(packageName)?.let { return@withContext it }
         }
-        val bitmap = runCatching {
-            val pm = context.packageManager
-            val drawable = pm.getApplicationIcon(packageName)
-            drawable.toBitmap(width = 72, height = 72, config = Bitmap.Config.ARGB_8888).asImageBitmap()
-        }.getOrNull()
+        val bitmap = safeLoadAppBitmap(context, packageName)
 
         if (bitmap != null) {
             synchronized(iconCache) {
@@ -55,4 +53,14 @@ object AppInfoManager {
         }
         bitmap
     }
+
+    private fun safeAppLabel(pm: PackageManager, appInfo: ApplicationInfo): String =
+        runCatching { pm.getApplicationLabel(appInfo).toString() }.getOrDefault(appInfo.packageName)
+
+    private fun safeLoadAppBitmap(context: Context, packageName: String): ImageBitmap? =
+        runCatching {
+            val pm = context.packageManager
+            val drawable = pm.getApplicationIcon(packageName)
+            drawable.toBitmap(width = 72, height = 72, config = Bitmap.Config.ARGB_8888).asImageBitmap()
+        }.getOrNull()
 }

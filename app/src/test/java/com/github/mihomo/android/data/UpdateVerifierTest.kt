@@ -152,8 +152,8 @@ class UpdateVerifierTest {
     @Test
     fun `digest comparison is case-insensitive`() {
         val lower = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        assertTrue(UpdateVerifier.verifySha256(lower, lower.uppercase()))
-        assertTrue(UpdateVerifier.verifySha256(lower.uppercase(), lower))
+        assertTrue(UpdateVerifier.verifySha256(lower, lower.uppercase(java.util.Locale.ROOT)))
+        assertTrue(UpdateVerifier.verifySha256(lower.uppercase(java.util.Locale.ROOT), lower))
         assertFalse(UpdateVerifier.verifySha256(lower, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
     }
 
@@ -226,5 +226,31 @@ class UpdateVerifierTest {
         // Empty certificate lists mean extraction failed — never a pass.
         assertFalse(UpdateVerifier.signaturesMatch(emptyList(), listOf(a)))
         assertFalse(UpdateVerifier.signaturesMatch(listOf(a), emptyList()))
+    }
+
+    @Test
+    fun `parseSha256Sums strips dot-slash, directory prefixes, and skips dot entries`() {
+        val digestUpper = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+        val digestLower = digestUpper.lowercase(java.util.Locale.ROOT)
+        val text = listOf(
+            "$digestUpper  ./Nexus-arm64-v8a-release.apk",
+            "$digestUpper  dist/android/arm64/Nexus-arm64.apk",
+            "$digestUpper *build\\outputs\\Nexus-x86_64.apk",
+            "$digestUpper  *./nested/sub/Nexus-armeabi-v7a.apk",
+            "$digestUpper  ./.",
+            "$digestUpper  ../..",
+            "${digestUpper}:Nexus-bad-separator.apk"
+        ).joinToString("\n")
+
+        val parsed = UpdateVerifier.parseSha256Sums(text)
+        assertEquals(
+            mapOf(
+                "Nexus-arm64-v8a-release.apk" to digestLower,
+                "Nexus-arm64.apk" to digestLower,
+                "Nexus-x86_64.apk" to digestLower,
+                "Nexus-armeabi-v7a.apk" to digestLower
+            ),
+            parsed
+        )
     }
 }

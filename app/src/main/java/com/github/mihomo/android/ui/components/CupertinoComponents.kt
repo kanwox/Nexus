@@ -1,95 +1,130 @@
 package com.github.mihomo.android.ui.components
 
-import android.content.Context
 import android.view.HapticFeedbackConstants
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
-import com.github.mihomo.android.ui.theme.RoundedCornerShape
-import com.github.mihomo.android.ui.theme.LocalAppFont
-import com.github.mihomo.android.i18n.AppStrings
-import com.github.mihomo.android.i18n.LocalAppLanguage
-import com.github.mihomo.android.data.AppFont
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBackIos
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.foundation.text.BasicTextField
-import kotlin.time.Duration.Companion.milliseconds
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalTextStyle
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.nativeClipboardManager
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.paneTitle
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.zIndex
-import com.github.mihomo.android.ui.theme.*
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlin.math.abs
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
+import com.github.mihomo.android.ui.theme.IosBlue
+import com.github.mihomo.android.ui.theme.IosGreen
+import com.github.mihomo.android.ui.theme.LocalLoonColors
+import com.github.mihomo.android.ui.theme.LocalReduceMotion
+import com.github.mihomo.android.ui.theme.LoonBg
+import com.github.mihomo.android.ui.theme.LoonCard
+import com.github.mihomo.android.ui.theme.LoonCardBorder
+import com.github.mihomo.android.ui.theme.LoonChevronTint
+import com.github.mihomo.android.ui.theme.LoonDangerText
+import com.github.mihomo.android.ui.theme.LoonExtraColors
+import com.github.mihomo.android.ui.theme.LoonFocusRing
+import com.github.mihomo.android.ui.theme.LoonInfoText
+import com.github.mihomo.android.ui.theme.LoonMotion
+import com.github.mihomo.android.ui.theme.LoonOnAccent
+import com.github.mihomo.android.ui.theme.LoonRadii
+import com.github.mihomo.android.ui.theme.LoonSeparator
+import com.github.mihomo.android.ui.theme.LoonSizes
+import com.github.mihomo.android.ui.theme.LoonSpacing
+import com.github.mihomo.android.ui.theme.LoonSwitchUncheckedTrack
+import com.github.mihomo.android.ui.theme.LoonTertiaryBg
+import com.github.mihomo.android.ui.theme.LoonTextMuted
+import com.github.mihomo.android.ui.theme.LoonTextPrimary
+import com.github.mihomo.android.ui.theme.LoonTextSecondary
+import com.github.mihomo.android.ui.theme.LoonTextStyles
+import com.github.mihomo.android.ui.theme.RedDanger
+import com.github.mihomo.android.ui.theme.RoundedCornerShape
+import java.util.Locale
 
 // =============================================================================
 // iOS Haptic Feedback Utilities
@@ -149,11 +184,11 @@ fun Modifier.iosFocusRing(
     var focused by remember { mutableStateOf(false) }
     val ring = LoonFocusRing
     this
-        .onFocusChanged { focused = it.isFocused }
+        .onFocusChanged { state -> focused = state.isFocused }
         .then(if (focused) Modifier.border(2.dp, ring, shape) else Modifier)
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 fun Modifier.iosPressable(
     enabled: Boolean = true,
     pressedScale: Float = LoonMotion.pressScale,
@@ -200,7 +235,9 @@ fun Modifier.iosPressable(
                     enabled = enabled,
                     onClick = onClick
                 )
-            } else Modifier
+            } else {
+                Modifier
+            }
         )
 }
 
@@ -228,7 +265,7 @@ fun Modifier.iosHighlightPressable(
                 else -> Color.Transparent
             }
         )
-        .onFocusChanged { focused = it.isFocused }
+        .onFocusChanged { state -> focused = state.isFocused }
         .then(if (focusShape != null) Modifier.iosFocusRing(focusShape) else Modifier)
         .then(
             if (onClick != null) {
@@ -238,7 +275,9 @@ fun Modifier.iosHighlightPressable(
                     enabled = enabled,
                     onClick = onClick
                 )
-            } else Modifier
+            } else {
+                Modifier
+            }
         )
 }
 
@@ -314,7 +353,7 @@ fun CupertinoGroupedSection(
     header: String? = null,
     title: String? = null,
     footer: String? = null,
-    content: @Composable ColumnScope.() -> Unit
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
 ) {
     val displayHeader = header ?: title
     Column(
@@ -324,7 +363,7 @@ fun CupertinoGroupedSection(
     ) {
         if (!displayHeader.isNullOrBlank()) {
             Text(
-                text = displayHeader.uppercase(),
+                text = displayHeader.uppercase(Locale.ROOT),
                 color = LoonTextSecondary,
                 style = LoonTextStyles.groupHeader(),
                 modifier = Modifier.padding(start = 14.dp, bottom = LoonSpacing.xs)
@@ -376,7 +415,7 @@ fun <T> LazyListScope.cupertinoGroupedItems(
     if (!header.isNullOrBlank()) {
         item(contentType = "cupertino_group_header") {
             Text(
-                text = header.uppercase(),
+                text = header.uppercase(Locale.ROOT),
                 color = LoonTextSecondary,
                 style = LoonTextStyles.groupHeader(),
                 modifier = Modifier
@@ -447,18 +486,65 @@ fun CupertinoCell(
     onClick: (() -> Unit)? = null
 ) {
     val haptic = rememberIosHaptic()
+    val clickModifier = if (onClick != null && enabled) {
+        Modifier.iosPressable(enabled = true) {
+            haptic.selection()
+            onClick()
+        }
+    } else {
+        Modifier
+    }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
-            .then(
-                if (onClick != null && enabled) {
-                    Modifier.iosPressable(enabled = true) {
-                        haptic.selection()
-                        onClick()
-                    }
-                } else Modifier
+            .then(clickModifier)
+            .padding(horizontal = 16.dp, vertical = if (subtitle != null) 10.dp else 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f)
+        ) {
+            CupertinoCellLeading(icon = icon, iconBg = iconBg, customIcon = customIcon)
+            CupertinoCellLabels(title = title, subtitle = subtitle, enabled = enabled)
+        }
+        CupertinoCellTrailing(value = value, showChevron = showChevron, trailing = trailing)
+    }
+}
+
+/**
+ * Full-row switch cell exposing a single `Role.Switch` accessibility node to TalkBack
+ * so users never get double-focus on the row plus trailing switch.
+ */
+@Composable
+fun CupertinoSwitchCell(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    iconBg: Color = IosBlue,
+    enabled: Boolean = true
+) {
+    val haptic = rememberIosHaptic()
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .iosFocusRing(RoundedCornerShape(LoonRadii.control))
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = { next ->
+                    haptic.selection()
+                    onCheckedChange(next)
+                }
             )
             .padding(horizontal = 16.dp, vertical = if (subtitle != null) 10.dp else 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -468,77 +554,102 @@ fun CupertinoCell(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
         ) {
-            // Optional Squircle Icon Badge
-            if (customIcon != null) {
-                Box(
-                    modifier = Modifier
-                        .size(LoonSizes.iconBadge)
-                        .clip(RoundedCornerShape(LoonRadii.iconBadge)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    customIcon()
-                }
-                Spacer(modifier = Modifier.width(13.dp))
-            } else if (icon != null) {
-                Box(
-                    modifier = Modifier
-                        .size(LoonSizes.iconBadge)
-                        .clip(RoundedCornerShape(LoonRadii.iconBadge))
-                        .background(iconBg),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = LoonOnAccent,
-                        modifier = Modifier.size(17.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(13.dp))
-            }
-
-            // Title & optional Subtitle
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    color = if (enabled) LoonTextPrimary else LoonTextMuted,
-                    style = LoonTextStyles.cellTitle()
-                )
-                if (!subtitle.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(LoonSpacing.xxs))
-                    Text(
-                        text = subtitle,
-                        color = LoonTextSecondary,
-                        style = LoonTextStyles.subtitle()
-                    )
-                }
-            }
+            CupertinoCellLeading(icon = icon, iconBg = iconBg, customIcon = null)
+            CupertinoCellLabels(title = title, subtitle = subtitle, enabled = enabled)
         }
+        Spacer(modifier = Modifier.width(LoonSpacing.sm))
+        Box(modifier = Modifier.clearAndSetSemantics {}) {
+            CupertinoSwitchVisual(checked = checked, enabled = enabled)
+        }
+    }
+}
 
-        // Trailing Content (Value / Chevron / Switch / Custom)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End
+@Composable
+private fun CupertinoCellLeading(
+    icon: ImageVector?,
+    iconBg: Color,
+    customIcon: (@Composable () -> Unit)?
+) {
+    if (customIcon != null) {
+        Box(
+            modifier = Modifier
+                .size(LoonSizes.iconBadge)
+                .clip(RoundedCornerShape(LoonRadii.iconBadge)),
+            contentAlignment = Alignment.Center
         ) {
-            if (trailing != null) {
-                trailing()
-            } else {
-                if (!value.isNullOrBlank()) {
-                    Text(
-                        text = value,
-                        color = LoonTextSecondary,
-                        style = LoonTextStyles.value()
-                    )
-                }
-                if (showChevron) {
-                    Spacer(modifier = Modifier.width(LoonSpacing.xs))
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = LoonChevronTint,
-                        modifier = Modifier.size(LoonSizes.iconSmall)
-                    )
-                }
+            customIcon()
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+    } else if (icon != null) {
+        Box(
+            modifier = Modifier
+                .size(LoonSizes.iconBadge)
+                .clip(RoundedCornerShape(LoonRadii.iconBadge))
+                .background(iconBg),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = LoonOnAccent,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+    }
+}
+
+@Composable
+private fun RowScope.CupertinoCellLabels(
+    title: String,
+    subtitle: String?,
+    enabled: Boolean
+) {
+    Column(modifier = Modifier.weight(1f)) {
+        Text(
+            text = title,
+            color = if (enabled) LoonTextPrimary else LoonTextMuted,
+            style = LoonTextStyles.cellTitle()
+        )
+        if (!subtitle.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(LoonSpacing.xxs))
+            Text(
+                text = subtitle,
+                color = LoonTextSecondary,
+                style = LoonTextStyles.subtitle()
+            )
+        }
+    }
+}
+
+@Composable
+private fun CupertinoCellTrailing(
+    value: String?,
+    showChevron: Boolean,
+    trailing: (@Composable () -> Unit)?
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End
+    ) {
+        if (trailing != null) {
+            trailing()
+        } else {
+            if (!value.isNullOrBlank()) {
+                Text(
+                    text = value,
+                    color = LoonTextSecondary,
+                    style = LoonTextStyles.value()
+                )
+            }
+            if (showChevron) {
+                Spacer(modifier = Modifier.width(LoonSpacing.xs))
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = LoonChevronTint,
+                    modifier = Modifier.size(LoonSizes.iconSmall)
+                )
             }
         }
     }
@@ -584,9 +695,37 @@ fun CupertinoDivider(
 @Composable
 fun CupertinoSwitch(
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    onCheckedChange: ((Boolean) -> Unit)?,
     modifier: Modifier = Modifier,
     enabled: Boolean = true
+) {
+    // When onCheckedChange is null, the parent container handles toggleable semantics
+    // (matching Material Switch), so omit the duplicate toggleable wrapper.
+    val interactiveModifier = if (onCheckedChange != null) {
+        Modifier
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .iosFocusRing(CircleShape)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
+    } else {
+        Modifier
+    }
+    Box(
+        modifier = modifier.then(interactiveModifier),
+        contentAlignment = Alignment.Center
+    ) {
+        CupertinoSwitchVisual(checked = checked, enabled = enabled)
+    }
+}
+
+@Composable
+private fun CupertinoSwitchVisual(
+    checked: Boolean,
+    enabled: Boolean
 ) {
     val checkedTrackColor = IosGreen
     val uncheckedTrackColor = LoonSwitchUncheckedTrack
@@ -610,41 +749,26 @@ fun CupertinoSwitch(
         label = "switch_thumb_offset"
     )
 
-    // The visible track stays 51x31; the toggle (and its semantics / touch target) is the
-    // 48dp-high wrapper so TalkBack announces a real switch and the tap area is accessible.
     Box(
-        modifier = modifier
-            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
-            .iosFocusRing(CircleShape)
-            .toggleable(
-                value = checked,
-                enabled = enabled,
-                role = Role.Switch,
-                onValueChange = onCheckedChange
-            ),
-        contentAlignment = Alignment.Center
+        modifier = Modifier
+            .size(LoonSizes.switchWidth, LoonSizes.switchHeight)
+            .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
+            .clip(RoundedCornerShape(percent = 50))
+            .background(trackColor),
+        contentAlignment = Alignment.CenterStart
     ) {
         Box(
             modifier = Modifier
-                .size(LoonSizes.switchWidth, LoonSizes.switchHeight)
-                .clip(RoundedCornerShape(percent = 50))
-                .background(trackColor),
-            contentAlignment = Alignment.CenterStart
-        ) {
-            // Thumb circle with subtle iOS drop shadow
-            Box(
-                modifier = Modifier
-                    .offset(x = thumbOffset)
-                    .size(LoonSizes.switchThumb)
-                    .shadow(
-                        elevation = 2.dp,
-                        shape = CircleShape,
-                        spotColor = LoonExtraColors.shadowStrong
-                    )
-                    .clip(CircleShape)
-                    .background(LoonOnAccent)
-            )
-        }
+                .offset { IntOffset(thumbOffset.roundToPx(), 0) }
+                .size(LoonSizes.switchThumb)
+                .shadow(
+                    elevation = 2.dp,
+                    shape = CircleShape,
+                    spotColor = LoonExtraColors.shadowStrong
+                )
+                .clip(CircleShape)
+                .background(LoonOnAccent)
+        )
     }
 }
 
@@ -662,8 +786,6 @@ fun CupertinoNavBar(
     onBack: (() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null
 ) {
-    val haptic = rememberIosHaptic()
-
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = LoonBg,
@@ -678,66 +800,21 @@ fun CupertinoNavBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Left: Back button or empty placeholder
                 Box(
                     modifier = Modifier.widthIn(min = 60.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
                     if (showBackButton && onBack != null) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(LoonRadii.control))
-                                .heightIn(min = LoonSizes.navBarHeight)
-                                // UI-A11Y-01: the back control must also be 48dp wide.
-                                .sizeIn(minWidth = LoonSizes.touchTargetMin)
-                                .iosFocusRing(RoundedCornerShape(LoonRadii.control))
-                                .iosPressable {
-                                    haptic.lightTick()
-                                    onBack()
-                                }
-                                .padding(horizontal = LoonSpacing.xs),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
-                                contentDescription = AppStrings.get("back", LocalAppLanguage.current),
-                                tint = LoonInfoText,
-                                modifier = Modifier.size(17.dp)
-                            )
-                            if (!backLabel.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = backLabel,
-                                    color = LoonInfoText,
-                                    style = LoonTextStyles.body()
-                                )
-                            }
-                        }
+                        CupertinoNavBackButton(backLabel = backLabel, onBack = onBack)
                     }
                 }
 
-                // Center: Title
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                CupertinoNavTitleColumn(
+                    title = title,
+                    subtitle = subtitle,
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = title,
-                        color = LoonTextPrimary,
-                        style = LoonTextStyles.navTitle(),
-                        maxLines = 1
-                    )
-                    if (!subtitle.isNullOrBlank()) {
-                        Text(
-                            text = subtitle,
-                            color = LoonTextSecondary,
-                            style = LoonTextStyles.caption(),
-                            maxLines = 1
-                        )
-                    }
-                }
+                )
 
-                // Right: Actions
                 Box(
                     modifier = Modifier.widthIn(min = 60.dp),
                     contentAlignment = Alignment.CenterEnd
@@ -751,149 +828,73 @@ fun CupertinoNavBar(
                 }
             }
 
-            // Hairline separator underneath
             HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
         }
     }
 }
 
-// =============================================================================
-// Cupertino Action Sheet & Single-Selection Dialog (Replacing Android RadioButtons)
-// =============================================================================
-
-data class CupertinoActionSheetItem(
-    val text: String,
-    val isDestructive: Boolean = false,
-    val onClick: () -> Unit
-)
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CupertinoActionSheet(
-    onDismissRequest: () -> Unit,
-    title: String? = null,
-    message: String? = null,
-    actions: List<CupertinoActionSheetItem>,
-    cancelText: String = AppStrings.get("cancel", LocalAppLanguage.current)
+private fun CupertinoNavBackButton(
+    backLabel: String?,
+    onBack: () -> Unit
 ) {
     val haptic = rememberIosHaptic()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismissRequest,
-        sheetState = sheetState,
-        containerColor = Color.Transparent,
-        contentColor = LoonTextPrimary,
-        tonalElevation = 0.dp,
-        shape = RoundedCornerShape(LoonRadii.card),
-        dragHandle = null
+    val lang = LocalAppLanguage.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(LoonRadii.control))
+            .heightIn(min = LoonSizes.navBarHeight)
+            .sizeIn(minWidth = LoonSizes.touchTargetMin)
+            .iosFocusRing(RoundedCornerShape(LoonRadii.control))
+            .iosPressable {
+                haptic.lightTick()
+                onBack()
+            }
+            .padding(horizontal = LoonSpacing.xs),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 10.dp)
-                .padding(top = 8.dp, bottom = 16.dp)
-                .semantics { paneTitle = title ?: cancelText },
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Actions container
-            Surface(
-                shape = RoundedCornerShape(LoonRadii.card),
-                color = LoonCard,
-                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 380.dp)
-                        .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    if (!title.isNullOrBlank() || !message.isNullOrBlank()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            if (!title.isNullOrBlank()) {
-                                Text(
-                                    text = title,
-                                    style = LoonTextStyles.actionSheetTitle(),
-                                    color = LoonTextSecondary,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                            if (!message.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = message,
-                                    style = LoonTextStyles.caption(),
-                                    color = LoonTextMuted,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                        HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-                    }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBackIos,
+            contentDescription = if (backLabel.isNullOrBlank()) AppStrings.get("back", lang) else null,
+            tint = LoonInfoText,
+            modifier = Modifier.size(17.dp)
+        )
+        if (!backLabel.isNullOrBlank()) {
+            Spacer(modifier = Modifier.width(3.dp))
+            Text(
+                text = backLabel,
+                color = LoonInfoText,
+                style = LoonTextStyles.body()
+            )
+        }
+    }
+}
 
-                    actions.forEachIndexed { index, action ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 56.dp)
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                .iosHighlightPressable {
-                                    haptic.selection()
-                                    onDismissRequest()
-                                    action.onClick()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = action.text,
-                                style = LoonTextStyles.actionLabel(),
-                                color = if (action.isDestructive) LoonDangerText else LoonInfoText,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                        if (index < actions.size - 1) {
-                            HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-                        }
-                    }
-                }
-            }
-
-            // Standalone Cancel button
-            Surface(
-                shape = RoundedCornerShape(LoonRadii.card),
-                color = LoonCard,
-                border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp)
-                    .iosHighlightPressable {
-                        haptic.lightTick()
-                        onDismissRequest()
-                    }
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 56.dp)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = cancelText,
-                        style = LoonTextStyles.actionLabelStrong(),
-                        color = LoonInfoText,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
+@Composable
+private fun CupertinoNavTitleColumn(
+    title: String,
+    subtitle: String?,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+    ) {
+        Text(
+            text = title,
+            color = LoonTextPrimary,
+            style = LoonTextStyles.navTitle(),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                color = LoonTextSecondary,
+                style = LoonTextStyles.caption(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -913,13 +914,11 @@ fun <T> CupertinoSegmentedControl(
     if (items.isEmpty()) return
     val haptic = rememberIosHaptic()
     val reduceMotion = LocalReduceMotion.current
-    // -1 (selection not in the list, e.g. a persisted legacy value) must not be coerced to
-    // zero: highlighting the first segment would misrepresent the actual selection.
-    val selectedIndex = remember(items, selectedItem) {
-        items.indexOf(selectedItem)
-    }
+    val selectedIndex = remember(items, selectedItem) { items.indexOf(selectedItem) }
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val fontScale = LocalDensity.current.fontScale
+    val visualHeight = (18f * fontScale + 14f).dp.coerceAtLeast(32.dp)
 
-    val isRtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
     val animatedIndex by animateFloatAsState(
         targetValue = selectedIndex.coerceAtLeast(0).toFloat(),
         animationSpec = if (reduceMotion) {
@@ -934,260 +933,132 @@ fun <T> CupertinoSegmentedControl(
         modifier = modifier
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
-            .heightIn(min = 32.dp)
-            .clip(RoundedCornerShape(LoonRadii.segmented))
-            .background(LoonTertiaryBg)
-            .padding(2.dp)
+            .heightIn(min = LoonSizes.touchTargetMin),
+        contentAlignment = Alignment.Center
     ) {
-        // The Sliding White Pill Thumb with subtle iOS shadow & border
-        if (selectedIndex >= 0) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(1f / items.size)
-                    .fillMaxHeight()
-                    .graphicsLayer {
-                        val dir = if (isRtl) -1f else 1f
-                        translationX = dir * animatedIndex * size.width
-                    }
-                    .shadow(
-                        elevation = 2.dp,
-                        shape = RoundedCornerShape(LoonRadii.segmentedThumb),
-                        spotColor = LoonExtraColors.shadowMedium
-                    )
-                    .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
-                    .background(LoonCard)
-                    .border(
-                        0.5.dp,
-                        LoonCardBorder.copy(alpha = 0.6f),
-                        RoundedCornerShape(LoonRadii.segmentedThumb)
-                    )
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(visualHeight)
+                .clip(RoundedCornerShape(LoonRadii.segmented))
+                .background(LoonTertiaryBg)
+                .padding(2.dp)
+        ) {
+            if (selectedIndex >= 0) {
+                SegmentedThumb(
+                    itemCount = items.size,
+                    animatedIndex = animatedIndex,
+                    isRtl = isRtl
+                )
+            }
         }
 
-        // Row of items & separators
         Row(
             modifier = Modifier
                 .fillMaxSize()
+                .padding(horizontal = 2.dp)
                 .selectableGroup(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             items.forEachIndexed { index, item ->
-                val isSelected = index == selectedIndex
-                // Subtle separator divider between unselected adjacent items
-                val showDividerBefore = index > 0 && index != selectedIndex && (index - 1) != selectedIndex
-
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (showDividerBefore) {
-                        Box(
-                            modifier = Modifier
-                                .width(0.8.dp)
-                                .height(12.dp)
-                                .background(LoonTextMuted.copy(alpha = 0.35f))
-                        )
-                    } else if (index > 0) {
-                        Spacer(modifier = Modifier.width(0.8.dp))
+                SegmentedControlItem(
+                    index = index,
+                    isSelected = index == selectedIndex,
+                    showDividerBefore = index > 0 && index != selectedIndex && (index - 1) != selectedIndex,
+                    label = labelProvider(item),
+                    onClick = {
+                        if (index != selectedIndex) {
+                            haptic.selection()
+                            onItemSelected(item)
+                        }
                     }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
-                            .iosFocusRing(RoundedCornerShape(LoonRadii.segmentedThumb))
-                            .selectable(
-                                selected = isSelected,
-                                role = Role.Tab,
-                                onClick = {
-                                    if (index != selectedIndex) {
-                                        haptic.selection()
-                                        onItemSelected(item)
-                                    }
-                                }
-                            )
-                            .padding(vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = labelProvider(item),
-                            color = if (isSelected) LoonTextPrimary else LoonTextSecondary,
-                            style = if (isSelected) {
-                                LoonTextStyles.segmentedLabelStrong()
-                            } else {
-                                LoonTextStyles.segmentedLabel()
-                            },
-                            maxLines = 1
-                        )
-                    }
-                }
+                )
             }
         }
     }
 }
-
-// =============================================================================
-// Authentic Cupertino Alert & Confirm Dialog (270dp iOS Modal Alert)
-// =============================================================================
 
 @Composable
-fun CupertinoAlertDialog(
-    title: String,
-    onDismissRequest: () -> Unit,
-    message: String? = null,
-    confirmText: String = AppStrings.get("confirm", LocalAppLanguage.current),
-    dismissText: String? = AppStrings.get("cancel", LocalAppLanguage.current),
-    isDestructive: Boolean = false,
-    onConfirm: () -> Unit,
-    onDismiss: (() -> Unit)? = onDismissRequest,
-    content: (@Composable ColumnScope.() -> Unit)? = null
+private fun SegmentedThumb(
+    itemCount: Int,
+    animatedIndex: Float,
+    isRtl: Boolean
 ) {
-    val haptic = rememberIosHaptic()
-
-    Dialog(onDismissRequest = onDismissRequest) {
-        Surface(
-            shape = RoundedCornerShape(LoonRadii.dialog),
-            color = LoonCard,
-            border = androidx.compose.foundation.BorderStroke(0.5.dp, LoonCardBorder),
-            modifier = Modifier
-                .widthIn(min = 270.dp, max = 310.dp)
-                .fillMaxWidth(0.85f)
-                .semantics { paneTitle = title }
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Title and message
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(
-                            start = 18.dp,
-                            end = 18.dp,
-                            top = LoonSpacing.xl,
-                            bottom = if (content != null) LoonSpacing.md else 18.dp
-                        ),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = title,
-                        color = LoonTextPrimary,
-                        style = LoonTextStyles.dialogTitle(),
-                        textAlign = TextAlign.Center
-                    )
-
-                    if (!message.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(LoonSpacing.xs))
-                        Text(
-                            text = message,
-                            color = LoonTextSecondary,
-                            style = LoonTextStyles.dialogMessage(),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-
-                    if (content != null) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        content()
-                    }
-                }
-
-                // Horizontal Hairline Divider
-                HorizontalDivider(color = LoonSeparator, thickness = 0.5.dp)
-
-                // Buttons
-                if (dismissText != null && onDismiss != null) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(IntrinsicSize.Min)
-                            .heightIn(min = LoonSizes.touchTargetMin),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Dismiss button (Cancel)
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .heightIn(min = LoonSizes.touchTargetMin)
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                                .iosHighlightPressable {
-                                    haptic.lightTick()
-                                    onDismiss()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = dismissText,
-                                color = LoonInfoText,
-                                style = LoonTextStyles.button(),
-                                textAlign = TextAlign.Center
-                            )
-                        }
-
-                        // Vertical Hairline Divider
-                        Box(
-                            modifier = Modifier
-                                .width(0.5.dp)
-                                .fillMaxHeight()
-                                .background(LoonSeparator)
-                        )
-
-                        // Confirm button
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .heightIn(min = LoonSizes.touchTargetMin)
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                                .iosHighlightPressable {
-                                    haptic.lightTick()
-                                    onConfirm()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = confirmText,
-                                color = if (isDestructive) LoonDangerText else LoonInfoText,
-                                style = LoonTextStyles.button(),
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                } else {
-                    // Single Confirm / Acknowledge button
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = LoonSizes.touchTargetMin)
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                            .iosHighlightPressable {
-                                haptic.lightTick()
-                                onConfirm()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = confirmText,
-                            color = if (isDestructive) LoonDangerText else LoonInfoText,
-                            style = LoonTextStyles.button(),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(1f / itemCount)
+            .fillMaxHeight()
+            .graphicsLayer {
+                val dir = if (isRtl) -1f else 1f
+                translationX = dir * animatedIndex * size.width
             }
+            .shadow(
+                elevation = 2.dp,
+                shape = RoundedCornerShape(LoonRadii.segmentedThumb),
+                spotColor = LoonExtraColors.shadowMedium
+            )
+            .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
+            .background(LoonCard)
+            .border(
+                0.5.dp,
+                LoonCardBorder.copy(alpha = 0.6f),
+                RoundedCornerShape(LoonRadii.segmentedThumb)
+            )
+    )
+}
+
+@Composable
+private fun RowScope.SegmentedControlItem(
+    index: Int,
+    isSelected: Boolean,
+    showDividerBefore: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (showDividerBefore) {
+            Box(
+                modifier = Modifier
+                    .width(0.8.dp)
+                    .height(12.dp)
+                    .background(LoonTextMuted.copy(alpha = 0.35f))
+            )
+        } else if (index > 0) {
+            Spacer(modifier = Modifier.width(0.8.dp))
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(LoonRadii.segmentedThumb))
+                .iosFocusRing(RoundedCornerShape(LoonRadii.segmentedThumb))
+                .selectable(
+                    selected = isSelected,
+                    role = Role.Tab,
+                    onClick = onClick
+                )
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                color = if (isSelected) LoonTextPrimary else LoonTextSecondary,
+                style = LoonTextStyles.segmentedLabel(strong = isSelected),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
 
 // =============================================================================
-// Authentic Cupertino Search Bar (SF-styled 38dp pill input with quick clear)
+// Authentic Cupertino Search Bar (SF-styled pill input with 48dp accessible clear target)
 // =============================================================================
 
 @Composable
@@ -1199,87 +1070,107 @@ fun CupertinoSearchBar(
     leadingIcon: ImageVector = Icons.Default.Search
 ) {
     val haptic = rememberIosHaptic()
+    val visualHeight = (16f * LocalDensity.current.fontScale + 22f).dp.coerceAtLeast(38.dp)
 
-    Surface(
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 38.dp),
-        shape = RoundedCornerShape(10.dp),
-        color = LoonTertiaryBg
+            .heightIn(min = LoonSizes.touchTargetMin),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
+        Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 38.dp)
-                .padding(start = 10.dp, end = if (value.isNotEmpty()) 0.dp else 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .heightIn(min = visualHeight),
+            shape = RoundedCornerShape(10.dp),
+            color = LoonTertiaryBg
         ) {
-            Icon(
-                imageVector = leadingIcon,
-                contentDescription = null,
-                tint = LoonTextSecondary,
-                modifier = Modifier.size(17.dp)
-            )
-
-            Spacer(modifier = Modifier.width(7.dp))
-
-            Box(
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .padding(vertical = 6.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                if (value.isEmpty()) {
-                    Text(
-                        text = placeholder,
-                        color = LoonTextMuted,
-                        fontSize = LoonTypeScale.subhead
-                    )
-                }
-
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = LocalTextStyle.current.copy(
-                        color = LoonTextPrimary,
-                        fontSize = LoonTypeScale.subhead,
-                        fontWeight = FontWeight.Normal
+                    .fillMaxWidth()
+                    .heightIn(min = visualHeight)
+                    .padding(
+                        start = 10.dp,
+                        end = if (value.isNotEmpty()) LoonSizes.touchTargetMin else 10.dp
                     ),
-                    cursorBrush = SolidColor(IosBlue),
-                    modifier = Modifier.fillMaxWidth()
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    tint = LoonTextSecondary,
+                    modifier = Modifier.size(17.dp)
                 )
-            }
-
-            if (value.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(7.dp))
                 Box(
                     modifier = Modifier
-                        .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = 38.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            haptic.lightTick()
-                            onValueChange("")
-                        },
-                    contentAlignment = Alignment.Center
+                        .weight(1f)
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.CenterStart
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .background(LoonTextSecondary.copy(alpha = 0.6f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Clear,
-                            contentDescription = AppStrings.get("clear", LocalAppLanguage.current),
-                            tint = LoonOnAccent,
-                            modifier = Modifier.size(12.dp)
+                    if (value.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            color = LoonTextMuted,
+                            style = LoonTextStyles.search()
                         )
                     }
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        singleLine = true,
+                        textStyle = LoonTextStyles.search().copy(
+                            color = LoonTextPrimary,
+                            fontWeight = FontWeight.Normal
+                        ),
+                        cursorBrush = SolidColor(LoonInfoText),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
+        }
+
+        if (value.isNotEmpty()) {
+            SearchClearButton(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                onClear = {
+                    haptic.lightTick()
+                    onValueChange("")
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchClearButton(
+    modifier: Modifier = Modifier,
+    onClear: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+            .iosFocusRing(RoundedCornerShape(LoonRadii.control))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClear
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(LoonTextSecondary.copy(alpha = 0.6f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Clear,
+                contentDescription = AppStrings.get("clear", LocalAppLanguage.current),
+                tint = LoonOnAccent,
+                modifier = Modifier.size(12.dp)
+            )
         }
     }
 }
@@ -1297,7 +1188,7 @@ fun CupertinoTextField(
     singleLine: Boolean = true,
     maxLines: Int = 1,
     visualTransformation: VisualTransformation = VisualTransformation.None,
-    keyboardOptions: androidx.compose.foundation.text.KeyboardOptions = androidx.compose.foundation.text.KeyboardOptions.Default,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     leadingIcon: (@Composable () -> Unit)? = null,
     trailingIcon: (@Composable () -> Unit)? = null
 ) {
@@ -1309,6 +1200,7 @@ fun CupertinoTextField(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 42.dp)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1325,7 +1217,7 @@ fun CupertinoTextField(
                     Text(
                         text = placeholder,
                         color = LoonTextMuted,
-                        fontSize = LoonTypeScale.subheadLarge
+                        style = LoonTextStyles.input()
                     )
                 }
 
@@ -1336,12 +1228,11 @@ fun CupertinoTextField(
                     maxLines = maxLines,
                     visualTransformation = visualTransformation,
                     keyboardOptions = keyboardOptions,
-                    textStyle = LocalTextStyle.current.copy(
+                    textStyle = LoonTextStyles.input().copy(
                         color = LoonTextPrimary,
-                        fontSize = LoonTypeScale.subheadLarge,
                         fontWeight = FontWeight.Normal
                     ),
-                    cursorBrush = SolidColor(IosBlue),
+                    cursorBrush = SolidColor(LoonInfoText),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -1422,281 +1313,6 @@ fun CupertinoButton(
 }
 
 // =============================================================================
-// Authentic Cupertino Modal Bottom Sheet (16dp squircle, slim capsule grabber, modal nav bar)
-// =============================================================================
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CupertinoModalBottomSheet(
-    onDismissRequest: () -> Unit,
-    modifier: Modifier = Modifier,
-    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-    title: String? = null,
-    doneText: String? = AppStrings.get("action_done", LocalAppLanguage.current),
-    leadingAction: (@Composable () -> Unit)? = null,
-    trailingAction: (@Composable () -> Unit)? = null,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismissRequest,
-        sheetState = sheetState,
-        containerColor = LoonCard,
-        shape = RoundedCornerShape(topStart = LoonRadii.sheet, topEnd = LoonRadii.sheet),
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(top = 8.dp, bottom = 4.dp)
-                    .width(36.dp)
-                    .height(4.5.dp)
-                    .clip(CircleShape)
-                    .background(LoonTextMuted.copy(alpha = 0.28f))
-            )
-        }
-    ) {
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(bottom = 16.dp)
-                .semantics { if (title != null) paneTitle = title }
-        ) {
-            val showNavBar = title != null || doneText != null
-            val hasActions = leadingAction != null || trailingAction != null
-            if (showNavBar || hasActions) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(LoonSizes.touchTargetMin)
-                        .padding(horizontal = LoonSpacing.lg),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier.widthIn(min = LoonSizes.touchTargetMin),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        leadingAction?.invoke()
-                    }
-
-                    if (title != null) {
-                        Text(
-                            text = title,
-                            style = LoonTextStyles.navTitle(),
-                            color = LoonTextPrimary,
-                            maxLines = 1
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier.widthIn(min = LoonSizes.touchTargetMin),
-                        contentAlignment = Alignment.CenterEnd
-                    ) {
-                        if (trailingAction != null) {
-                            trailingAction()
-                        } else if (doneText != null) {
-                            val haptic = rememberIosHaptic()
-                            Box(
-                                modifier = Modifier
-                                    .height(LoonSizes.touchTargetMin)
-                                    .clip(RoundedCornerShape(LoonRadii.control))
-                                    .iosFocusRing(RoundedCornerShape(LoonRadii.control))
-                                    .iosPressable {
-                                        haptic.lightTick()
-                                        onDismissRequest()
-                                    }
-                                    .padding(horizontal = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = doneText,
-                                    color = LoonInfoText,
-                                    style = LoonTextStyles.button()
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            content()
-        }
-    }
-}
-
-// =============================================================================
-// iOS Dynamic Pill HUD / Toast (Top floating island capsule with haptics)
-// =============================================================================
-
-data class CupertinoToastData(
-    val id: Long,
-    val message: String,
-    val icon: ImageVector? = null,
-    val isDestructive: Boolean = false,
-    val durationMs: Long = 2000L
-)
-
-object CupertinoToast {
-    // Monotonic counter: two toasts in the same millisecond must still differ, or the
-    // id-keyed LaunchedEffect in the host would not restart for the second one.
-    private val nextId = java.util.concurrent.atomic.AtomicLong(0)
-    private val _currentToast = MutableStateFlow<CupertinoToastData?>(null)
-    val currentToast: StateFlow<CupertinoToastData?> = _currentToast.asStateFlow()
-
-    fun show(
-        message: String,
-        icon: ImageVector? = null,
-        isDestructive: Boolean = false,
-        durationMs: Long = 2000L
-    ) {
-        _currentToast.value = CupertinoToastData(
-            id = nextId.incrementAndGet(),
-            message = message,
-            icon = icon,
-            isDestructive = isDestructive,
-            durationMs = durationMs
-        )
-    }
-
-    fun dismiss(id: Long? = null) {
-        if (id == null) {
-            _currentToast.value = null
-        } else {
-            val cur = _currentToast.value
-            if (cur != null && cur.id == id) {
-                _currentToast.compareAndSet(cur, null)
-            }
-        }
-    }
-}
-
-@Suppress("unused")
-fun Context.showCupertinoToast(
-    message: String,
-    icon: ImageVector? = null,
-    isDestructive: Boolean = false
-) {
-    CupertinoToast.show(message = message, icon = icon, isDestructive = isDestructive)
-}
-
-/**
- * Top floating pill HUD container adhering to iOS Dynamic Island / Capsule aesthetic.
- */
-@Composable
-fun CupertinoToastHost(
-    modifier: Modifier = Modifier
-) {
-    val toastData by CupertinoToast.currentToast.collectAsState()
-    val haptic = rememberIosHaptic()
-
-    LaunchedEffect(toastData?.id) {
-        val current = toastData ?: return@LaunchedEffect
-        haptic.lightTick()
-        delay(current.durationMs.milliseconds)
-        CupertinoToast.dismiss(current.id)
-    }
-
-    androidx.compose.animation.AnimatedVisibility(
-        visible = toastData != null,
-        enter = androidx.compose.animation.fadeIn(animationSpec = tween(LoonMotion.normalMs)) +
-                androidx.compose.animation.slideInVertically(
-                    initialOffsetY = { -it },
-                    animationSpec = spring(
-                        dampingRatio = LoonMotion.toastDampingRatio,
-                        stiffness = LoonMotion.toastStiffness
-                    )
-                ),
-        exit = androidx.compose.animation.fadeOut(animationSpec = tween(LoonMotion.fastMs)) +
-                androidx.compose.animation.slideOutVertically(
-                    targetOffsetY = { -it },
-                    animationSpec = tween(LoonMotion.fastMs)
-                ),
-        modifier = modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(top = 10.dp)
-            .zIndex(9999f)
-    ) {
-        val data = toastData ?: return@AnimatedVisibility
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = LocalLoonColors.current.card.copy(alpha = 0.94f),
-                border = androidx.compose.foundation.BorderStroke(0.5.dp, LocalLoonColors.current.cardBorder),
-                shadowElevation = 8.dp,
-                modifier = Modifier
-                    .padding(horizontal = 24.dp)
-                    .widthIn(min = 120.dp, max = 340.dp)
-                    .semantics {
-                        // Screen readers announce toasts; the visual pill alone is invisible to them.
-                        liveRegion = if (data.isDestructive) {
-                            LiveRegionMode.Assertive
-                        } else {
-                            LiveRegionMode.Polite
-                        }
-                    }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    val iconVector = data.icon ?: if (data.isDestructive) Icons.Default.Clear else Icons.Default.Check
-                    val iconTint = if (data.isDestructive) LoonDangerText else LoonSuccessText
-                    Icon(
-                        imageVector = iconVector,
-                        contentDescription = null,
-                        tint = iconTint,
-                        modifier = Modifier.size(LoonSizes.iconSmall)
-                    )
-                    Spacer(modifier = Modifier.width(LoonSpacing.sm))
-                    Text(
-                        text = data.message,
-                        color = LocalLoonColors.current.textPrimary,
-                        style = LoonTextStyles.toast(),
-                        maxLines = 2,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-        }
-    }
-}
-
-// =============================================================================
-// Clipboard helper
-//
-// Compose 1.12 deprecated LocalClipboardManager in favour of LocalClipboard, whose
-// setClipEntry is a suspend function. The copy actions all live inside non-suspend
-// click callbacks, so this helper bridges to the platform ClipboardManager without
-// making every call site a coroutine.
-// =============================================================================
-
-/**
- * Copies [text] to the system clipboard.
- *
- * Uses the platform clipboard directly: the Compose [androidx.compose.ui.platform.Clipboard]
- * interface is suspend-based, which cannot be called from the non-suspend click handlers
- * this app uses for its copy actions. [nativeClipboardManager] is the supported way to
- * reach the platform manager from a [androidx.compose.ui.platform.Clipboard].
- */
-@Composable
-fun rememberClipboardCopy(): (String) -> Unit {
-    val nativeClipboard = LocalClipboard.current.nativeClipboardManager
-    return remember(nativeClipboard) {
-        { text: String ->
-            runCatching {
-                nativeClipboard.setText(AnnotatedString(text))
-            }
-        }
-    }
-}
-
-// =============================================================================
 // Shared detail row (label on the left, value + optional copy action on the right)
 //
 // UI_GUIDELINES.md §4.4 forbids a "second Cell": the rules, request-log and DNS inspectors
@@ -1744,13 +1360,14 @@ fun CupertinoDetailRow(
                 Box(
                     modifier = Modifier
                         .sizeIn(minWidth = LoonSizes.touchTargetMin, minHeight = LoonSizes.touchTargetMin)
+                        .iosFocusRing(RoundedCornerShape(LoonRadii.control))
                         .clickable(onClick = onCopy),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
                         contentDescription = AppStrings.get("copy_desc", lang),
-                        tint = IosBlue,
+                        tint = LoonInfoText,
                         modifier = Modifier.size(LoonSizes.iconSmall)
                     )
                 }
@@ -1759,5 +1376,52 @@ fun CupertinoDetailRow(
     }
 }
 
+/**
+ * Shared staggered cross-fade and optional eased size transition for compact status slots,
+ * fading out old content before fading in new content (or snapping when reduced motion is enabled).
+ */
+internal fun AnimatedContentTransitionScope<*>.statusFadeTransform(
+    reduceMotion: Boolean,
+    animateSize: Boolean = true
+): ContentTransform {
+    val content = if (reduceMotion) {
+        EnterTransition.None togetherWith ExitTransition.None
+    } else {
+        fadeIn(
+            tween(
+                durationMillis = LoonMotion.statusFadeInMs,
+                delayMillis = LoonMotion.statusFadeInDelayMs,
+                easing = FastOutSlowInEasing
+            )
+        ) togetherWith fadeOut(
+            tween(
+                durationMillis = LoonMotion.statusFadeOutMs,
+                easing = LinearEasing
+            )
+        )
+    }
+    return if (animateSize) {
+        content.using(
+            SizeTransform(clip = false) { _, _ ->
+                if (reduceMotion) {
+                    snap()
+                } else {
+                    tween(durationMillis = LoonMotion.statusFadeInMs, easing = FastOutSlowInEasing)
+                }
+            }
+        )
+    } else {
+        content.using(SizeTransform(clip = false) { _, _ -> snap() })
+    }
+}
 
-
+/**
+ * Visual states shared by inline speed-test latency indicators across cards and sheets.
+ */
+internal sealed interface LatencySlotState {
+    data object Testing : LatencySlotState
+    data class Measured(val delayMs: Int) : LatencySlotState
+    data object Timeout : LatencySlotState
+    data object Failed : LatencySlotState
+    data object Idle : LatencySlotState
+}

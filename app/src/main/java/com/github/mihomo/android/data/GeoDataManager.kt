@@ -1,13 +1,19 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Proxy
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
@@ -60,17 +66,46 @@ data class GeoFileInfo(
 object GeoDataManager {
 
     /** A geo database below this size is corrupt (real files are megabytes). */
-    private const val MIN_VALID_BYTES = 100L * 1024L
+    internal const val MIN_VALID_BYTES = 100L * 1024L
 
-    private val directClient: OkHttpClient by lazy {
+    /** Upper bound on a geo database stream (50 MiB) so a rogue response cannot exhaust storage/RAM. */
+    internal const val MAX_GEO_FILE_BYTES = 50L * 1024L * 1024L
+
+    private const val HEADER_INSPECT_BYTES = 512
+    private const val MAXMIND_TAIL_SEARCH_BYTES = 128 * 1024
+    private const val PROTOBUF_OUTER_TAG = 0x0A
+    private const val PROTOBUF_INNER_TAG_COUNTRY = 0x0A
+    private const val PROTOBUF_INNER_TAG_DOMAIN = 0x12
+    private const val MAX_VARINT_BYTES = 5
+
+    /** `\xAB\xCD\xEFMaxMind.com` metadata delimiter required near the end of every MaxMind DB. */
+    internal val MAXMIND_METADATA_MARKER = byteArrayOf(
+        0xAB.toByte(),
+        0xCD.toByte(),
+        0xEF.toByte(),
+        'M'.code.toByte(),
+        'a'.code.toByte(),
+        'x'.code.toByte(),
+        'M'.code.toByte(),
+        'i'.code.toByte(),
+        'n'.code.toByte(),
+        'd'.code.toByte(),
+        '.'.code.toByte(),
+        'c'.code.toByte(),
+        'o'.code.toByte(),
+        'm'.code.toByte()
+    )
+
+    private val updateLock = Mutex()
+
+    internal val directClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(180, TimeUnit.SECONDS)
+            .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = true)
             .build()
     }
-
-    /** Fresh clients per port keep proxy settings isolated, mirroring UpdateChecker. */
-    private val proxyClients = java.util.concurrent.ConcurrentHashMap<Int, OkHttpClient>()
 
     /**
      * Lists the known geo databases that currently exist in the core home directory.
@@ -92,37 +127,22 @@ object GeoDataManager {
 
     /**
      * Downloads [which] from the official MetaCubeX release and atomically replaces the
-     * local copy. Direct connection first; when GitHub/CDN is unreachable (the usual
-     * reason a user needs this feature) the download retries through the local mixed
-     * port, reusing the same fallback strategy as [UpdateChecker].
+     * local copy, returning the updated file size in bytes.
      *
-     * Never call this automatically: it is a user-triggered action only.
-     *
-     * The downloaded bytes are validated BEFORE the live file is touched, and written to
-     * a temp file in the same directory so the swap is an atomic rename — a crash mid-way
-     * can only leave the old database or the new one, never a truncated mix.
+     * Direct connection first; when GitHub/CDN is unreachable (or returns a captive-portal
+     * error page) the download retries through the local mixed port, sharing the recyclable
+     * proxy client pool with [UpdateChecker].
      */
-    suspend fun updateGeoFile(context: Context, which: GeoFile): Result<Unit> =
+    suspend fun updateGeoFile(context: Context, which: GeoFile): Result<Long> =
         withContext(Dispatchers.IO) {
-            runCatching {
-                val appContext = context.applicationContext
-                val target = which.fileIn(appContext)
-                val staging = File(target.parentFile, "${which.fileName}.update.tmp")
-                staging.parentFile?.mkdirs()
-
-                val mixedPort = runCatching { SettingsManager(appContext).mixedPort }.getOrDefault(0)
-                val downloaded = tryDownload(directClient, which.downloadUrl, staging)
-                    ?: (if (mixedPort > 0) {
-                        tryDownload(proxyClient(mixedPort), which.downloadUrl, staging)
-                    } else {
-                        null
-                    })
-                    ?: error("download failed via direct connection and local proxy")
-
-                validateDownload(downloaded)
-                atomicReplace(downloaded, target)
-                staging.delete()
-                Unit
+            updateLock.withLock {
+                try {
+                    Result.success(performUpdateGeoFile(context.applicationContext, which))
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (ignored: Exception) {
+                    Result.failure(ignored)
+                }
             }
         }
 
@@ -130,19 +150,49 @@ object GeoDataManager {
     // Internals (kept small and side-effect-light for unit testing)
     // ------------------------------------------------------------------
 
+    private fun performUpdateGeoFile(appContext: Context, which: GeoFile): Long {
+        val target = which.fileIn(appContext)
+        val staging = File(target.parentFile, "${which.fileName}.update.tmp")
+        staging.parentFile?.mkdirs()
+        try {
+            val mixedPort = runCatching { SettingsManager(appContext).mixedPort }.getOrDefault(0)
+            val downloaded = tryDownloadAndValidate(directClient, which, staging)
+                ?: (if (mixedPort in 1..65535) {
+                    tryDownloadAndValidate(proxyClient(mixedPort), which, staging)
+                } else {
+                    null
+                })
+                ?: error("download failed via direct connection and local proxy")
+
+            atomicReplace(downloaded, target)
+            return target.length()
+        } finally {
+            staging.delete()
+        }
+    }
+
     /** The core home directory shared with [GeoFile.fileIn]. */
     internal fun clashHome(context: Context): File =
         context.filesDir.resolve("clash").apply { mkdirs() }
 
-    private fun proxyClient(port: Int): OkHttpClient = proxyClients.getOrPut(port) {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
-            .build()
+    /** Shares the single-active-port proxy client cache with [UpdateChecker]. */
+    internal fun proxyClient(port: Int): OkHttpClient = UpdateChecker.localProxyClient(port)
+
+    private fun tryDownloadAndValidate(
+        client: OkHttpClient,
+        which: GeoFile,
+        staging: File
+    ): File? {
+        val downloaded = tryDownload(client, which.downloadUrl, staging) ?: return null
+        return runCatching {
+            validateDownload(downloaded, which)
+            downloaded
+        }.onFailure {
+            staging.delete()
+        }.getOrNull()
     }
 
-    /** Streams the URL into [staging]; null when the network or the HTTP status failed. */
+    /** Streams the URL into [staging] with a hard byte cap; null when network/HTTP/cap fails. */
     private fun tryDownload(client: OkHttpClient, url: String, staging: File): File? {
         val request = Request.Builder()
             .url(url)
@@ -151,52 +201,206 @@ object GeoDataManager {
         return runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use null
+                val declared = response.body.contentLength()
+                if (declared > MAX_GEO_FILE_BYTES) {
+                    error("geo download exceeds maximum size ($declared > $MAX_GEO_FILE_BYTES)")
+                }
                 response.body.byteStream().use { input ->
                     staging.outputStream().use { output ->
-                        input.copyTo(output, DEFAULT_BUFFER_SIZE)
+                        copyStreamCapped(input, output, MAX_GEO_FILE_BYTES)
                     }
                 }
                 staging
             }
+        }.onFailure {
+            staging.delete()
         }.getOrNull()
     }
 
+    internal fun copyStreamCapped(
+        input: InputStream,
+        output: OutputStream,
+        maxBytes: Long = MAX_GEO_FILE_BYTES
+    ): Long {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > maxBytes) {
+                error("downloaded stream exceeds maximum size of $maxBytes bytes")
+            }
+            output.write(buffer, 0, read)
+        }
+        return total
+    }
+
     /**
-     * Rejects empty/undersized payloads and obvious CDN error pages. A content-type check
-     * is not enough: some CDN edge cases answer 200 with an HTML/JSON error body, and
-     * feeding that to the core would break geo routing until the next config reload.
+     * Rejects empty/undersized/oversized payloads, CDN error pages (even with leading BOM or
+     * whitespace), and files that do not match the expected binary format of [which].
      */
-    private fun validateDownload(file: File) {
+    internal fun validateDownload(file: File, which: GeoFile = GeoFile.GeoSiteDat) {
         if (!file.isFile) error("staged download is missing")
         val size = file.length()
         if (size <= 0L) error("downloaded file is empty")
-        if (size < MIN_VALID_BYTES) error("downloaded file is too small ($size bytes) to be a geo database")
-        val head = ByteArray(16)
-        file.inputStream().use { input ->
-            val read = input.read(head)
-            if (read > 0 && looksLikeErrorPage(head)) {
-                error("downloaded payload looks like an error page, not a geo database")
+        if (size < MIN_VALID_BYTES) {
+            error("downloaded file is too small ($size bytes) to be a geo database")
+        }
+        if (size > MAX_GEO_FILE_BYTES) {
+            error("downloaded file exceeds maximum allowed size ($size bytes)")
+        }
+        val head = readFileHead(file, HEADER_INSPECT_BYTES)
+        if (looksLikeErrorPage(head)) {
+            error("downloaded payload looks like an error page, not a geo database")
+        }
+        when (which) {
+            GeoFile.GeoSiteDat -> if (!hasValidGeoSiteProtobufHeader(head)) {
+                error("downloaded geosite.dat does not have a valid protobuf header")
+            }
+            GeoFile.GeoIpMetadb -> if (!hasMaxMindMetadataMarker(file)) {
+                error("downloaded geoip.metadb is missing the MaxMind DB metadata marker")
             }
         }
     }
 
+    private fun readFileHead(file: File, maxBytes: Int): ByteArray {
+        val buffer = ByteArray(maxBytes)
+        val bytesRead = file.inputStream().use { input ->
+            var offset = 0
+            while (offset < maxBytes) {
+                val read = input.read(buffer, offset, maxBytes - offset)
+                if (read <= 0) break
+                offset += read
+            }
+            offset
+        }
+        return if (bytesRead <= 0) ByteArray(0) else buffer.copyOf(bytesRead)
+    }
+
     /**
-     * True when the payload starts like a text error document (`<` = HTML, `{`/`[` =
-     * JSON). Real geo databases start with binary protobuf or SQLite magic bytes, which
-     * never begin with a printable brace.
+     * True when the payload starts like a text error document (`<` = HTML/XML, `{`/`[` = JSON)
+     * after stripping any leading UTF-8/UTF-16 BOM and ASCII whitespace.
      */
     internal fun looksLikeErrorPage(head: ByteArray): Boolean {
-        val first = head.firstOrNull() ?: return false
-        return first == '<'.code.toByte() || first == '{'.code.toByte() || first == '['.code.toByte()
+        if (head.isEmpty()) return false
+        if (hasValidGeoSiteProtobufHeader(head)) return false
+        val index = skipBomAndWhitespace(head)
+        if (index >= head.size) return true
+        val first = head[index]
+        return first == '<'.code.toByte() ||
+            first == '{'.code.toByte() ||
+            first == '['.code.toByte()
+    }
+
+    private fun skipBomAndWhitespace(bytes: ByteArray): Int {
+        var i = 0
+        while (i < bytes.size) {
+            val bomLen = bomLengthAt(bytes, i)
+            if (bomLen > 0) {
+                i += bomLen
+            } else if (isAsciiWhitespace(bytes[i])) {
+                i++
+            } else {
+                break
+            }
+        }
+        return i
+    }
+
+    private fun bomLengthAt(bytes: ByteArray, offset: Int): Int {
+        val remaining = bytes.size - offset
+        if (hasUtf8Bom(bytes, offset, remaining)) return 3
+        if (hasUtf16Bom(bytes, offset, remaining)) return 2
+        return 0
+    }
+
+    private fun hasUtf8Bom(bytes: ByteArray, offset: Int, remaining: Int): Boolean {
+        if (remaining < 3) return false
+        return bytes[offset] == 0xEF.toByte() &&
+            bytes[offset + 1] == 0xBB.toByte() &&
+            bytes[offset + 2] == 0xBF.toByte()
+    }
+
+    private fun hasUtf16Bom(bytes: ByteArray, offset: Int, remaining: Int): Boolean {
+        if (remaining < 2) return false
+        val b0 = bytes[offset]
+        val b1 = bytes[offset + 1]
+        val isBe = b0 == 0xFE.toByte() && b1 == 0xFF.toByte()
+        val isLe = b0 == 0xFF.toByte() && b1 == 0xFE.toByte()
+        return isBe || isLe
+    }
+
+    private fun isAsciiWhitespace(b: Byte): Boolean =
+        when (b) {
+            ' '.code.toByte(),
+            '\t'.code.toByte(),
+            '\n'.code.toByte(),
+            '\r'.code.toByte() -> true
+            else -> false
+        }
+
+    /**
+     * Validates that [head] begins with a `GeoSiteList` protobuf wire frame:
+     * field 1 length-delimited (`0x0A`), a positive base-128 varint length, and a valid inner
+     * `GeoSite` field tag (`0x0A` for `country_code` or `0x12` for `domain`).
+     */
+    internal fun hasValidGeoSiteProtobufHeader(head: ByteArray): Boolean {
+        if (head.size < 4 || (head[0].toInt() and 0xFF) != PROTOBUF_OUTER_TAG) return false
+        var shift = 0
+        var lengthValue = 0L
+        var pos = 1
+        var terminated = false
+        while (pos < head.size && pos <= MAX_VARINT_BYTES) {
+            val byteVal = head[pos].toInt() and 0xFF
+            lengthValue = lengthValue or ((byteVal and 0x7F).toLong() shl shift)
+            pos++
+            if ((byteVal and 0x80) == 0) {
+                terminated = true
+                break
+            }
+            shift += 7
+        }
+        if (!terminated || lengthValue <= 0L || pos >= head.size) return false
+        val innerTag = head[pos].toInt() and 0xFF
+        return innerTag == PROTOBUF_INNER_TAG_COUNTRY || innerTag == PROTOBUF_INNER_TAG_DOMAIN
+    }
+
+    /**
+     * Validates that [file] contains the MaxMind DB metadata marker (`\xAB\xCD\xEFMaxMind.com`)
+     * within its trailing metadata window, followed by at least one metadata byte.
+     */
+    internal fun hasMaxMindMetadataMarker(file: File): Boolean {
+        if (!file.isFile) return false
+        val length = file.length()
+        if (length <= MAXMIND_METADATA_MARKER.size) return false
+        val tailSize = minOf(length, MAXMIND_TAIL_SEARCH_BYTES.toLong()).toInt()
+        val tail = ByteArray(tailSize)
+        RandomAccessFile(file, "r").use { raf ->
+            raf.seek(length - tailSize)
+            raf.readFully(tail)
+        }
+        val markerIdx = lastIndexOfSubArray(tail, MAXMIND_METADATA_MARKER)
+        return markerIdx >= 0 && (markerIdx + MAXMIND_METADATA_MARKER.size) < tail.size
+    }
+
+    private fun lastIndexOfSubArray(haystack: ByteArray, needle: ByteArray): Int {
+        if (needle.isEmpty() || haystack.size < needle.size) return -1
+        outer@ for (i in (haystack.size - needle.size) downTo 0) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
+            }
+            return i
+        }
+        return -1
     }
 
     /**
      * Replaces [target] with [staged] atomically. `Files.move` with ATOMIC_MOVE is the
      * primary path; some filesystems (older FAT/emulated storage) refuse atomic moves,
-     * so the fallback keeps the update working with a plain rename that is still a
-     * single-syscall replace from the core's point of view.
+     * so the fallback keeps the update working with a plain replace.
      */
-    private fun atomicReplace(staged: File, target: File) {
+    internal fun atomicReplace(staged: File, target: File) {
         val moved = runCatching {
             Files.move(
                 staged.toPath(),
@@ -207,11 +411,20 @@ object GeoDataManager {
             true
         }.getOrElse {
             runCatching {
-                if (target.exists() && !target.delete()) {
-                    error("could not remove the old ${target.name} before replacing it")
-                }
-                staged.renameTo(target)
-            }.getOrDefault(false)
+                Files.move(
+                    staged.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+                true
+            }.getOrElse {
+                runCatching {
+                    if (target.exists() && !target.delete()) {
+                        error("could not remove the old ${target.name} before replacing it")
+                    }
+                    staged.renameTo(target)
+                }.getOrDefault(false)
+            }
         }
         if (!moved || !target.isFile || target.length() == 0L) {
             error("atomic replace of ${target.name} failed")

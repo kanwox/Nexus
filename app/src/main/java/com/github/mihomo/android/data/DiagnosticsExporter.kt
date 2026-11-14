@@ -1,7 +1,12 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
 import android.os.Build
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -39,105 +44,156 @@ object DiagnosticsExporter {
     /** One ordered redaction pass: [regex] is replaced by [replacement] over the whole text. */
     private class Rule(val regex: Regex, val replacement: String)
 
-    private val rules: List<Rule> = listOf(
+    private const val SENSITIVE_KEYS_PATTERN =
+        "access_token|refresh_token|private_key|private-key|passphrase|authorization|" +
+            "auth_token|secret_key|client_secret|api_key|apikey|password|passwd|secret|token|auth|psk|uuid"
+
+    private val httpUrlRegex = Regex("""(?i)\bhttps?://[^\s"'?#]+""")
+    private val mixedPathTokenRegex =
+        Regex("""^(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}$""")
+    private const val BASE64_SECRET_PATTERN =
+        """(?<![A-Za-z0-9+/=_-])(?=[A-Za-z0-9+/=_-]*[A-Z])(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*[0-9])[A-Za-z0-9+/=_-]{32,}"""
+    private val base64SecretRegex = Regex("^$BASE64_SECRET_PATTERN$")
+    private val base64OutsideHttpUrlRegex = Regex("""\b((?i:https?)://[^\s"'?#]+)|($BASE64_SECRET_PATTERN)""")
+
+    private val prePathRules: List<Rule> = listOf(
         // 1. URL userinfo — "user:pass@host" and the password-only form "pass@host"
         //    (trojan/ss URIs) both carry the credential before the '@'. The repetition
-        //    `(?:...@)+` deliberately consumes EVERY '@'-terminated segment so a raw,
-        //    non-URI-encoded '@' inside a password cannot leave a suffix behind.
+        //    `(?:...@)+` deliberately consumes EVERY '@'-terminated segment before the
+        //    authority ends so a raw, non-URI-encoded '@' or '!' inside a password cannot
+        //    leave a suffix behind.
         Rule(
-            Regex("""(?i)\b([a-z][a-z0-9+.-]{1,15}://)(?:[^\s/@]+@)+"""),
+            Regex("""(?i)\b([a-z][a-z0-9+.-]{1,15}://)(?:[^\s/?#@"']+@)+"""),
             "\$1***"
         ),
-        // 2. Sensitive-named query params (anywhere in the text, scheme or not): the name
-        //    is kept (it preserves diagnostic structure) and only the value dies. Long
-        //    alternations are listed first so "signature" is fully matched before "sign"
-        //    could win and leave "ature=x" behind. Core-log fragments like
-        //    "delay?timeout=5000&url=..." carry no scheme, so this is their only anchor.
+        // 2. Proxy deep links without '@host' (e.g. opaque base64 vmess://eyJ..., ss://YWVz...,
+        //    ssr://..., trojan://..., vless://..., hysteria2://..., tuic://...). When '@' was
+        //    present, rule 1 already rewrote the prefix to `scheme://***` and preserved the
+        //    host:port structure; `(?!\*\*\*)` keeps that host:port intact while wiping opaque
+        //    base64 payloads completely.
         Rule(
             Regex(
-                """(?i)([?&](?:access_token|api_key|apikey|signature|refresh_token|password|passwd|secret|token|auth|sign|sig|key|uuid)=)([^&\s"']+)"""
+                """(?i)\b((?:vmess|vless|ss|ssr|trojan|hysteria2|hy2|tuic)://)(?!\*\*\*)[^\s"'?#]+(?:\?[^\s"'#]*)?(?:#[^\s"']*)?"""
             ),
             "\$1***"
         ),
-        // 3. The ENTIRE query of any scheme URL is wiped: subscription/API links hide
-        //    tokens in params whose names are not in rule 2's list, and the host+path
-        //    (which is what a diagnosis actually needs) survives. Extending this beyond
-        //    http(s) covers hysteria2/tuic/clash deep links which also carry secrets.
+        // 3a. Subscription path tokens under common panel routes (`/link/<token>`, `/sub/<token>`,
+        //     `/subscribe/<token>`, `/s/<token>`, `/token/<token>`, `/rss/<token>`).
         Rule(
-            Regex("""(?i)\b([a-z][a-z0-9+.-]{1,15}://[^\s?]*)\?[^\s"']*"""),
+            Regex("""(?i)(/(?:link|sub|subscribe|s|token|rss)/)[A-Za-z0-9._~-]{6,}"""),
+            "\$1***"
+        )
+    )
+
+    private val postPathRules: List<Rule> = listOf(
+        // 4. Sensitive-named query params (anywhere in the text, scheme or not): the name
+        //    is kept (it preserves diagnostic structure) and only the value dies. Long
+        //    alternations are listed first so "signature" is fully matched before "sign"
+        //    could win and leave "ature=x" behind.
+        Rule(
+            Regex(
+                """(?i)([?&](?:access_token|refresh_token|private_key|private-key|passphrase|signature|auth_token|secret_key|client_secret|api_key|apikey|password|passwd|secret|token|auth|sign|sig|psk|key|uuid)=)([^&\s"']+)"""
+            ),
+            "\$1***"
+        ),
+        // 5. The ENTIRE query of any scheme URL is wiped: subscription/API links hide
+        //    tokens in params whose names are not in rule 4's list, and the host+path
+        //    (which is what a diagnosis actually needs) survives.
+        Rule(
+            Regex("""(?i)\b([a-z][a-z0-9+.-]{1,15}://[^\s?"']*)\?[^\s"']*"""),
             "\$1?***"
         ),
-        // 4. Percent-encoded http(s) URLs inside query values / logs ("%3A%2F%2F…"):
-        //    rule 3 cannot see them (no literal "://"), yet they are the most common way
+        // 6. Percent-encoded http(s) URLs inside query values / logs ("%3A%2F%2F…"):
+        //    rule 5 cannot see them (no literal "://"), yet they are a common way
         //    a subscription URL with its token appears in core logs.
         Rule(
             Regex("""(?i)https?%3a%2f%2f[^\s&"']+"""),
             "***"
         ),
-        // 5. Bearer credentials. The value must be ≥8 token-ish characters so prose like
+        // 7. Bearer credentials. The value must be >=8 token-ish characters so prose like
         //    "bearer token required" survives; "***" itself is not in the charset, so the
         //    rule is idempotent.
         Rule(
-            Regex("""(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"""),
+            Regex("""(?i)\bbearer\s+[A-Za-z0-9._~+/=!@-]{8,}"""),
             "Bearer ***"
         ),
-        // 6. JSON credential fields ("secret": …, "token": …, "uuid": …). The regex stops
-        //    at the first unescaped quote; a JSON *object* value (no opening quote) does
-        //    not match, so structured sub-objects are not clobbered.
-        Rule(
-            Regex("""(?i)("(?:secret|password|passwd|token|authorization|auth|uuid)"\s*:\s*")[^"]*(")"""),
-            "\$1***\$2"
-        ),
-        // 7. Bare credential assignments in log text ("secret: x", "password=x"). Only
-        //    values of ≥8 credential-charset characters die — that keeps words like
-        //    "none" or "failed" readable while still catching the controller secret,
-        //    which is a 32-char hex string with no dashes and no other anchor.
+        // 8. HTTP Basic credentials (`Basic <base64>`). Uses case-sensitive upper/lower
+        //    checks on the token so base64 payloads (which contain digits/+/=/ or internal
+        //    uppercase letters) match while English prose like "Basic auth required" stays.
         Rule(
             Regex(
-                """(?i)\b(secret|password|passwd|token|auth|authorization|apikey|api_key)\b(\s*[=:]\s*)[A-Za-z0-9+/=_-]{8,}"""
+                """\b(?i:basic)\s+(?:(?=[A-Za-z0-9+/=]*[0-9+/=])[A-Za-z0-9+/=]{4,}|(?=[A-Za-z0-9+/]+[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/=]{4,})"""
+            ),
+            "Basic ***"
+        ),
+        // 9. Short & standard JWTs (three dot-separated base64url segments starting with
+        //    `eyJ`, the base64url encoding of `{"`). Runs after rule 7 so `Bearer <jwt>`
+        //    becomes `Bearer ***`, while standalone JWTs become `***`.
+        Rule(
+            Regex("""\beyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}"""),
+            "***"
+        ),
+        // 10. JSON credential fields ("secret": "…", "password": "…", "api_key": "…", etc.).
+        //     Handles escaped quotes (`\"`) as well as `!` and `@` inside the string value.
+        Rule(
+            Regex("""(?i)("(?:$SENSITIVE_KEYS_PATTERN)"\s*:\s*")(?:\\.|[^"\\])+(")"""),
+            "\$1***\$2"
+        ),
+        // 11. Quoted YAML / log credential assignments (`password: "p@ss!\"word"` or
+        //     `psk: 'secret!@#'`).
+        Rule(
+            Regex("""(?i)\b($SENSITIVE_KEYS_PATTERN)\b(\s*[=:]\s*")(?:\\.|[^"\\])+(")"""),
+            "\$1\$2***\$3"
+        ),
+        Rule(
+            Regex("""(?i)\b($SENSITIVE_KEYS_PATTERN)\b(\s*[=:]\s*')(?:\\.|[^'\\])+(')"""),
+            "\$1\$2***\$3"
+        ),
+        // 12. Bare (unquoted) credential assignments in YAML/log text ("secret: x",
+        //     "password=x", "psk: x", "api_key=x"). Values of >=8 credential characters
+        //     or >=4 characters containing `!`, `@`, or an embedded `"` / `\"` are masked,
+        //     keeping short prose words like "password: none" readable and never consuming
+        //     a closing JSON quote.
+        Rule(
+            Regex(
+                """(?i)\b($SENSITIVE_KEYS_PATTERN)\b(\s*[=:]\s*)(?!\*\*\*)(?:(?=(?:\\\\|\\["']|[A-Za-z0-9+/=_!@#$%^&~.-]|["'](?=[A-Za-z0-9+/=_!@#$%^&~.-]))*[!@"'])(?:\\\\|\\["']|[A-Za-z0-9+/=_!@#$%^&~.-]|["'](?=[A-Za-z0-9+/=_!@#$%^&~.-])){4,}|(?:\\\\|\\["']|[A-Za-z0-9+/=_!@#$%^&~.-]|["'](?=[A-Za-z0-9+/=_!@#$%^&~.-])){8,})"""
             ),
             "\$1\$2***"
         ),
-        // 8. "sk-" style API keys. The charset is widened with "_" and "-" because real
-        //    provider keys contain them; ≥16 chars avoids eating ordinary node names
-        //    that merely start with "sk-".
+        // 13. "sk-" style API keys.
         Rule(
             Regex("""(?i)\bsk-[A-Za-z0-9_-]{16,}"""),
             "***"
         ),
-        // 9. Standard 8-4-4-4-12 UUIDs (VMess/VLess "uuid" credentials, connection ids).
-        //    Lookarounds anchored on the hex/dash charset prevent matching a UUID-shaped
-        //    prefix of a longer identifier. Trade-off (accepted): core connection ids are
-        //    UUIDs and stop being correlatable across exports — the bundle carries no
-        //    per-connection records anyway.
+        // 14. Standard 8-4-4-4-12 UUIDs (VMess/VLess "uuid" credentials, connection ids).
         Rule(
             Regex(
                 """(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"""
             ),
             "***"
-        ),
-        // 10. Base64-style secrets: ≥32 chars of the base64 charset containing upper AND
-        //     lower AND digits. Lowercase-only hex hashes (geo file checksums, sha256) do
-        //     NOT match and stay readable — that exception is intentional and documented:
-        //     hashes verify artifact integrity and are not credentials.
+        )
+    )
+
+    // Rules 16-18 run after Base64 secret redaction so IP hosts inside URLs still get masked.
+    private val ipAddressRules: List<Rule> = listOf(
+        // 16. IPv6 addresses (full 8-hextet, compressed `::`, and IPv4-mapped/embedded IPv6,
+        //     with optional `%zone`). Loopback `::1` is exempt (like `127.0.0.1`), and
+        //     alpha/colon lookarounds preserve timestamps (`22:15:00+08:00`) and ports.
         Rule(
             Regex(
-                """(?<![A-Za-z0-9+/=_-])(?=[A-Za-z0-9+/=_-]*[A-Z])(?=[A-Za-z0-9+/=_-]*[a-z])(?=[A-Za-z0-9+/=_-]*[0-9])[A-Za-z0-9+/=_-]{32,}"""
+                """(?<![0-9A-Za-z:])(?!::1(?![0-9A-Fa-f:]))(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:(?:[0-9A-Fa-f]{1,4}:){6}|(?:(?:[0-9A-Fa-f]{1,4}:){1,5}|:):(?:[0-9A-Fa-f]{1,4}:)?)(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9A-Fa-f]{1,4}:){1,6}:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,5})?|::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4}){0,6}))(?:%[0-9A-Za-z._-]+)?(?![0-9A-Za-z:])"""
             ),
-            "***"
+            "<ipv6>"
         ),
-        // 11. RFC1918 private ranges → <lan-ip>. The lookbehind/lookahead anchored on
-        //     digits and dots stop "10.0.0.1" from matching inside "110.0.0.1" and stop a
-        //     dotted quad from being matched partially inside a longer dotted run.
+        // 17. RFC1918 private ranges -> <lan-ip>.
         Rule(
             Regex(
                 """(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])"""
             ),
             "<lan-ip>"
         ),
-        // 12. Every other public IPv4 → <ip> (ports survive because only the dotted quad
-        //     is consumed). The whole loopback /8 is exempt: 127.0.0.1:9090 is exactly the
-        //     "is the controller reachable" fact a diagnosis needs and it is not sensitive.
+        // 18. Every other public IPv4 -> <ip> (ports survive because only the dotted quad
+        //     is consumed). The whole loopback /8 is exempt.
         Rule(
             Regex("""(?<![\d.])(?!127\.)(?:\d{1,3}\.){3}\d{1,3}(?![\d.])"""),
             "<ip>"
@@ -146,20 +202,57 @@ object DiagnosticsExporter {
 
     /**
      * Redacts credentials and location hints from [text]. Pure and idempotent — applying
-     * it twice yields the same output as applying it once (every replacement string is
-     * either outside the rule's own value charset or normalized to itself).
-     *
-     * Known, deliberate limits (kept because a wrong regex here would destroy the
-     * diagnostic value of timestamps and checksums): compressed IPv6 is not covered and
-     * lowercase-only hex hashes are preserved by design — see rule 10.
+     * it twice yields the same output as applying it once.
      */
     fun redact(text: String): String {
         var current = text
-        for (rule in rules) {
+        for (rule in prePathRules) {
+            current = rule.regex.replace(current, rule.replacement)
+        }
+        current = redactUrlPathTokens(current)
+        for (rule in postPathRules) {
+            current = rule.regex.replace(current, rule.replacement)
+        }
+        current = redactBase64SecretsOutsideUrls(current)
+        for (rule in ipAddressRules) {
             current = rule.regex.replace(current, rule.replacement)
         }
         return current
     }
+
+    /**
+     * Rule 3b: replaces >=16-char mixed alphanumeric subscription token path segments inside
+     * http(s) URLs in a single idempotent pass.
+     */
+    private fun redactUrlPathTokens(text: String): String =
+        httpUrlRegex.replace(text) { match ->
+            val url = match.value
+            val schemeEnd = url.indexOf("://")
+            val pathStart = url.indexOf('/', schemeEnd + 3)
+            if (pathStart < 0 || pathStart >= url.length - 1) {
+                url
+            } else {
+                val authority = url.substring(0, pathStart)
+                val path = url.substring(pathStart + 1)
+                val redactedPath = path.split('/').joinToString("/") { segment ->
+                    if (mixedPathTokenRegex.matches(segment) || base64SecretRegex.matches(segment)) {
+                        "***"
+                    } else {
+                        segment
+                    }
+                }
+                "$authority/$redactedPath"
+            }
+        }
+
+    /**
+     * Rule 15: masks >=32-char mixed-case Base64 secrets while leaving multi-segment http(s)
+     * URLs (already filtered segment-by-segment in [redactUrlPathTokens]) untouched.
+     */
+    private fun redactBase64SecretsOutsideUrls(text: String): String =
+        base64OutsideHttpUrlRegex.replace(text) { match ->
+            match.groups[1]?.value ?: "***"
+        }
 
     // ---------------------------------------------------------------------------
     // Bundle assembly
@@ -185,9 +278,9 @@ object DiagnosticsExporter {
      */
     fun buildDiagnosticsJson(context: Context): String {
         val appContext = context.applicationContext
-        val vpnState = runCatching {
+        val vpnState = safeOrNull {
             com.github.mihomo.android.service.MihomoVpnService.vpnState.value
-        }.getOrNull()
+        }
         val root = buildJsonObject {
             put("generatedAt", isoNow())
             put("app", buildJsonObject {
@@ -203,39 +296,30 @@ object DiagnosticsExporter {
                 put("abis", Build.SUPPORTED_ABIS.joinToString(","))
             })
             put("vpn", buildJsonObject {
-                put(
-                    "status",
-                    vpnState?.status?.name ?: "UNKNOWN"
-                )
+                put("status", vpnState?.status?.name ?: "UNKNOWN")
                 put("coreVersion", redact(vpnState?.coreVersion.orEmpty()))
             })
             put("core", buildJsonObject {
-                put("apiVersion", redact(runCatching { MihomoApi.version() }.getOrNull() ?: "unavailable"))
+                put("apiVersion", redact(safeOrNull { MihomoApi.version() } ?: "unavailable"))
                 put("nativeVersion", redact(com.github.mihomo.android.core.ClashCore.getCoreVersion()))
             })
             put("runtime", buildJsonObject {
                 put("tunnelMode", redact(SettingsManager(appContext).tunnelMode))
-                put("activeConnections", runCatching { RequestRepository.activeCountFlow.value }.getOrDefault(0))
-                put(
-                    "proxyProviderCount",
-                    runCatching { MihomoApi.proxyProviders().size }.getOrDefault(-1)
-                )
-                put(
-                    "ruleProviderCount",
-                    runCatching { MihomoApi.ruleProviders().size }.getOrDefault(-1)
-                )
+                put("activeConnections", safeOrNull { RequestRepository.activeCountFlow.value } ?: 0)
+                put("proxyProviderCount", safeOrNull { MihomoApi.proxyProviders().size } ?: -1)
+                put("ruleProviderCount", safeOrNull { MihomoApi.ruleProviders().size } ?: -1)
             })
             put("recentLogs", buildJsonArray {
-                runCatching { LogRepository.logsFlow.value.takeLast(LOG_TAIL_COUNT) }
-                    .getOrDefault(emptyList())
-                    .forEach { entry ->
-                        add(buildJsonObject {
-                            put("time", isoOf(entry.timestamp))
-                            put("level", entry.level)
-                            put("count", entry.count)
-                            put("message", redact(entry.message))
-                        })
-                    }
+                val tailLogs = safeOrNull { LogRepository.logsFlow.value.takeLast(LOG_TAIL_COUNT) }
+                    ?: emptyList()
+                tailLogs.forEach { entry ->
+                    add(buildJsonObject {
+                        put("time", isoOf(entry.timestamp))
+                        put("level", entry.level)
+                        put("count", entry.count)
+                        put("message", redact(entry.message))
+                    })
+                }
             })
         }
         return redact(prettyJson.encodeToString(JsonObject.serializer(), root))
@@ -249,43 +333,51 @@ object DiagnosticsExporter {
      * main thread (it does disk and possibly controller I/O).
      */
     suspend fun exportDiagnostics(context: Context): DiagnosticsExportResult =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val appContext = context.applicationContext
-            runCatching {
-                val dir = File(appContext.cacheDir, "diagnostics").apply { mkdirs() }
-                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                val target = File(dir, "diag-$stamp.json")
-                val staged = File(dir, "diag-$stamp.json.tmp")
-                staged.writeText(buildDiagnosticsJson(appContext), Charsets.UTF_8)
-                if (target.exists() && !target.delete()) {
-                    // Same-second collision with an earlier export; losing the old file is
-                    // fine, but renameTo would silently fail, so say so.
-                    staged.delete()
-                    error("could not replace an existing diagnostics export with the same timestamp")
-                }
-                check(staged.renameTo(target)) { "rename of the staged diagnostics file failed" }
-                pruneOldExports(dir)
-                DiagnosticsExportResult.Success(target, target.length())
-            }.getOrElse {
-                DiagnosticsExportResult.Failure(redact(it.message ?: "diagnostics export failed"), it)
+        withContext(Dispatchers.IO) {
+            exportDiagnosticsSync(context.applicationContext)
+        }
+
+    private fun exportDiagnosticsSync(appContext: Context): DiagnosticsExportResult =
+        try {
+            val dir = File(appContext.cacheDir, "diagnostics").apply { mkdirs() }
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            val target = File(dir, "diag-$stamp.json")
+            val staged = File(dir, "diag-$stamp.json.tmp")
+            staged.writeText(buildDiagnosticsJson(appContext), Charsets.UTF_8)
+            if (target.exists() && !target.delete()) {
+                staged.delete()
+                error("could not replace an existing diagnostics export with the same timestamp")
             }
+            check(staged.renameTo(target)) { "rename of the staged diagnostics file failed" }
+            pruneOldExports(dir)
+            DiagnosticsExportResult.Success(target, target.length())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DiagnosticsExportResult.Failure(redact(e.message ?: "diagnostics export failed"), e)
         }
 
     // ---------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------
 
-    private fun installedVersionName(context: Context): String = runCatching {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName
-    }.getOrNull() ?: "unknown"
+    private inline fun <T> safeOrNull(block: () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
 
-    private fun installedVersionCode(context: Context): Long = runCatching {
+    private fun installedVersionName(context: Context): String = safeOrNull {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+    } ?: "unknown"
+
+    private fun installedVersionCode(context: Context): Long = safeOrNull {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
-        // versionCode as a plain Int field is deprecated since API 28; the deprecation
-        // warning on the fallback branch is expected — it only executes below P.
         @Suppress("DEPRECATION")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
-    }.getOrDefault(-1L)
+    } ?: -1L
 
     private fun isoNow(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
@@ -295,7 +387,7 @@ object DiagnosticsExporter {
 
     /** Keeps only the newest [MAX_EXPORTS] bundles; never throws. */
     private fun pruneOldExports(dir: File) {
-        runCatching {
+        safeOrNull {
             dir.listFiles { file -> file.isFile && file.name.startsWith("diag-") }
                 ?.sortedByDescending { it.name }
                 ?.drop(MAX_EXPORTS)

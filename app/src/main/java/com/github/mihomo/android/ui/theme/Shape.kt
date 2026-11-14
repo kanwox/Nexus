@@ -167,91 +167,41 @@ private fun buildContinuousRoundedRectPath(
     val blP = computeCornerParams(bl, maxRadius)
 
     return Path().apply {
-        // Start on top edge after top-left corner
         moveTo(tlP.d0, 0f)
-
-        // Top edge to top-right corner
         lineTo(w - trP.d0, 0f)
-        if (tr > 0f) {
-            cubicTo(
-                w - trP.c1a, 0f,
-                w - trP.c1b, 0f,
-                w - trP.p1x, trP.p1y
-            )
-            cubicTo(
-                w - trP.c2a, trP.c2b,
-                w - trP.c2b, trP.c2a,
-                w - trP.p1y, trP.p1x
-            )
-            cubicTo(
-                w, trP.c1b,
-                w, trP.c1a,
-                w, trP.d0
-            )
-        }
-
-        // Right edge to bottom-right corner
+        if (tr > 0f) addTopRightCorner(w, trP)
         lineTo(w, h - brP.d0)
-        if (br > 0f) {
-            cubicTo(
-                w, h - brP.c1a,
-                w, h - brP.c1b,
-                w - brP.p1y, h - brP.p1x
-            )
-            cubicTo(
-                w - brP.c2b, h - brP.c2a,
-                w - brP.c2a, h - brP.c2b,
-                w - brP.p1x, h - brP.p1y
-            )
-            cubicTo(
-                w - brP.c1b, h,
-                w - brP.c1a, h,
-                w - brP.d0, h
-            )
-        }
-
-        // Bottom edge to bottom-left corner
+        if (br > 0f) addBottomRightCorner(w, h, brP)
         lineTo(blP.d0, h)
-        if (bl > 0f) {
-            cubicTo(
-                blP.c1a, h,
-                blP.c1b, h,
-                blP.p1x, h - blP.p1y
-            )
-            cubicTo(
-                blP.c2a, h - blP.c2b,
-                blP.c2b, h - blP.c2a,
-                blP.p1y, h - blP.p1x
-            )
-            cubicTo(
-                0f, h - blP.c1b,
-                0f, h - blP.c1a,
-                0f, h - blP.d0
-            )
-        }
-
-        // Left edge to top-left corner
+        if (bl > 0f) addBottomLeftCorner(h, blP)
         lineTo(0f, tlP.d0)
-        if (tl > 0f) {
-            cubicTo(
-                0f, tlP.c1a,
-                0f, tlP.c1b,
-                tlP.p1y, tlP.p1x
-            )
-            cubicTo(
-                tlP.c2b, tlP.c2a,
-                tlP.c2a, tlP.c2b,
-                tlP.p1x, tlP.p1y
-            )
-            cubicTo(
-                tlP.c1b, 0f,
-                tlP.c1a, 0f,
-                tlP.d0, 0f
-            )
-        }
-
+        if (tl > 0f) addTopLeftCorner(tlP)
         close()
     }
+}
+
+private fun Path.addTopRightCorner(w: Float, p: CornerParams) {
+    cubicTo(w - p.c1a, 0f, w - p.c1b, 0f, w - p.p1x, p.p1y)
+    cubicTo(w - p.c2a, p.c2b, w - p.c2b, p.c2a, w - p.p1y, p.p1x)
+    cubicTo(w, p.c1b, w, p.c1a, w, p.d0)
+}
+
+private fun Path.addBottomRightCorner(w: Float, h: Float, p: CornerParams) {
+    cubicTo(w, h - p.c1a, w, h - p.c1b, w - p.p1y, h - p.p1x)
+    cubicTo(w - p.c2b, h - p.c2a, w - p.c2a, h - p.c2b, w - p.p1x, h - p.p1y)
+    cubicTo(w - p.c1b, h, w - p.c1a, h, w - p.d0, h)
+}
+
+private fun Path.addBottomLeftCorner(h: Float, p: CornerParams) {
+    cubicTo(p.c1a, h, p.c1b, h, p.p1x, h - p.p1y)
+    cubicTo(p.c2a, h - p.c2b, p.c2b, h - p.c2a, p.p1y, h - p.p1x)
+    cubicTo(0f, h - p.c1b, 0f, h - p.c1a, 0f, h - p.d0)
+}
+
+private fun Path.addTopLeftCorner(p: CornerParams) {
+    cubicTo(0f, p.c1a, 0f, p.c1b, p.p1y, p.p1x)
+    cubicTo(p.c2b, p.c2a, p.c2a, p.c2b, p.p1x, p.p1y)
+    cubicTo(p.c1b, 0f, p.c1a, 0f, p.d0, 0f)
 }
 
 /**

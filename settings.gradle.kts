@@ -33,17 +33,11 @@ dependencyResolutionManagement {
         }
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
     }
 }
 
 // Gradle dependency verification: every resolved artifact is checked against a
-// pinned SHA-256 in gradle/verification-metadata.xml. JitPack builds artifacts
-// from GitHub sources on demand, which is a materially weaker trust anchor than
-// Maven Central — without this, a compromised upstream lands in the APK silently.
-//
-// Gradle 9 moved this off the Settings `dependencyVerification { }` block: the
-// mode is now a per-configuration switch on ResolutionStrategy, and the metadata
-// file itself carries the trusted keys. The switch lives in app/build.gradle.kts.
+// pinned SHA-256 in gradle/verification-metadata.xml whenever that file exists,
+// guarding against compromised or tampered upstream artifacts.
 rootProject.name = "Mihomo"
 include(":app")

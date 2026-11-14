@@ -278,4 +278,31 @@ class ConfigScriptEngineTest {
             ConfigScriptEngine.normalizeYamlData(parsed)
         }
     }
+
+    @Test
+    fun `executeWithQuickJS returns null on promise or null output so caller does not count applied`() = runBlocking {
+        val logSink = mutableListOf<String>()
+        val inputJson = """{"proxies":[{"name":"n1","type":"ss"}],"rules":["MATCH,DIRECT"]}"""
+
+        val promiseOut = ConfigScriptSupport.executeWithQuickJS(
+            code = "function main(c) { return Promise.resolve(c); }",
+            jsonStr = inputJson,
+            scriptName = "async.js",
+            timeoutMs = 5000L,
+            logSink = logSink
+        )
+        assertNull(promiseOut)
+        assertTrue(logSink.any { it.contains("Promise") })
+
+        logSink.clear()
+        val nullOut = ConfigScriptSupport.executeWithQuickJS(
+            code = "function main(c) { return null; }",
+            jsonStr = inputJson,
+            scriptName = "noop.js",
+            timeoutMs = 5000L,
+            logSink = logSink
+        )
+        assertNull(nullOut)
+        assertTrue(logSink.any { it.contains("[WARN]") })
+    }
 }

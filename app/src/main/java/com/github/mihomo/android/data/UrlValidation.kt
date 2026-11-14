@@ -12,6 +12,7 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.ProtocolException
 import java.net.UnknownHostException
+import java.util.Locale
 
 private const val MAX_REDIRECT_HOPS = 20
 private const val IPV4_OCTET_COUNT = 4
@@ -180,7 +181,7 @@ private fun isDisallowedEmbeddedIpv4(embedded: Inet4Address): Boolean =
  */
 internal fun requireSecureRemoteUrl(url: String, allowPrivateHosts: Boolean = true) {
     val trimmed = url.trim()
-    val scheme = trimmed.substringBefore("://", "").lowercase()
+    val scheme = trimmed.substringBefore("://", "").lowercase(Locale.ROOT)
     if (scheme != "https" && scheme != "http") {
         blockSsrf("不支持的地址协议：${redactUrl(trimmed)}")
     }
@@ -206,7 +207,7 @@ private fun validateParsedHost(
     allowPrivateHosts: Boolean,
     originalUrl: String
 ) {
-    val cleanHost = parsedHost.trimEnd('.').lowercase()
+    val cleanHost = parsedHost.trimEnd('.').lowercase(Locale.ROOT)
     if (cleanHost.isEmpty() || isNonStandardNumericIpv4(cleanHost)) {
         blockSsrf("不允许的地址：${redactUrl(originalUrl)}")
     }
@@ -240,7 +241,7 @@ private fun extractRawHost(authority: String): String {
         hostPort.substringAfter('[').substringBefore(']')
     } else {
         hostPort.substringBefore(':')
-    }.trimEnd('.').lowercase()
+    }.trimEnd('.').lowercase(Locale.ROOT)
 }
 
 /**
@@ -250,7 +251,7 @@ private fun extractRawHost(authority: String): String {
  * Hostnames are NOT resolved via DNS here; DNS resolution checks happen in [createSafeDns].
  */
 internal fun isPrivateNetworkHost(host: String): Boolean {
-    val clean = host.trim().trim('[', ']').trimEnd('.').lowercase()
+    val clean = host.trim().trim('[', ']').trimEnd('.').lowercase(Locale.ROOT)
     val localName = clean == "localhost" || clean.endsWith(".localhost") || clean.endsWith(".local")
     return when {
         clean.isEmpty() -> false
@@ -289,7 +290,7 @@ private fun formatRedactedHttpUrl(parsed: HttpUrl): String {
 }
 
 private fun redactOpaqueSchemeUrl(trimmed: String): String {
-    val scheme = trimmed.substringBefore("://").lowercase()
+    val scheme = trimmed.substringBefore("://").lowercase(Locale.ROOT)
     val afterScheme = trimmed.substringAfter("://")
     val authority = afterScheme.substringBefore('/').substringBefore('?').substringBefore('#')
     val cleanAuthority = authority.substringAfterLast('@')
@@ -403,7 +404,7 @@ private fun isNonStandardNumericIpv4(rawHost: String): Boolean {
 
 private fun isNumericIpv4Component(part: String): Boolean {
     if (part.isEmpty()) return false
-    val lower = part.lowercase()
+    val lower = part.lowercase(Locale.ROOT)
     return if (lower.startsWith(HEX_PREFIX)) {
         lower.length > HEX_PREFIX.length && lower.drop(HEX_PREFIX.length).all {
             it in '0'..'9' || it in 'a'..'f'

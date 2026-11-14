@@ -1,13 +1,15 @@
 package com.github.mihomo.android.data
 
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
@@ -17,8 +19,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.io.IOException
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -26,8 +31,21 @@ import java.util.concurrent.TimeUnit
  * Picks and owns the loopback address pair for the core's external-controller. The values
  * are generated once per process and injected into the runtime config header, so every
  * config load (initial or reload) brings the REST API up with the same credentials.
+ *
+ * Because the Go core binds the port inside `Bridge.nativeLoad` after config synthesis,
+ * a narrow TOCTOU window exists between probing a port and Go listening on it. [acquire]
+ * therefore avoids false-positive `TIME_WAIT` probes (`reuseAddress = false`), verifies an
+ * already-selected port against the running controller on subsequent calls, rotates to a
+ * fresh port if another process claimed it, and exposes [reacquire] for bind-failure retry.
  */
 object ApiController {
+    private const val TAG = "ApiController"
+    private const val PORT_RANGE_START = 9090
+    private const val PORT_RANGE_END = 9199
+    private const val PROBE_TIMEOUT_MS = 300L
+    private const val MIN_PORT = 1
+    private const val MAX_PORT = 65535
+
     @Volatile
     var port: Int = -1
         private set
@@ -39,51 +57,165 @@ object ApiController {
     val isReady: Boolean
         get() = port > 0 && secret.isNotEmpty()
 
-    /** Probes a free loopback port once; later calls are no-ops so reloads keep the same API. */
+    @Volatile
+    internal var portProbeOverride: ((Int) -> Boolean)? = null
+
+    @Volatile
+    internal var ownControllerVerifierOverride: ((Int, String) -> Boolean)? = null
+
+    @Volatile
+    internal var ephemeralPortOverride: (() -> Int?)? = null
+
+    private val probeClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .callTimeout(PROBE_TIMEOUT_MS * 2, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    /**
+     * Probes a free loopback port once; later calls verify the active port is still either free
+     * or served by our own Mihomo controller, rotating automatically if another process stole it.
+     */
     @Synchronized
     fun acquire(): Boolean {
-        if (isReady) return true
-        // A wider window makes a silent "controller disabled" state unlikely when other
-        // local tools already hold one of the usual Clash ports.
-        for (candidate in 9090..9199) {
-            runCatching {
-                ServerSocket(candidate, 1, InetAddress.getByName("127.0.0.1")).use { }
-            }.onSuccess {
-                port = candidate
-                secret = UUID.randomUUID().toString().replace("-", "")
-                return true
+        if (isReady) {
+            val stillAvailable = isPortFree(port) || isOwnControllerListening(port, secret)
+            if (stillAvailable) return true
+            Log.w(TAG, "Controller port $port is occupied by another listener; acquiring a replacement")
+            invalidateLocked()
+        }
+        return acquireFreshPort(excludedPort = -1)
+    }
+
+    /** Forces probing a fresh loopback port (e.g., when core startup failed to bind [port]). */
+    @Synchronized
+    fun reacquire(): Boolean {
+        val previousPort = port
+        invalidateLocked()
+        return acquireFreshPort(excludedPort = previousPort)
+    }
+
+    /** Sets test controller credentials, or resets all test state/overrides when [testPort] <= 0. */
+    @Synchronized
+    internal fun configureForTest(testPort: Int = -1, testSecret: String = "") {
+        if (testPort <= 0) {
+            invalidateLocked()
+            portProbeOverride = null
+            ownControllerVerifierOverride = null
+            ephemeralPortOverride = null
+        } else {
+            port = testPort
+            secret = testSecret
+        }
+    }
+
+    private fun invalidateLocked() {
+        port = -1
+        secret = ""
+    }
+
+    private fun acquireFreshPort(excludedPort: Int): Boolean {
+        val candidate = findAvailablePort(excludedPort) ?: return false
+        port = candidate
+        secret = UUID.randomUUID().toString().replace("-", "")
+        return true
+    }
+
+    private fun findAvailablePort(excludedPort: Int): Int? {
+        for (candidate in PORT_RANGE_START..PORT_RANGE_END) {
+            if (candidate != excludedPort && isPortFree(candidate)) {
+                return candidate
             }
         }
-        return false
+        return probeEphemeralLoopbackPort()
+    }
+
+    private fun isPortFree(candidate: Int): Boolean {
+        portProbeOverride?.let { return it(candidate) }
+        return try {
+            ServerSocket().use { socket ->
+                socket.reuseAddress = false
+                socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), candidate), 1)
+            }
+            true
+        } catch (_: IOException) {
+            false
+        }
+    }
+
+    private fun probeEphemeralLoopbackPort(): Int? {
+        ephemeralPortOverride?.let { return it() }
+        return try {
+            ServerSocket().use { socket ->
+                socket.reuseAddress = false
+                socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1)
+                socket.localPort.takeIf { it > 0 }
+            }
+        } catch (_: IOException) {
+            null
+        }
+    }
+
+    private fun isOwnControllerListening(targetPort: Int, targetSecret: String): Boolean {
+        ownControllerVerifierOverride?.let { return it(targetPort, targetSecret) }
+        if (targetPort !in MIN_PORT..MAX_PORT || targetSecret.isEmpty()) return false
+        val url = HttpUrl.Builder()
+            .scheme("http")
+            .host("127.0.0.1")
+            .port(targetPort)
+            .addPathSegment("version")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $targetSecret")
+            .build()
+        return try {
+            probeClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use false
+                val element = Json.parseToJsonElement(response.body.string()) as? JsonObject
+                element?.containsKey("version") == true
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 }
 
-/**
- * Percent-encodes a single REST path segment. [java.net.URLEncoder] writes `+` for spaces,
- * but `+` is only decoded as a space inside query strings; the controller's router treats
- * it literally, so any node/provider whose name contains a space (most real subscriptions)
- * failed to resolve. `%20` is unambiguous in both paths and queries.
- */
-internal fun encodePathSegment(value: String): String =
-    java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
-
 /** Structured access to the core's REST API (external-controller on loopback, Bearer secret). */
 object MihomoApi {
+    private const val TAG = "MihomoApi"
+    private const val MAX_ERROR_BODY_CHARS = 256
+    private const val PROVIDER_READ_TIMEOUT_SECONDS = 30L
+    private const val PROVIDER_CALL_TIMEOUT_SECONDS = 35L
+    private const val MIN_PORT = 1
+    private const val MAX_PORT = 65535
+
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val client = OkHttpClient.Builder()
+    internal val client = OkHttpClient.Builder()
         .connectTimeout(1, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.SECONDS)
         .build()
 
     /**
-     * A SECOND client dedicated to WebSocket connections. The REST client above must keep
-     * its 3s read timeout (a stalled REST call should fail fast), but a WebSocket is a
-     * long-lived read: `readTimeout(0)` disables the per-read timeout, and liveness is
-     * enforced instead by `pingInterval(20)`, which sends protocol-level pings and fails
-     * the socket when a pong does not come back. Sharing one client would either kill the
-     * WS stream every 3 idle seconds or loosen the REST timeouts for every caller.
+     * Dedicated client for provider updates (`PUT /providers/...`), sharing [client]'s dispatcher
+     * and connection pool while relaxing read/call timeouts to 30s/35s because the core fetches
+     * remote provider payloads synchronously during the HTTP request.
+     */
+    internal val providerUpdateClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(PROVIDER_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .callTimeout(PROVIDER_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
+     * A SECOND client dedicated to WebSocket connections. The REST client above keeps
+     * fast timeouts, while a WebSocket is a long-lived read (`readTimeout(0)` + `pingInterval(20)`).
      */
     private val wsClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -94,41 +226,41 @@ object MihomoApi {
     private val jsonBody = "application/json; charset=utf-8".toMediaType()
 
     /**
-     * Builds a request against the controller.
-     *
-     * The path is given as a list of SEGMENTS, not as a pre-formatted string: a node or
-     * provider name may contain a "/", and string concatenation would then split it into
-     * two path segments and address a completely different endpoint. [HttpUrl.Builder] +
-     * [addPathSegment] percent-encodes each segment exactly once, so the encoding is
-     * applied by the same code that builds the URL.
+     * Builds an endpoint URL by adding each REST segment separately via [HttpUrl.Builder.addPathSegment],
+     * guaranteeing spaces become `%20` (never `+`) and embedded `/` or `?`/`#` stay inside one segment.
      */
-    private fun requestBuilder(vararg segments: String): Request.Builder {
+    internal fun buildEndpointUrl(vararg segments: String): HttpUrl {
         if (!ApiController.isReady) error("external-controller is not configured")
         val urlBuilder = HttpUrl.Builder()
             .scheme("http")
             .host("127.0.0.1")
             .port(ApiController.port)
         segments.forEach { urlBuilder.addPathSegment(it) }
-        return Request.Builder()
-            .url(urlBuilder.build())
-            .header("Authorization", "Bearer ${ApiController.secret}")
+        return urlBuilder.build()
     }
+
+    private fun requestBuilder(vararg segments: String): Request.Builder =
+        Request.Builder()
+            .url(buildEndpointUrl(*segments))
+            .header("Authorization", "Bearer ${ApiController.secret}")
 
     /**
      * Safe GET: returns null whenever the controller is not configured (VPN never started)
-     * or the call fails for any reason. Callers run inside coroutines with no exception
-     * handler, so an endpoint must never throw — an unguarded error() here crashed the app
-     * when the core status screen was opened before the first VPN start.
+     * or the call fails for any reason.
      */
     private fun getJson(vararg segments: String): JsonObject? {
         if (!ApiController.isReady) return null
-        return runCatching {
+        return try {
             client.newCall(requestBuilder(*segments).build()).execute().use { response ->
                 if (!response.isSuccessful) return@use null
                 val text = response.body.string()
                 json.parseToJsonElement(text) as? JsonObject
             }
-        }.getOrNull()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // ---- Parsed models ---------------------------------------------------------------
@@ -176,7 +308,7 @@ object MihomoApi {
 
     fun version(): String? {
         val obj = getJson("version") ?: return null
-        return runCatching { obj["version"]?.jsonPrimitive?.content }.getOrNull()
+        return obj.str("version")
     }
 
     /** Full proxy snapshot: groups and proxies keyed by name. */
@@ -187,12 +319,14 @@ object MihomoApi {
         return parseProxy(obj)
     }
 
-    fun selectProxy(group: String, name: String): Boolean {
+    fun selectProxyResult(group: String, name: String): Result<Unit> {
         val body = buildJsonObject { put("name", name) }.toString().toRequestBody(jsonBody)
-        return runCatching {
-            client.newCall(requestBuilder("proxies", group).put(body).build()).execute().use { it.isSuccessful }
-        }.getOrDefault(false)
+        return executeWrite("selectProxy($group)") {
+            requestBuilder("proxies", group).put(body).build()
+        }
     }
+
+    fun selectProxy(group: String, name: String): Boolean = selectProxyResult(group, name).isSuccess
 
     fun connections(): ConnectionsSnapshot? {
         val obj = getJson("connections") ?: return null
@@ -200,170 +334,239 @@ object MihomoApi {
     }
 
     /**
-     * Opens a WebSocket to `ws://127.0.0.1:<port>/connections` (the same endpoint as the
-     * REST poll, upgraded by okhttp's `ws()` call). The core streams a full connections
-     * snapshot roughly once per second, which is what the request log wants.
-     *
-     * Returns null when the controller is not configured (VPN never started in this
-     * process) so the caller can stay on the REST-poll path. The caller owns the socket:
-     * it must `cancel()` it when stopping. Failures are reported through [listener]'s
-     * onFailure/onClosed/onMessage callbacks — this method never throws.
+     * Opens a WebSocket to `ws://127.0.0.1:<port>/connections`.
+     * Returns null when the controller is not configured so callers stay on REST polling.
      */
     fun newConnectionsWebSocket(listener: WebSocketListener): WebSocket? {
         if (!ApiController.isReady) return null
-        return runCatching {
-            val url = HttpUrl.Builder()
-                .scheme("http")
-                .host("127.0.0.1")
-                .port(ApiController.port)
-                .addPathSegment("connections")
-                .build()
-            val request = Request.Builder()
-                .url(url)
-                .header("Authorization", "Bearer ${ApiController.secret}")
-                .build()
+        return try {
+            val request = requestBuilder("connections").build()
             wsClient.newWebSocket(request, listener)
-        }.getOrNull()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to open connections WebSocket", e)
+            null
+        }
     }
 
-    fun closeConnection(id: String): Boolean {
-        return runCatching {
-            client.newCall(requestBuilder("connections", id).delete().build()).execute().use { it.isSuccessful }
-        }.getOrDefault(false)
-    }
+    fun closeConnectionResult(id: String): Result<Unit> =
+        executeWrite("closeConnection($id)") {
+            requestBuilder("connections", id).delete().build()
+        }
 
-    fun closeAllConnections(): Boolean {
-        return runCatching {
-            client.newCall(requestBuilder("connections").delete().build()).execute().use { it.isSuccessful }
-        }.getOrDefault(false)
-    }
+    fun closeConnection(id: String): Boolean = closeConnectionResult(id).isSuccess
 
-    fun patchConfigs(body: JsonObject): Boolean {
-        return runCatching {
-            client.newCall(
-                requestBuilder("configs").patch(body.toString().toRequestBody(jsonBody)).build()
-            ).execute().use { it.isSuccessful }
-        }.getOrDefault(false)
-    }
+    fun closeAllConnectionsResult(): Result<Unit> =
+        executeWrite("closeAllConnections") {
+            requestBuilder("connections").delete().build()
+        }
 
-    fun patchMode(mode: String): Boolean = patchConfigs(buildJsonObject { put("mode", mode) })
+    fun closeAllConnections(): Boolean = closeAllConnectionsResult().isSuccess
+
+    fun patchConfigsResult(body: JsonObject): Result<Unit> =
+        executeWrite("patchConfigs") {
+            requestBuilder("configs").patch(body.toString().toRequestBody(jsonBody)).build()
+        }
+
+    fun patchConfigs(body: JsonObject): Boolean = patchConfigsResult(body).isSuccess
+
+    fun patchModeResult(mode: String): Result<Unit> =
+        patchConfigsResult(buildJsonObject { put("mode", mode) })
+
+    fun patchMode(mode: String): Boolean = patchModeResult(mode).isSuccess
 
     fun memoryInuse(): Long? {
         val obj = getJson("memory") ?: return null
-        return runCatching { obj["inuse"]?.jsonPrimitive?.longOrNull }.getOrNull()
+        return obj.long("inuse")
     }
 
     fun proxyProviders(): List<ApiProvider> {
         val obj = getJson("providers", "proxies") ?: return emptyList()
-        return parseProviders(obj) { provider -> provider["proxies"]?.jsonArray?.size ?: 0 }
+        return parseProviders(obj) { provider -> provider.arr("proxies")?.size ?: 0 }
     }
 
-    fun updateProxyProvider(name: String): Boolean = updateProvider("proxies", name)
+    fun updateProxyProviderResult(name: String): Result<Unit> =
+        updateProviderResult("proxies", name)
+
+    fun updateProxyProvider(name: String): Boolean = updateProxyProviderResult(name).isSuccess
 
     fun ruleProviders(): List<ApiProvider> {
         val obj = getJson("providers", "rules") ?: return emptyList()
-        return parseProviders(obj) { provider -> provider["ruleCount"]?.jsonPrimitive?.longOrNull?.toInt() ?: 0 }
+        return parseProviders(obj) { provider -> provider.long("ruleCount")?.toInt() ?: 0 }
     }
 
-    fun updateRuleProvider(name: String): Boolean = updateProvider("rules", name)
+    fun updateRuleProviderResult(name: String): Result<Unit> =
+        updateProviderResult("rules", name)
 
-    private fun updateProvider(kind: String, name: String): Boolean {
-        return runCatching {
-            client.newCall(requestBuilder("providers", kind, name).put(byteArrayOf().toRequestBody(jsonBody)).build())
-                .execute().use { it.isSuccessful }
-        }.getOrDefault(false)
+    fun updateRuleProvider(name: String): Boolean = updateRuleProviderResult(name).isSuccess
+
+    private fun updateProviderResult(kind: String, name: String): Result<Unit> =
+        executeWrite("updateProvider($kind/$name)", providerUpdateClient) {
+            requestBuilder("providers", kind, name)
+                .put(byteArrayOf().toRequestBody(jsonBody))
+                .build()
+        }
+
+    private fun executeWrite(
+        action: String,
+        httpClient: OkHttpClient = client,
+        buildRequest: () -> Request
+    ): Result<Unit> {
+        if (!ApiController.isReady) {
+            val err = IllegalStateException("external-controller is not configured")
+            Log.w(TAG, "$action failed: external-controller is not configured")
+            return Result.failure(err)
+        }
+        return try {
+            httpClient.newCall(buildRequest()).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(Unit)
+                } else {
+                    val snippet = runCatching { response.body.string().trim().take(MAX_ERROR_BODY_CHARS) }
+                        .getOrDefault("")
+                    val detail = if (snippet.isNotEmpty()) "HTTP ${response.code}: $snippet" else "HTTP ${response.code}"
+                    Log.w(TAG, "$action failed ($detail)")
+                    LogRepository.addLog("warning", "API 操作 $action 失败 ($detail)")
+                    Result.failure(IOException("$action failed ($detail)"))
+                }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Log.w(TAG, "$action failed: ${e.message}", e)
+            LogRepository.addLog("warning", "API 操作 $action 异常: ${e.message ?: e.javaClass.simpleName}")
+            Result.failure(e)
+        }
     }
 
     // ---- Parsing helpers -------------------------------------------------------------
 
     fun parseProxy(obj: JsonObject): ApiProxy? {
-        return runCatching {
+        return try {
             val name = obj.str("name") ?: return null
-            val history = obj["history"]?.jsonArray.orEmpty().mapNotNull { entry ->
-                val entryObj = entry as? JsonObject ?: return@mapNotNull null
-                val delay = entryObj["delay"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
-                val time = entryObj.str("time")?.let { parseIsoTime(it) } ?: 0L
-                time to delay.toInt()
+            val history = obj.arr("history").orEmpty().mapNotNull { entry ->
+                parseHistoryEntry(entry)
             }
             ApiProxy(
                 name = name,
-                type = obj.str("type") ?: "",
-                udp = obj["udp"]?.jsonPrimitive?.booleanOrNull ?: false,
-                alive = obj["alive"]?.jsonPrimitive?.booleanOrNull ?: false,
-                now = obj.str("now") ?: "",
+                type = obj.str("type").orEmpty(),
+                udp = obj.bool("udp") ?: false,
+                alive = obj.bool("alive") ?: false,
+                now = obj.str("now").orEmpty(),
                 history = history
             )
-        }.getOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseHistoryEntry(entry: JsonElement): Pair<Long, Int>? {
+        val entryObj = entry as? JsonObject ?: return null
+        val delay = entryObj.long("delay") ?: return null
+        val time = entryObj.str("time")?.let(::parseIsoTime) ?: 0L
+        return time to delay.toInt()
     }
 
     fun parseConnections(obj: JsonObject): ConnectionsSnapshot? {
-        return runCatching {
-            val list = obj["connections"]?.jsonArray.orEmpty().mapNotNull { element ->
-                val item = element as? JsonObject ?: return@mapNotNull null
-                val meta = item["metadata"] as? JsonObject ?: return@mapNotNull null
-                val id = item.str("id") ?: return@mapNotNull null
-                val host = meta.str("host").orEmpty()
-                val destIp = meta.str("destinationIP").orEmpty()
-                val displayHost = host.ifBlank { destIp }
-                val chains = item["chains"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.content }
-                ApiConnection(
-                    id = id,
-                    host = displayHost,
-                    destinationIp = destIp,
-                    destinationPort = meta.str("destinationPort")?.toIntOrNull() ?: 0,
-                    network = (meta.str("network") ?: "tcp").uppercase(),
-                    sourceIp = meta.str("sourceIP").orEmpty(),
-                    sourcePort = meta.str("sourcePort")?.toIntOrNull() ?: 0,
-                    rule = item.str("rule").orEmpty(),
-                    rulePayload = item.str("rulePayload").orEmpty(),
-                    chains = chains,
-                    uploadBytes = item["upload"]?.jsonPrimitive?.longOrNull ?: 0L,
-                    downloadBytes = item["download"]?.jsonPrimitive?.longOrNull ?: 0L,
-                    startMs = item.str("start")?.let { parseIsoTime(it) } ?: 0L
-                )
-            }
-            ConnectionsSnapshot(
-                connections = list,
-                uploadTotal = obj["uploadTotal"]?.jsonPrimitive?.longOrNull ?: 0L,
-                downloadTotal = obj["downloadTotal"]?.jsonPrimitive?.longOrNull ?: 0L
-            )
-        }.getOrNull()
+        val list = obj.arr("connections").orEmpty().mapNotNull { element ->
+            parseConnectionElement(element)
+        }
+        return ConnectionsSnapshot(
+            connections = list,
+            uploadTotal = obj.long("uploadTotal") ?: 0L,
+            downloadTotal = obj.long("downloadTotal") ?: 0L
+        )
+    }
+
+    private fun parseConnectionElement(element: JsonElement): ApiConnection? {
+        val item = element as? JsonObject ?: return null
+        val id = item.str("id")?.takeIf { it.isNotBlank() } ?: return null
+        val meta = item.obj("metadata")
+        val host = meta?.str("host").orEmpty()
+        val destIp = meta?.str("destinationIP").orEmpty()
+        val displayHost = host.ifBlank { destIp }
+        val chains = item.arr("chains").orEmpty().mapNotNull { it.asNonNullString() }
+        val network = (meta?.str("network") ?: "tcp").ifBlank { "tcp" }.uppercase(Locale.ROOT)
+        return ApiConnection(
+            id = id,
+            host = displayHost,
+            destinationIp = destIp,
+            destinationPort = meta?.port("destinationPort") ?: 0,
+            network = network,
+            sourceIp = meta?.str("sourceIP").orEmpty(),
+            sourcePort = meta?.port("sourcePort") ?: 0,
+            rule = item.str("rule").orEmpty(),
+            rulePayload = item.str("rulePayload").orEmpty(),
+            chains = chains,
+            uploadBytes = item.long("upload") ?: 0L,
+            downloadBytes = item.long("download") ?: 0L,
+            startMs = item.str("start")?.let(::parseIsoTime) ?: 0L
+        )
     }
 
     private fun parseProviders(obj: JsonObject, countOf: (JsonObject) -> Int): List<ApiProvider> {
-        return runCatching {
-            val providers = obj["providers"] as? JsonObject ?: return emptyList()
-            providers.entries.mapNotNull { (_, value) ->
-                val provider = value as? JsonObject ?: return@mapNotNull null
-                val name = provider.str("name") ?: return@mapNotNull null
-                // "Compatible" is the synthetic provider the core creates for inline proxies.
-                val vehicle = provider.str("vehicleType") ?: ""
-                if (vehicle == "Compatible") return@mapNotNull null
-                ApiProvider(
-                    name = name,
-                    vehicleType = vehicle,
-                    updatedAtMs = provider.str("updatedAt")?.let { parseIsoTime(it) } ?: 0L,
-                    itemCount = countOf(provider)
-                )
-            }
-        }.getOrDefault(emptyList())
+        val providers = obj.obj("providers") ?: return emptyList()
+        return providers.entries.mapNotNull { (_, value) ->
+            parseProviderEntry(value, countOf)
+        }
     }
 
-    private fun JsonObject.str(key: String): String? {
-        val value = this[key] ?: return null
-        if (value is kotlinx.serialization.json.JsonNull) return null
-        return (value as? JsonPrimitive)?.content
+    private fun parseProviderEntry(
+        value: JsonElement,
+        countOf: (JsonObject) -> Int
+    ): ApiProvider? {
+        val provider = value as? JsonObject ?: return null
+        val name = provider.str("name") ?: return null
+        // "Compatible" is the synthetic provider the core creates for inline proxies.
+        val vehicle = provider.str("vehicleType").orEmpty()
+        if (vehicle == "Compatible") return null
+        return ApiProvider(
+            name = name,
+            vehicleType = vehicle,
+            updatedAtMs = provider.str("updatedAt")?.let(::parseIsoTime) ?: 0L,
+            itemCount = countOf(provider)
+        )
+    }
+
+    private fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
+
+    private fun JsonObject.arr(key: String): JsonArray? = this[key] as? JsonArray
+
+    private fun JsonObject.str(key: String): String? = this[key]?.asNonNullString()
+
+    private fun JsonObject.long(key: String): Long? {
+        val prim = (this[key] as? JsonPrimitive)?.takeUnless { it is JsonNull } ?: return null
+        return prim.longOrNull ?: prim.content.toLongOrNull()
+    }
+
+    private fun JsonObject.bool(key: String): Boolean? {
+        val prim = (this[key] as? JsonPrimitive)?.takeUnless { it is JsonNull } ?: return null
+        return prim.booleanOrNull
+    }
+
+    private fun JsonObject.port(key: String): Int {
+        val parsed = long(key) ?: return 0
+        return if (parsed in MIN_PORT..MAX_PORT) parsed.toInt() else 0
+    }
+
+    private fun JsonElement.asNonNullString(): String? {
+        val prim = this as? JsonPrimitive ?: return null
+        return if (prim is JsonNull) null else prim.content
     }
 
     /** Parses the core's ISO-8601 timestamps ("2026-10-25T12:34:56.789+08:00") to epoch ms. */
     private fun parseIsoTime(raw: String): Long {
-        return runCatching {
+        if (raw.isBlank()) return 0L
+        return try {
             java.time.OffsetDateTime.parse(raw).toInstant().toEpochMilli()
-        }.getOrElse {
-            runCatching {
+        } catch (_: Exception) {
+            try {
                 java.time.LocalDateTime.parse(raw.substringBefore('.'))
                     .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
-            }.getOrDefault(0L)
+            } catch (_: Exception) {
+                0L
+            }
         }
     }
 }

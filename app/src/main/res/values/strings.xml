@@ -9,8 +9,8 @@
 -->
 <resources>
     <string name="app_name">Nexus</string>
-    <string name="notification_restoring">正在恢复代理服务…</string>
-    <string name="action_stop">断开连接</string>
-    <string name="notification_channel_name">Nexus 状态与流量通知</string>
-    <string name="notification_channel_desc">显示实时代理状态与网络上下行速率</string>
+    <string name="notification_restoring">Restoring proxy service…</string>
+    <string name="action_stop">Disconnect</string>
+    <string name="notification_channel_name">Nexus status &amp; traffic</string>
+    <string name="notification_channel_desc">Shows the live proxy status and network upload/download speed</string>
 </resources>

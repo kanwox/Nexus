@@ -3,7 +3,13 @@ package com.github.mihomo.android.ui.theme
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -13,11 +19,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.PlatformTextStyle
@@ -26,8 +35,12 @@ import androidx.compose.ui.text.font.DeviceFontFamilyName
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.github.mihomo.android.data.AppFont
 import com.github.mihomo.android.data.ThemeMode
 
@@ -46,16 +59,43 @@ val LocalReduceMotion = staticCompositionLocalOf { false }
 @Composable
 private fun rememberReduceMotion(): Boolean {
     val context = LocalContext.current
-    return remember(context) {
-        runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var reduceMotion by remember(context) { mutableStateOf(readReduceMotion(context)) }
+
+    DisposableEffect(context, lifecycleOwner) {
+        val resolver = context.contentResolver
+        val handler = Handler(Looper.getMainLooper())
+        val observer = object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                reduceMotion = readReduceMotion(context)
+            }
+        }
+        val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
+        if (uri != null) {
+            runCatching { resolver.registerContentObserver(uri, false, observer) }
+        }
+        val lifecycleObserver = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                reduceMotion = readReduceMotion(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+        onDispose {
+            runCatching { resolver.unregisterContentObserver(observer) }
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+            handler.removeCallbacksAndMessages(null)
+        }
     }
+    return reduceMotion
 }
+
+private fun readReduceMotion(context: Context): Boolean = runCatching {
+    Settings.Global.getFloat(
+        context.contentResolver,
+        Settings.Global.ANIMATOR_DURATION_SCALE,
+        1f
+    ) == 0f
+}.getOrDefault(false)
 
 /**
  * Apple iOS Typography family: SF Pro (Latin/Cyrillic/Numeric) + PingFang SC (苹方-简, CJK)
@@ -89,93 +129,37 @@ private val IosContinuousShapes = Shapes(
     extraLarge = RoundedCornerShape(LoonRadii.extraLarge)
 )
 
+private fun TextStyle.withAppFont(
+    family: FontFamily,
+    tracking: TextUnit,
+    platformStyle: PlatformTextStyle
+): TextStyle = copy(fontFamily = family, letterSpacing = tracking, platformStyle = platformStyle)
+
 private fun buildAppTypography(appFont: AppFont): Typography {
     val isIos = appFont == AppFont.IOS
     val family = if (isIos) IosSfProPingFangFontFamily else FontFamily.Default
     val platformStyle = PlatformTextStyle(includeFontPadding = !isIos)
-
     val displayTracking = if (isIos) (-0.45).sp else 0.sp
     val titleTracking = if (isIos) (-0.3).sp else 0.sp
     val bodyTracking = if (isIos) (-0.22).sp else 0.sp
     val labelTracking = if (isIos) (-0.12).sp else 0.sp
-
     val base = Typography()
     return Typography(
-        displayLarge = base.displayLarge.copy(
-            fontFamily = family,
-            letterSpacing = displayTracking,
-            platformStyle = platformStyle
-        ),
-        displayMedium = base.displayMedium.copy(
-            fontFamily = family,
-            letterSpacing = displayTracking,
-            platformStyle = platformStyle
-        ),
-        displaySmall = base.displaySmall.copy(
-            fontFamily = family,
-            letterSpacing = displayTracking,
-            platformStyle = platformStyle
-        ),
-        headlineLarge = base.headlineLarge.copy(
-            fontFamily = family,
-            letterSpacing = displayTracking,
-            platformStyle = platformStyle
-        ),
-        headlineMedium = base.headlineMedium.copy(
-            fontFamily = family,
-            letterSpacing = titleTracking,
-            platformStyle = platformStyle
-        ),
-        headlineSmall = base.headlineSmall.copy(
-            fontFamily = family,
-            letterSpacing = titleTracking,
-            platformStyle = platformStyle
-        ),
-        titleLarge = base.titleLarge.copy(
-            fontFamily = family,
-            letterSpacing = titleTracking,
-            platformStyle = platformStyle
-        ),
-        titleMedium = base.titleMedium.copy(
-            fontFamily = family,
-            letterSpacing = titleTracking,
-            platformStyle = platformStyle
-        ),
-        titleSmall = base.titleSmall.copy(
-            fontFamily = family,
-            letterSpacing = bodyTracking,
-            platformStyle = platformStyle
-        ),
-        bodyLarge = base.bodyLarge.copy(
-            fontFamily = family,
-            letterSpacing = bodyTracking,
-            platformStyle = platformStyle
-        ),
-        bodyMedium = base.bodyMedium.copy(
-            fontFamily = family,
-            letterSpacing = bodyTracking,
-            platformStyle = platformStyle
-        ),
-        bodySmall = base.bodySmall.copy(
-            fontFamily = family,
-            letterSpacing = labelTracking,
-            platformStyle = platformStyle
-        ),
-        labelLarge = base.labelLarge.copy(
-            fontFamily = family,
-            letterSpacing = labelTracking,
-            platformStyle = platformStyle
-        ),
-        labelMedium = base.labelMedium.copy(
-            fontFamily = family,
-            letterSpacing = labelTracking,
-            platformStyle = platformStyle
-        ),
-        labelSmall = base.labelSmall.copy(
-            fontFamily = family,
-            letterSpacing = labelTracking,
-            platformStyle = platformStyle
-        )
+        displayLarge = base.displayLarge.withAppFont(family, displayTracking, platformStyle),
+        displayMedium = base.displayMedium.withAppFont(family, displayTracking, platformStyle),
+        displaySmall = base.displaySmall.withAppFont(family, displayTracking, platformStyle),
+        headlineLarge = base.headlineLarge.withAppFont(family, displayTracking, platformStyle),
+        headlineMedium = base.headlineMedium.withAppFont(family, titleTracking, platformStyle),
+        headlineSmall = base.headlineSmall.withAppFont(family, titleTracking, platformStyle),
+        titleLarge = base.titleLarge.withAppFont(family, titleTracking, platformStyle),
+        titleMedium = base.titleMedium.withAppFont(family, titleTracking, platformStyle),
+        titleSmall = base.titleSmall.withAppFont(family, bodyTracking, platformStyle),
+        bodyLarge = base.bodyLarge.withAppFont(family, bodyTracking, platformStyle),
+        bodyMedium = base.bodyMedium.withAppFont(family, bodyTracking, platformStyle),
+        bodySmall = base.bodySmall.withAppFont(family, labelTracking, platformStyle),
+        labelLarge = base.labelLarge.withAppFont(family, labelTracking, platformStyle),
+        labelMedium = base.labelMedium.withAppFont(family, labelTracking, platformStyle),
+        labelSmall = base.labelSmall.withAppFont(family, labelTracking, platformStyle)
     )
 }
 
@@ -190,6 +174,60 @@ private object NoIndication : androidx.compose.foundation.IndicationNodeFactory 
     override fun hashCode(): Int = -1
 }
 
+private fun mihomoColorScheme(isDark: Boolean, loonColors: LoonThemeColors) = if (isDark) {
+    darkColorScheme(
+        primary = LoonOrange,
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF3B2414),
+        onPrimaryContainer = LoonOrangeLight,
+        background = loonColors.bg,
+        surface = loonColors.card,
+        surfaceVariant = loonColors.bg,
+        onBackground = loonColors.textPrimary,
+        onSurface = loonColors.textPrimary,
+        onSurfaceVariant = loonColors.textSecondary
+    )
+} else {
+    lightColorScheme(
+        primary = LoonOrange,
+        onPrimary = Color.White,
+        primaryContainer = LoonOrangeBg,
+        onPrimaryContainer = LoonOrange,
+        background = loonColors.bg,
+        surface = loonColors.card,
+        surfaceVariant = loonColors.bg,
+        onBackground = loonColors.textPrimary,
+        onSurface = loonColors.textPrimary,
+        onSurfaceVariant = loonColors.textSecondary
+    )
+}
+
+@Composable
+private fun SystemBarsAppearanceEffect(isDark: Boolean) {
+    val view = LocalView.current
+    if (view.isInEditMode) return
+    LaunchedEffect(isDark) {
+        val activity = view.context.findActivity()
+        if (activity is ComponentActivity) {
+            val style = if (isDark) {
+                SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            } else {
+                SystemBarStyle.light(
+                    android.graphics.Color.TRANSPARENT,
+                    android.graphics.Color.TRANSPARENT
+                )
+            }
+            activity.enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+        } else {
+            val window = activity?.window ?: return@LaunchedEffect
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !isDark
+                isAppearanceLightNavigationBars = !isDark
+            }
+        }
+    }
+}
+
 @Composable
 fun MihomoTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -202,55 +240,13 @@ fun MihomoTheme(
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
     }
-
     val loonColors = if (isDark) DarkLoonThemeColors else LightLoonThemeColors
     val typography = remember(appFont) { buildAppTypography(appFont) }
     val activeFontFamily = if (appFont == AppFont.IOS) IosSfProPingFangFontFamily else FontFamily.Default
     val reduceMotion = rememberReduceMotion()
     val windowWidthClass = rememberWindowWidthClass()
-
-    val colorScheme = if (isDark) {
-        darkColorScheme(
-            primary = LoonOrange,
-            onPrimary = Color.White,
-            primaryContainer = Color(0xFF3B2414),
-            onPrimaryContainer = LoonOrangeLight,
-            background = loonColors.bg,
-            surface = loonColors.card,
-            surfaceVariant = loonColors.bg,
-            onBackground = loonColors.textPrimary,
-            onSurface = loonColors.textPrimary,
-            onSurfaceVariant = loonColors.textSecondary
-        )
-    } else {
-        lightColorScheme(
-            primary = LoonOrange,
-            onPrimary = Color.White,
-            primaryContainer = LoonOrangeBg,
-            onPrimaryContainer = LoonOrange,
-            background = loonColors.bg,
-            surface = loonColors.card,
-            surfaceVariant = loonColors.bg,
-            onBackground = loonColors.textPrimary,
-            onSurface = loonColors.textPrimary,
-            onSurfaceVariant = loonColors.textSecondary
-        )
-    }
-
-    val view = LocalView.current
-    if (!view.isInEditMode) {
-        val statusBarColor = loonColors.bg.toArgb()
-        val navBarColor = loonColors.bg.toArgb()
-        @Suppress("DEPRECATION")
-        SideEffect {
-            val window = view.context.findActivity()?.window ?: return@SideEffect
-            window.statusBarColor = statusBarColor
-            window.navigationBarColor = navBarColor
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDark
-            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !isDark
-        }
-    }
-
+    val colorScheme = mihomoColorScheme(isDark, loonColors)
+    SystemBarsAppearanceEffect(isDark)
     val defaultTextStyle = remember(typography) {
         typography.bodyMedium.merge(TextStyle(fontFamily = activeFontFamily))
     }
@@ -280,7 +276,7 @@ fun MihomoTheme(
     }
 }
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
+internal tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null

@@ -101,7 +101,7 @@ private fun PreviewGallery() {
                 CupertinoSegmentedControl(
                     items = listOf("Rule", "Global", "Direct"),
                     selectedItem = "Rule",
-                    labelProvider = { it },
+                    labelProvider = { label -> label },
                     onItemSelected = {}
                 )
                 CupertinoButton(text = "Save", onClick = {})

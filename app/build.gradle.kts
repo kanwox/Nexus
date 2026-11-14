@@ -69,8 +69,8 @@ android {
         applicationId = "com.github.mihomo.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 26
-        versionName = "1.0.6"
+        versionCode = 27
+        versionName = "1.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -136,6 +136,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
         jniLibs {
+            // Compresses arm64-v8a native libraries inside the APK (keeping release APK ~32 MiB
+            // instead of ~85 MiB). Installed extraction still unpacks 16 KB ELF-aligned .so files,
+            // trading ~57 MB of installed disk storage for smaller APK downloads.
             useLegacyPackaging = true
         }
     }
@@ -163,12 +166,15 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.activity:activity-compose:1.13.0")
 
-    // Compose
-    implementation("androidx.compose.ui:ui:1.12.1")
-    implementation("androidx.compose.ui:ui-graphics:1.12.1")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.12.1")
-    implementation("androidx.compose.material3:material3:1.4.0")
-    implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    // Compose (versions aligned through Compose BOM; keeps foundation/animation/ripple in sync with ui 1.12.1)
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
 
     // Coroutines & Serialization
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
@@ -191,10 +197,15 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")
-    implementation("androidx.camera:camera-view:1.6.2")
+    implementation("androidx.camera:camera-view:1.6.2") {
+        // QrScanScreen uses PreviewView only; exclude unused video capture and legacy AppCompat/Fragment transitives.
+        exclude(group = "androidx.camera", module = "camera-video")
+        exclude(group = "androidx.appcompat", module = "appcompat")
+        exclude(group = "androidx.fragment", module = "fragment")
+    }
 
-    debugImplementation("androidx.compose.ui:ui-tooling:1.12.1")
-    debugImplementation("androidx.compose.ui:ui-test-manifest:1.12.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // Tests
     testImplementation("junit:junit:4.13.2")
@@ -246,21 +257,138 @@ val uiTokenPatterns: List<Pair<Regex, String>> = listOf(
 val checkUiTokens = tasks.register("checkUiTokens") {
     group = "verification"
     description = "Fails when feature UI contains raw colors or font sizes instead of theme tokens."
-    // The whole source tree is scanned, not just the ui package: raw colors and font
-    // sizes must not reappear anywhere outside the theme package.
+    // The whole source tree (except theme) is scanned incrementally so raw colors and
+    // font sizes cannot reappear anywhere outside the theme package.
     val sourceRoot = layout.projectDirectory.dir("src/main/java/com/github/mihomo/android")
-    inputs.dir(sourceRoot)
+    val sourceFiles = sourceRoot.asFileTree.matching {
+        include("**/*.kt")
+        exclude("**/theme/**")
+    }
+    inputs.files(sourceFiles)
+        .withPropertyName("sourceFiles")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     // The pattern list is copied into the task's own local scope: capturing the
     // script-level list directly would serialize a Gradle script object reference,
     // which the configuration cache rejects.
     val patterns: List<Pair<Regex, String>> = uiTokenPatterns
     // Declared as a plain List<String> so Gradle can track it as an input value.
     inputs.property("patterns", patterns.map { (regex, label) -> "${regex.pattern}::$label" })
-    // A pure check: never up-to-date, so it always runs.
-    outputs.upToDateWhen { false }
+    val reportFile = layout.buildDirectory.file("reports/ui-tokens-check.txt")
+    outputs.file(reportFile).withPropertyName("reportFile")
     doLast {
+        fun stripCommentsAndLiterals(source: String): String {
+            val n = source.length
+            val out = StringBuilder(n)
+            var i = 0
+
+            fun scanString(triple: Boolean, scanCode: (Boolean) -> Unit) {
+                while (i < n) {
+                    if (triple) {
+                        if (i + 2 < n && source[i] == '"' && source[i + 1] == '"' && source[i + 2] == '"') {
+                            if (i + 3 < n && source[i + 3] == '"') {
+                                out.append(' '); i++
+                                continue
+                            }
+                            out.append("   "); i += 3
+                            return
+                        }
+                    } else {
+                        if (source[i] == '\\') {
+                            out.append(' '); i++
+                            if (i < n) {
+                                out.append(if (source[i] == '\n') '\n' else ' ')
+                                i++
+                            }
+                            continue
+                        }
+                        if (source[i] == '"') {
+                            out.append(' '); i++
+                            return
+                        }
+                        if (source[i] == '\n') {
+                            out.append('\n'); i++
+                            return
+                        }
+                    }
+                    if (source[i] == '$' && i + 1 < n && source[i + 1] == '{') {
+                        out.append('$'); out.append('{'); i += 2
+                        scanCode(true)
+                        continue
+                    }
+                    out.append(if (source[i] == '\n') '\n' else ' ')
+                    i++
+                }
+            }
+
+            fun scanCode(stopAtClosingBrace: Boolean) {
+                var braceDepth = if (stopAtClosingBrace) 1 else 0
+                while (i < n) {
+                    val ch = source[i]
+                    if (ch == '/' && i + 1 < n && source[i + 1] == '/') {
+                        out.append("  "); i += 2
+                        while (i < n && source[i] != '\n') {
+                            out.append(' '); i++
+                        }
+                        continue
+                    }
+                    if (ch == '/' && i + 1 < n && source[i + 1] == '*') {
+                        out.append("  "); i += 2
+                        var depth = 1
+                        while (i < n && depth > 0) {
+                            if (i + 1 < n && source[i] == '/' && source[i + 1] == '*') {
+                                out.append("  "); i += 2; depth++
+                            } else if (i + 1 < n && source[i] == '*' && source[i + 1] == '/') {
+                                out.append("  "); i += 2; depth--
+                            } else {
+                                out.append(if (source[i] == '\n') '\n' else ' '); i++
+                            }
+                        }
+                        continue
+                    }
+                    if (ch == '\'') {
+                        out.append(' '); i++
+                        if (i < n && source[i] == '\\') {
+                            out.append(' '); i++
+                        }
+                        while (i < n && source[i] != '\'' && source[i] != '\n') {
+                            out.append(' '); i++
+                        }
+                        if (i < n && source[i] == '\'') {
+                            out.append(' '); i++
+                        }
+                        continue
+                    }
+                    if (ch == '"') {
+                        if (i + 2 < n && source[i + 1] == '"' && source[i + 2] == '"') {
+                            out.append("   "); i += 3
+                            scanString(true, ::scanCode)
+                        } else {
+                            out.append(' '); i++
+                            scanString(false, ::scanCode)
+                        }
+                        continue
+                    }
+                    if (stopAtClosingBrace) {
+                        if (ch == '{') {
+                            braceDepth++
+                        } else if (ch == '}') {
+                            braceDepth--
+                            out.append(ch); i++
+                            if (braceDepth == 0) return
+                            continue
+                        }
+                    }
+                    out.append(ch); i++
+                }
+            }
+
+            scanCode(false)
+            return out.toString()
+        }
+
         val root = sourceRoot.asFile
         val violations = mutableListOf<String>()
+        var scannedCount = 0
         root.walkTopDown()
             .filter {
                 it.isFile && it.extension == "kt" &&
@@ -268,7 +396,8 @@ val checkUiTokens = tasks.register("checkUiTokens") {
                     "theme" !in it.toRelativeString(root).replace('\\', '/').split('/')
             }
             .forEach { file ->
-                val text = file.readText()
+                scannedCount++
+                val text = stripCommentsAndLiterals(file.readText())
                 patterns.forEach { (regex, label) ->
                     regex.findAll(text).forEach { match ->
                         val line = text.substring(0, match.range.first).count { it == '\n' } + 1
@@ -281,6 +410,9 @@ val checkUiTokens = tasks.register("checkUiTokens") {
                 "UI token violations (UI_GUIDELINES.md §3):\n" + violations.joinToString("\n")
             )
         }
+        val outFile = reportFile.get().asFile
+        outFile.parentFile.mkdirs()
+        outFile.writeText("OK: scanned $scannedCount Kotlin files with 0 UI token violations.\n")
     }
 }
 tasks.named("check").configure { dependsOn(checkUiTokens) }

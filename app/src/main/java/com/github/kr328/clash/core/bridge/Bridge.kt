@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package com.github.kr328.clash.core.bridge
 
 import android.content.Context
@@ -20,11 +22,14 @@ object Bridge {
     // awaits it via assetsReady(). The reference is volatile because a failed extraction can be
     // retried on a subsequent init(), which replaces it with a fresh deferred.
     @Volatile
-    private var assetsExtracted = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private var assetsExtracted = CompletableDeferred<Unit>()
 
     // Guards against starting the extraction thread twice and allows retrying after failure.
     private val extractionLock = Any()
     private var assetsExtractionStarted = false
+
+    @Volatile
+    private var appContext: Context? = null
 
     /**
      * The APK file descriptor the native core looks up through /proc/self/fd.
@@ -38,12 +43,20 @@ object Bridge {
     @Suppress("unused")
     private var packageFd: ParcelFileDescriptor? = null
 
-    /** Suspends until the geo assets have been extracted (or extraction has failed and given up). */
-    suspend fun assetsReady() = assetsExtracted.await()
+    private fun resolveAppContext(): Context? =
+        appContext ?: runCatching { Global.application }.getOrNull()
+
+    /** Suspends until the geo assets have been extracted (retrying if a prior attempt failed). */
+    suspend fun assetsReady() {
+        val extraction = resolveAppContext()?.let(::startAssetsExtractionIfNeeded)
+            ?: synchronized(extractionLock) { assetsExtracted }
+        extraction.await()
+    }
 
     @Synchronized
     fun init(context: Context) {
         val app = context.applicationContext as android.app.Application
+        appContext = app
         Global.init(app)
         startAssetsExtractionIfNeeded(app)
         if (isInitialized) return
@@ -55,13 +68,17 @@ object Bridge {
             System.loadLibrary("bridge")
 
             // Deliberately keep an open fd to the APK: the native core locates the package through
-            // /proc/self/fd during nativeInit. Removing this broke native startup.
-            if (packageFd == null) {
-                try {
-                    packageFd = ParcelFileDescriptor.open(File(context.packageCodePath), ParcelFileDescriptor.MODE_READ_ONLY)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "open packageCodePath: ${e.message}")
-                }
+            // /proc/self/fd during nativeInit. Close any previous descriptor on retry.
+            try {
+                val newFd = ParcelFileDescriptor.open(
+                    File(context.packageCodePath),
+                    ParcelFileDescriptor.MODE_READ_ONLY
+                )
+                val oldFd = packageFd
+                packageFd = newFd
+                runCatching { oldFd?.close() }
+            } catch (e: Throwable) {
+                Log.w(TAG, "open packageCodePath: ${e.message}", e)
             }
 
             val homeDir = context.filesDir.resolve("clash").apply { mkdirs() }
@@ -81,6 +98,8 @@ object Bridge {
             Log.i(TAG, "Native bridge initialized successfully")
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to initialize native bridge", e)
+            runCatching { packageFd?.close() }
+            packageFd = null
             // Allow a later retry: the caller may be able to recover (e.g. after the
             // emulator was switched to a real device image).
             isInitialized = false
@@ -88,10 +107,10 @@ object Bridge {
         }
     }
 
-    private fun startAssetsExtractionIfNeeded(context: Context) {
+    private fun startAssetsExtractionIfNeeded(context: Context): CompletableDeferred<Unit> {
         val extraction: CompletableDeferred<Unit>
         synchronized(extractionLock) {
-            if (assetsExtractionStarted) return
+            if (assetsExtractionStarted) return assetsExtracted
             if (assetsExtracted.isCompleted) {
                 assetsExtracted = CompletableDeferred()
             }
@@ -106,15 +125,8 @@ object Bridge {
             runCatching { extractAssets(context, homeDir) }
                 .onFailure {
                     Log.w(TAG, "Asset extraction failed: ${it.message}")
-                    synchronized(extractionLock) {
-                        if (assetsExtracted === extraction) {
-                            assetsExtractionStarted = false
-                        }
-                    }
-                    // Completing with an exception makes assetsReady() fail loudly instead
-                    // of letting the core start with missing geo databases and fail later
-                    // with an unrelated error.
-                    extraction.completeExceptionally(
+                    failExtraction(
+                        extraction,
                         ClashException("Failed to extract the geo database assets", it)
                     )
                     return@Thread
@@ -122,12 +134,8 @@ object Bridge {
                 .onSuccess { failed ->
                     if (failed.isNotEmpty()) {
                         Log.w(TAG, "Could not extract geo assets: $failed")
-                        synchronized(extractionLock) {
-                            if (assetsExtracted === extraction) {
-                                assetsExtractionStarted = false
-                            }
-                        }
-                        extraction.completeExceptionally(
+                        failExtraction(
+                            extraction,
                             ClashException(
                                 "Failed to extract the geo database assets: ${failed.joinToString(", ")}"
                             )
@@ -140,6 +148,18 @@ object Bridge {
             name = "geo-assets-extract"
             isDaemon = true
             start()
+        }
+        return extraction
+    }
+
+    private fun failExtraction(extraction: CompletableDeferred<Unit>, error: ClashException) {
+        synchronized(extractionLock) {
+            // Complete before clearing assetsExtractionStarted so a concurrent retry always
+            // observes extraction.isCompleted == true and allocates a fresh CompletableDeferred.
+            extraction.completeExceptionally(error)
+            if (assetsExtracted === extraction) {
+                assetsExtractionStarted = false
+            }
         }
     }
 
@@ -174,22 +194,7 @@ object Bridge {
             // Preserve files manually updated by the user after the APK was installed/updated.
             val userUpdatedAfterApk = hasValidDest && apkInstallTime > 0L && destFile.lastModified() > apkInstallTime
             if (hasValidDest && (!versionChanged || userUpdatedAfterApk)) continue
-            runCatching {
-                // Extract to a temp file and rename so a crash mid-copy cannot leave a
-                // truncated database that the core would then load as if it were valid.
-                val tmpFile = targetDir.resolve("$fileName.tmp")
-                context.assets.open(fileName).use { input ->
-                    tmpFile.outputStream().use { output ->
-                        input.copyTo(output, bufferSize = 65_536)
-                    }
-                }
-                check(tmpFile.length() > 0L) { "extracted file is empty" }
-                if (destFile.exists()) destFile.delete()
-                check(tmpFile.renameTo(destFile)) { "rename to $fileName failed" }
-                Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
-            }.onFailure { e ->
-                targetDir.resolve("$fileName.tmp").delete()
-                Log.w(TAG, "Could not extract asset $fileName: ${e.message}")
+            if (!extractSingleAsset(context, targetDir, fileName, destFile)) {
                 failed += fileName
             }
         }
@@ -208,6 +213,31 @@ object Bridge {
             runCatching { versionMarker.writeText(currentApkVersion.toString()) }
         }
         return failed
+    }
+
+    private fun extractSingleAsset(
+        context: Context,
+        targetDir: File,
+        fileName: String,
+        destFile: File
+    ): Boolean {
+        val tmpFile = targetDir.resolve("$fileName.tmp")
+        return runCatching {
+            context.assets.open(fileName).use { input ->
+                tmpFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 65_536)
+                }
+            }
+            check(tmpFile.length() > 0L) { "extracted file is empty" }
+            if (destFile.exists()) destFile.delete()
+            check(tmpFile.renameTo(destFile)) { "rename to $fileName failed" }
+            Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
+            true
+        }.getOrElse { e ->
+            tmpFile.delete()
+            Log.w(TAG, "Could not extract asset $fileName: ${e.message}", e)
+            false
+        }
     }
 
     external fun nativeReset()

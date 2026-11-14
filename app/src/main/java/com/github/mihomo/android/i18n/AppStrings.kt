@@ -74,7 +74,6 @@ object AppStrings {
         "settings_arch" to "系统架构",
         "settings_reset_core" to "重置内核状态",
         "settings_reset_core_confirm" to "确定要重置内核状态吗？当前连接会断开。",
-        "settings_always_on_vpn" to "始终开启的 VPN (系统设置)",
         "settings_view_stream" to "查看流",
         "settings_about" to "关于 Nexus",
         "theme_system" to "跟随系统",
@@ -152,7 +151,6 @@ object AppStrings {
         "settings_arch" to "Architecture",
         "settings_reset_core" to "Reset Core State",
         "settings_reset_core_confirm" to "Reset the core state? The current connection will be dropped.",
-        "settings_always_on_vpn" to "Always-On VPN (System)",
         "settings_view_stream" to "View Stream",
         "theme_system" to "Follow System",
         "theme_light" to "Light",
@@ -229,7 +227,6 @@ object AppStrings {
         "settings_arch" to "Архитектура",
         "settings_reset_core" to "Сбросить ядро",
         "settings_reset_core_confirm" to "Сбросить состояние ядра? Текущее подключение будет разорвано.",
-        "settings_always_on_vpn" to "Постоянный VPN (система)",
         "settings_view_stream" to "Просмотр потока",
         "theme_system" to "Как в системе",
         "theme_light" to "Светлая",
@@ -645,7 +642,7 @@ object AppStrings {
         "proxies_sort_default" to "默认顺序",
         "proxies_display_section" to "显示偏好",
         "proxies_show_icons" to "显示策略组图标",
-        "proxies_show_icons_desc" to "加载配置中定义的远程 SVG / PNG 策略图标",
+        "proxies_show_icons_desc" to "加载配置中定义的远程策略图标（仅支持 PNG / JPEG / WebP 位图）",
         "proxies_empty_no_groups" to "暂无节点数据\n请前往「配置」添加订阅",
         "proxies_empty_group" to "当前策略组无可用节点",
         "proxies_empty_list_mode" to "暂无策略分组数据\n请前往「配置」添加订阅",
@@ -1056,7 +1053,7 @@ object AppStrings {
         "proxies_sort_default" to "Default order",
         "proxies_display_section" to "Display Preferences",
         "proxies_show_icons" to "Show group icons",
-        "proxies_show_icons_desc" to "Load remote SVG / PNG icons defined in the config",
+        "proxies_show_icons_desc" to "Load remote group icons defined in the config (PNG / JPEG / WebP bitmaps only)",
         "proxies_empty_no_groups" to "No proxies yet\nAdd a subscription in Profiles",
         "proxies_empty_group" to "No proxies in this group",
         "proxies_empty_list_mode" to "No groups yet\nAdd a subscription in Profiles",
@@ -1468,7 +1465,7 @@ object AppStrings {
         "proxies_sort_default" to "По умолчанию",
         "proxies_display_section" to "Параметры отображения",
         "proxies_show_icons" to "Показывать значки групп",
-        "proxies_show_icons_desc" to "Загружать удалённые SVG / PNG значки из конфигурации",
+        "proxies_show_icons_desc" to "Загружать удалённые значки групп из конфигурации (только PNG / JPEG / WebP)",
         "proxies_empty_no_groups" to "Нет узлов\nДобавьте подписку в разделе «Конфиги»",
         "proxies_empty_group" to "В этой группе нет узлов",
         "proxies_empty_list_mode" to "Нет групп\nДобавьте подписку в разделе «Конфиги»",
@@ -1534,7 +1531,6 @@ object AppStrings {
         "override_hosts_desc" to "每行一条，格式：域名: 目标地址。例如：router.local: 192.168.1.1",
         "override_dns_section" to "DNS 上游覆写",
         "override_dns_desc" to "每行一个上游服务器；留空则使用全局 DNS 设置",
-        "override_saved" to "覆写已保存",
         "dns_nameservers_title" to "上游 DNS 服务器",
         "dns_fallback_title" to "Fallback DNS 服务器",
         "dns_server_add" to "添加服务器",
@@ -1604,28 +1600,6 @@ object AppStrings {
         "settings_section_general" to "通用",
         "settings_about_page" to "关于与维护",
         "settings_section_core_services" to "核心与服务",
-        "settings_kill_switch_unsupported" to "此 Android 版本 (9 及以下) 不支持断网保护，请使用系统「始终开启的 VPN」",
-        "settings_always_on_vpn" to "系统始终开启的 VPN",
-        "settings_always_on_vpn_desc" to "跳转系统设置开启「始终开启的 VPN」与「阻止未通过 VPN 的连接」，实现系统级防泄漏",
-        "subscription_rolled_back" to "新订阅配置无法加载，已自动回滚到上一个可用版本",
-        "subscription_reload_failed" to "热重载失败: {msg}，请在配置页手动恢复历史版本",
-        "subscription_update_cancelled" to "更新已取消：{msg}，旧配置未受影响",
-        "settings_update_verify_failed" to "安装包校验失败，已中止安装",
-        "settings_update_signature_mismatch" to "签名不一致，安装包不可信，已删除",
-        "settings_update_older_version" to "安装包版本不高于当前版本",
-        "settings_update_not_verified" to "发行版未提供校验文件，本次下载未经校验",
-        "diagnostics_export" to "诊断包导出",
-        "diagnostics_export_success" to "已导出: {path}",
-        "diagnostics_export_failed" to "导出失败: {msg}",
-        "geo_update" to "更新 Geo 数据",
-        "geo_update_success" to "{name} 已更新 ({size})",
-        "geo_update_failed" to "更新失败: {msg}",
-        "geo_last_updated" to "上次更新: {time}",
-        "speed_testing" to "测试中",
-        "speed_timeout" to "超时",
-        "speed_failed" to "失败",
-        "transport_mode_websocket" to "实时流",
-        "transport_mode_polling" to "轮询",
     )
 
     private val enNew = mapOf(
@@ -1681,7 +1655,6 @@ object AppStrings {
         "override_hosts_desc" to "One per line: domain: target. e.g. router.local: 192.168.1.1",
         "override_dns_section" to "DNS Upstream Override",
         "override_dns_desc" to "One upstream server per line; leave empty to use global DNS settings",
-        "override_saved" to "Overrides saved",
         "dns_nameservers_title" to "Upstream DNS Servers",
         "dns_fallback_title" to "Fallback DNS Servers",
         "dns_server_add" to "Add Server",
@@ -1806,7 +1779,6 @@ object AppStrings {
         "override_hosts_desc" to "По одной в строке: домен: цель. Пример: router.local: 192.168.1.1",
         "override_dns_section" to "Переопределение DNS",
         "override_dns_desc" to "По одному серверу в строке; оставьте пустым для глобальных настроек",
-        "override_saved" to "Переопределения сохранены",
         "dns_nameservers_title" to "Вышестоящие DNS",
         "dns_fallback_title" to "Резервные DNS",
         "dns_server_add" to "Добавить сервер",
@@ -1934,6 +1906,29 @@ object AppStrings {
         "filter_selected_mark" to "{label}  ✓",
         "filter_app_selected" to "{label} · {app}",
         "requests_app_with_package" to "{app} ({package})",
+        "qr_open_settings" to "前往设置",
+        "settings_kill_switch_unsupported" to "此 Android 版本 (9 及以下) 不支持断网保护，请使用系统「始终开启的 VPN」",
+        "settings_always_on_vpn" to "系统始终开启的 VPN",
+        "settings_always_on_vpn_desc" to "跳转系统设置开启「始终开启的 VPN」与「阻止未通过 VPN 的连接」，实现系统级防泄漏",
+        "subscription_rolled_back" to "新订阅配置无法加载，已自动回滚到上一个可用版本",
+        "subscription_reload_failed" to "热重载失败: {msg}，请在配置页手动恢复历史版本",
+        "subscription_update_cancelled" to "更新已取消：{msg}，旧配置未受影响",
+        "settings_update_verify_failed" to "安装包校验失败，已中止安装",
+        "settings_update_signature_mismatch" to "签名不一致，安装包不可信，已删除",
+        "settings_update_older_version" to "安装包版本不高于当前版本",
+        "settings_update_not_verified" to "发行版未提供校验文件，本次下载未经校验",
+        "diagnostics_export" to "诊断包导出",
+        "diagnostics_export_success" to "已导出: {path}",
+        "diagnostics_export_failed" to "导出失败: {msg}",
+        "geo_update" to "更新 Geo 数据",
+        "geo_update_success" to "{name} 已更新 ({size})",
+        "geo_update_failed" to "更新失败: {msg}",
+        "geo_last_updated" to "上次更新: {time}",
+        "speed_testing" to "测试中",
+        "speed_timeout" to "超时",
+        "speed_failed" to "失败",
+        "transport_mode_websocket" to "实时流",
+        "transport_mode_polling" to "轮询",
         "core_reload_failed" to "配置热重载失败，已恢复原设置",
         "proxy_select_failed" to "切换节点失败，已恢复原选择",
         "dns_resolving" to "解析中",
@@ -1998,6 +1993,7 @@ object AppStrings {
         "filter_selected_mark" to "{label}  ✓",
         "filter_app_selected" to "{label} · {app}",
         "requests_app_with_package" to "{app} ({package})",
+        "qr_open_settings" to "Open Settings",
         "settings_kill_switch_unsupported" to "This Android version (9 or lower) does not support the kill switch. Use the system \"Always-on VPN\" instead.",
         "settings_always_on_vpn" to "System Always-on VPN",
         "settings_always_on_vpn_desc" to "Open system settings to enable \"Always-on VPN\" and \"Block connections without VPN\" for system-level leak protection",
@@ -2084,6 +2080,7 @@ object AppStrings {
         "filter_selected_mark" to "{label}  ✓",
         "filter_app_selected" to "{label} · {app}",
         "requests_app_with_package" to "{app} ({package})",
+        "qr_open_settings" to "Открыть настройки",
         "settings_kill_switch_unsupported" to "Эта версия Android (9 и ниже) не поддерживает аварийную блокировку. Используйте системный «Постоянно включённый VPN».",
         "settings_always_on_vpn" to "Постоянно включённый VPN",
         "settings_always_on_vpn_desc" to "Открыть настройки системы, чтобы включить «Постоянно включённый VPN» и «Блокировать соединения без VPN»",
@@ -2117,9 +2114,9 @@ object AppStrings {
         "settings_update_available_short" to "Доступна {v}",
     )
 
-    private val zhAll = zh + zhExtra + zhNew + zhFixes
-    private val enAll = en + enExtra + enNew + enFixes
-    private val ruAll = ru + ruExtra + ruNew + ruFixes
+    internal val zhAll = zh + zhExtra + zhNew + zhFixes
+    internal val enAll = en + enExtra + enNew + enFixes
+    internal val ruAll = ru + ruExtra + ruNew + ruFixes
 
     fun get(key: String, languageCode: String = "SYSTEM"): String {
         val effectiveLang = if (languageCode == "SYSTEM") {
@@ -2129,7 +2126,7 @@ object AppStrings {
             languageCode
         }
 
-        val dict = when (effectiveLang.lowercase()) {
+        val dict = when (effectiveLang.lowercase(Locale.ROOT)) {
             "zh" -> zhAll
             "ru" -> ruAll
             else -> enAll

@@ -10,7 +10,8 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -25,24 +26,30 @@ val LocalWindowWidthClass = staticCompositionLocalOf { WindowWidthClass.COMPACT 
 
 @Composable
 @ReadOnlyComposable
-fun rememberWindowWidthClass(): WindowWidthClass =
-    when (LocalConfiguration.current.screenWidthDp) {
-        in 0..599 -> WindowWidthClass.COMPACT
-        in 600..839 -> WindowWidthClass.MEDIUM
+fun rememberWindowWidthClass(): WindowWidthClass {
+    val windowInfo = LocalWindowInfo.current
+    val density = LocalDensity.current
+    val widthDp = with(density) { windowInfo.containerSize.width.toDp() }
+    return when {
+        widthDp < 600.dp -> WindowWidthClass.COMPACT
+        widthDp < 840.dp -> WindowWidthClass.MEDIUM
         else -> WindowWidthClass.EXPANDED
     }
+}
 
 /**
  * Centers phone-first content on tablets/foldables and caps its measure at [maxWidth].
- * On compact phones this is a no-op, so the existing layout is untouched.
+ * On compact phones this fills the available bounds without altering layout.
  */
 @Composable
 fun LoonResponsiveContent(
+    modifier: Modifier = Modifier,
     maxWidth: Dp = 680.dp,
     content: @Composable () -> Unit
 ) {
+    val containerModifier = if (modifier === Modifier) Modifier.fillMaxSize() else modifier.fillMaxWidth()
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = containerModifier,
         contentAlignment = Alignment.TopCenter
     ) {
         Box(

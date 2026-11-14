@@ -1,13 +1,18 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
 import android.os.Build
 import com.github.mihomo.android.service.MihomoVpnService
 import com.github.mihomo.android.service.VpnState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -17,6 +22,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -31,6 +39,13 @@ object UpdateChecker {
     /** Minimum interval between automatic background update checks (24 hours). */
     private const val AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
+    /** Maximum size of the GitHub latest-release JSON payload (2 MiB). */
+    internal const val MAX_RELEASE_JSON_BYTES = 2L * 1024L * 1024L
+
+    private const val MAX_RELEASE_NOTES_CHARS = 2000
+
+    private val checkLock = Mutex()
+
     private val _availableUpdate = MutableStateFlow<UpdateInfo?>(null)
 
     /**
@@ -40,28 +55,53 @@ object UpdateChecker {
      */
     val availableUpdate: StateFlow<UpdateInfo?> = _availableUpdate.asStateFlow()
 
-    private val httpClient by lazy {
+    internal val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = true)
             .build()
     }
 
-    private val proxyClients = java.util.concurrent.ConcurrentHashMap<Int, OkHttpClient>()
+    private val proxyClients = ConcurrentHashMap<Int, OkHttpClient>()
 
-    /** Client that routes through the local mixed port when direct physical connections to GitHub fail. */
-    fun localProxyClient(port: Int): OkHttpClient = proxyClients.getOrPut(port) {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .proxy(
-                java.net.Proxy(
-                    java.net.Proxy.Type.HTTP,
-                    java.net.InetSocketAddress("127.0.0.1", port)
-                )
-            )
-            .build()
+    /**
+     * Client that routes through the local mixed port when direct physical connections to GitHub
+     * fail. Keeps only the client for the active [port] and shuts down stale clients when the
+     * configured port changes so their connection pools and executors do not leak.
+     */
+    fun localProxyClient(port: Int): OkHttpClient {
+        require(port in 1..65535) { "Invalid local proxy port: $port" }
+        proxyClients[port]?.let { return it }
+        synchronized(proxyClients) {
+            proxyClients[port]?.let { return it }
+            val client = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .callTimeout(180, TimeUnit.SECONDS)
+                .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
+                .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = false)
+                .build()
+            val stalePorts = proxyClients.keys.filter { it != port }
+            stalePorts.forEach { oldPort ->
+                proxyClients.remove(oldPort)?.let(::releaseClient)
+            }
+            proxyClients[port] = client
+            return client
+        }
     }
+
+    internal fun releaseClient(client: OkHttpClient) {
+        try {
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+            client.cache?.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    internal fun activeProxyClientPortsForTest(): Set<Int> = proxyClients.keys.toSet()
 
     /**
      * Ordered list of HTTP clients to try for GitHub API / asset requests.
@@ -72,8 +112,11 @@ object UpdateChecker {
      * only the direct client is used so a closed local port does not mask real HTTP/network errors.
      */
     fun candidateClients(mixedPort: Int, vpnRunning: Boolean): List<OkHttpClient> =
-        if (vpnRunning) listOf(localProxyClient(mixedPort), httpClient)
-        else listOf(httpClient)
+        if (vpnRunning && mixedPort in 1..65535) {
+            listOf(localProxyClient(mixedPort), httpClient)
+        } else {
+            listOf(httpClient)
+        }
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -159,128 +202,187 @@ object UpdateChecker {
      * Must be called from a coroutine (runs on [Dispatchers.IO] internally).
      */
     suspend fun checkForUpdate(context: Context): CheckResult = withContext(Dispatchers.IO) {
-        val currentVersion = installedVersion(context)
-        val settings = SettingsManager(context)
-        val mixedPort = settings.mixedPort
-        val vpnRunning = MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
+        checkLock.withLock {
+            val currentVersion = installedVersion(context)
+            val settings = SettingsManager(context)
+            val mixedPort = settings.mixedPort
+            val vpnRunning = MihomoVpnService.vpnState.value.status == VpnState.Status.RUNNING
 
-        fun tryFetch(client: OkHttpClient): String? {
-            val request = Request.Builder()
-                .url(RELEASES_API)
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "Nexus-Android/$currentVersion")
-                .build()
-            return runCatching {
-                client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) response.body.string() else null
+            try {
+                var body: String? = null
+                for (client in candidateClients(mixedPort, vpnRunning)) {
+                    body = tryFetchReleaseJson(client, currentVersion)
+                    if (body != null) break
                 }
-            }.getOrNull()
+
+                if (body == null) {
+                    return@withLock CheckResult.Error("Network error: failed to connect to GitHub")
+                }
+
+                val info = parseUpdateInfo(
+                    body = body,
+                    currentVersion = currentVersion,
+                    supportedAbis = Build.SUPPORTED_ABIS.toList()
+                )
+                _availableUpdate.value = if (info.isNewer) info else null
+                settings.lastUpdateCheckTime = System.currentTimeMillis()
+                CheckResult.Success(info)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (ignored: Exception) {
+                CheckResult.Error(ignored.message ?: "Unknown error")
+            }
         }
+    }
 
-        try {
-            var body: String? = null
-            for (client in candidateClients(mixedPort, vpnRunning)) {
-                body = tryFetch(client)
-                if (body != null) break
+    private fun tryFetchReleaseJson(client: OkHttpClient, currentVersion: String): String? {
+        val request = Request.Builder()
+            .url(RELEASES_API)
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "Nexus-Android/$currentVersion")
+            .build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                ConfigManager.readBodyCapped(response, MAX_RELEASE_JSON_BYTES, "Empty release response")
             }
+        }.getOrNull()
+    }
 
-            if (body == null) {
-                return@withContext CheckResult.Error("Network error: failed to connect to GitHub")
-            }
-
-            val obj = json.parseToJsonElement(body).jsonObject
-            val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
-            val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
-            val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(2000)
-            val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
-            val assetsList: List<ReleaseAsset> = obj["assets"]?.let { assetsElement ->
-                runCatching {
-                    json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
-                }.getOrDefault(emptyList())
-            } ?: emptyList()
-            // ABI-aware selection: the device's own SUPPORTED_ABIS order (best-first)
-            // picks the exact per-ABI artifact instead of whatever asset happens to be
-            // listed first on the release page — installing the wrong architecture
-            // fails far away from the cause. Degrades to the first .apk asset when the
-            // release does not follow the Nexus-<abi>-release.apk naming.
-            val apkAsset = UpdateVerifier.selectApkAsset(
-                assetsList.map { it.name to it.browserDownloadUrl },
-                Build.SUPPORTED_ABIS.toList()
-            )?.let { (name, url) -> ReleaseAsset(name = name, browserDownloadUrl = url) }
-            // A sums asset turns on integrity verification for the download path.
-            val sumsAsset = assetsList.firstOrNull {
-                it.name.startsWith("SHA256SUMS", ignoreCase = true)
-            }
-
-            val latestVersion = tagName.trimStart('v', 'V')
-            val isNewer = isVersionNewer(latestVersion, currentVersion)
-
-            val info = UpdateInfo(
-                tagName = tagName,
-                releaseName = releaseName,
-                releaseNotes = releaseNotes,
-                htmlUrl = htmlUrl,
-                apkAsset = apkAsset,
-                apkName = apkAsset?.name,
-                sumsAsset = sumsAsset,
-                isNewer = isNewer
-            )
-            _availableUpdate.value = if (isNewer) info else null
-            settings.lastUpdateCheckTime = System.currentTimeMillis()
-            CheckResult.Success(info)
-        } catch (e: Exception) {
-            CheckResult.Error(e.message ?: "Unknown error")
+    internal fun parseUpdateInfo(
+        body: String,
+        currentVersion: String,
+        supportedAbis: List<String> = UpdateVerifier.DEFAULT_ABI_PRIORITY
+    ): UpdateInfo {
+        val obj = json.parseToJsonElement(body).jsonObject
+        val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
+        val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
+        val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(MAX_RELEASE_NOTES_CHARS)
+        val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
+        val assetsList: List<ReleaseAsset> = obj["assets"]?.let { assetsElement ->
+            runCatching {
+                json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
+            }.getOrDefault(emptyList())
+        } ?: emptyList()
+        val apkAsset = UpdateVerifier.selectApkAsset(
+            assetsList.map { it.name to it.browserDownloadUrl },
+            supportedAbis
+        )?.let { (name, url) -> ReleaseAsset(name = name, browserDownloadUrl = url) }
+        val sumsAsset = assetsList.firstOrNull {
+            it.name.startsWith("SHA256SUMS", ignoreCase = true)
         }
+        val latestVersion = tagName.trimStart('v', 'V')
+        val isNewer = isVersionNewer(latestVersion, currentVersion)
+        return UpdateInfo(
+            tagName = tagName,
+            releaseName = releaseName,
+            releaseNotes = releaseNotes,
+            htmlUrl = htmlUrl,
+            apkAsset = apkAsset,
+            apkName = apkAsset?.name,
+            sumsAsset = sumsAsset,
+            isNewer = isNewer
+        )
     }
 
     /**
      * Returns true if [candidate] is a strictly newer semantic version than [current].
      * Compares major.minor.patch numerically; a stable release (no pre-release suffix)
-     * is considered newer than a pre-release of the same base version (e.g. 1.0.3 > 1.0.3-Beta.3).
+     * is considered newer than a pre-release of the same base version
+     * (e.g. `1.2.0 > 1.2.0-rc.1 > 1.2.0-beta.2`, and `1.2.0-beta.10 > 1.2.0-beta.2`).
      */
     internal fun isVersionNewer(candidate: String, current: String): Boolean {
         val (cBase, cPre) = splitPreRelease(candidate)
         val (curBase, curPre) = splitPreRelease(current)
 
-        val cNums = parseVersionNumbers(cBase)
-        val curNums = parseVersionNumbers(curBase)
-        // An unparsable installed version (e.g. the "unknown" fallback) must never compare
-        // as older, otherwise the app nags about an update on every check.
-        if (curNums.isEmpty()) return false
+        val cNums = parseBaseNumbers(cBase)
+        val curNums = parseBaseNumbers(curBase)
+        if (cNums.isEmpty() || curNums.isEmpty()) return false
+
         for (i in 0 until maxOf(cNums.size, curNums.size)) {
             val cv = cNums.getOrElse(i) { 0 }
             val curv = curNums.getOrElse(i) { 0 }
-            if (cv > curv) return true
-            if (cv < curv) return false
+            if (cv != curv) return cv > curv
         }
 
-        // Same base version: stable > pre-release
-        if (cPre.isEmpty() && curPre.isNotEmpty()) return true
-        if (cPre.isNotEmpty() && curPre.isEmpty()) return false
-        if (cPre.isEmpty() && curPre.isEmpty()) return false
-
-        val cPreNums = parseVersionNumbers(cPre)
-        val curPreNums = parseVersionNumbers(curPre)
-        for (i in 0 until maxOf(cPreNums.size, curPreNums.size)) {
-            val cv = cPreNums.getOrElse(i) { 0 }
-            val curv = curPreNums.getOrElse(i) { 0 }
-            if (cv > curv) return true
-            if (cv < curv) return false
+        return when {
+            cPre.isEmpty() && curPre.isEmpty() -> false
+            cPre.isEmpty() -> true
+            curPre.isEmpty() -> false
+            else -> comparePreRelease(cPre, curPre)
         }
-        return cPre.compareTo(curPre, ignoreCase = true) > 0
     }
 
     private fun splitPreRelease(v: String): Pair<String, String> {
-        val dashIdx = v.indexOf('-')
+        val withoutBuild = v.trim().trimStart('v', 'V').substringBefore('+')
+        val dashIdx = withoutBuild.indexOf('-')
         return if (dashIdx >= 0) {
-            v.substring(0, dashIdx) to v.substring(dashIdx + 1)
+            withoutBuild.substring(0, dashIdx) to withoutBuild.substring(dashIdx + 1)
         } else {
-            v to ""
+            withoutBuild to ""
         }
     }
 
-    private fun parseVersionNumbers(v: String): List<Int> =
-        v.split(".", "-").mapNotNull { part ->
-            part.filter { ch -> ch.isDigit() }.takeIf { it.isNotEmpty() }?.toIntOrNull()
+    private fun parseBaseNumbers(base: String): List<Int> {
+        val cleaned = base.trim().trimStart('v', 'V')
+        if (cleaned.isEmpty()) return emptyList()
+        val parts = cleaned.split('.')
+        val nums = ArrayList<Int>(parts.size)
+        for (part in parts) {
+            val value = part.toIntOrNull() ?: return emptyList()
+            if (value < 0) return emptyList()
+            nums.add(value)
         }
+        return nums
+    }
+
+    private fun comparePreRelease(cPre: String, curPre: String): Boolean {
+        val cTokens = tokenizePreRelease(cPre)
+        val curTokens = tokenizePreRelease(curPre)
+        val limit = minOf(cTokens.size, curTokens.size)
+        for (i in 0 until limit) {
+            val cmp = comparePreReleaseToken(cTokens[i], curTokens[i])
+            if (cmp != 0) return cmp > 0
+        }
+        return cTokens.size > curTokens.size
+    }
+
+    private fun tokenizePreRelease(pre: String): List<String> {
+        if (pre.isEmpty()) return emptyList()
+        val tokens = mutableListOf<String>()
+        for (segment in pre.split('.', '-')) {
+            if (segment.isNotEmpty()) {
+                splitAlphaNumericRuns(segment, tokens)
+            }
+        }
+        return tokens
+    }
+
+    private fun splitAlphaNumericRuns(segment: String, out: MutableList<String>) {
+        val current = StringBuilder()
+        var lastWasDigit: Boolean? = null
+        for (ch in segment) {
+            val isDigit = ch.isDigit()
+            if (lastWasDigit != null && lastWasDigit != isDigit) {
+                out.add(current.toString())
+                current.setLength(0)
+            }
+            current.append(ch)
+            lastWasDigit = isDigit
+        }
+        if (current.isNotEmpty()) {
+            out.add(current.toString())
+        }
+    }
+
+    private fun comparePreReleaseToken(a: String, b: String): Int {
+        val aNum = a.toLongOrNull()
+        val bNum = b.toLongOrNull()
+        return when {
+            aNum != null && bNum != null -> aNum.compareTo(bNum)
+            aNum != null -> -1
+            bNum != null -> 1
+            else -> a.compareTo(b, ignoreCase = true)
+        }
+    }
 }

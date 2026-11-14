@@ -1,39 +1,49 @@
 package com.github.mihomo.android.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetSocketAddress
 
 /**
- * Tests for the shared endpoint parser.
+ * Tests for the shared literal-IP endpoint parser in [TunConfig.kt].
  *
- * The parser used to exist twice (ClashCore and MihomoVpnService) and split on the LAST
- * colon, which mangled bare IPv6 literals and accepted endpoints without a port. Both
- * copies were replaced by the single implementation in TunConfig.kt; these tests pin the
- * behaviour the core relies on for the connection-owner lookup.
+ * The parser must strictly accept only literal IPv4/IPv6 endpoints and reject domain names
+ * immediately without triggering blocking DNS resolution on hot paths.
  */
 class HostPortParserTest {
 
     @Test
-    fun `plain IPv4 endpoint parses`() {
+    fun `plain IPv4 endpoint parses without unresolved state`() {
         val parsed = parseHostPort("192.168.1.10:8080")
         assertNotNull(parsed)
-        assertEquals(8080, parsed!!.port)
+        assertFalse(parsed!!.isUnresolved)
+        assertTrue(parsed.address is Inet4Address)
+        assertEquals(8080, parsed.port)
         assertEquals("192.168.1.10", parsed.address.hostAddress)
     }
 
     @Test
-    fun `hostname endpoint parses`() {
-        val parsed = parseHostPort("example.com:443")
-        assertNotNull(parsed)
-        assertEquals(443, parsed!!.port)
-        // A hostname is resolved by InetSocketAddress, so the address is the resolved
-        // one; the port is what matters here.
-        assertNotNull(parsed.address)
+    fun `hostname endpoints are rejected without DNS resolution`() {
+        assertNull(parseHostPort("example.com:443"))
+        assertNull(parseHostPort("nonexistent.invalid:443"))
+        assertNull(parseHostPort("localhost:8080"))
+        assertNull(parseHostPort("[example.com]:443"))
+    }
+
+    @Test
+    fun `non canonical IPv4 forms are rejected`() {
+        assertNull(parseHostPort("0177.0.0.1:80"))
+        assertNull(parseHostPort("0x7f.0.0.1:80"))
+        assertNull(parseHostPort("2130706433:80"))
+        assertNull(parseHostPort("127.1:80"))
+        assertNull(parseHostPort("256.0.0.1:80"))
+        assertNull(parseHostPort("1.2.3.4.5:80"))
     }
 
     @Test
@@ -46,11 +56,41 @@ class HostPortParserTest {
     }
 
     @Test
-    fun `bracketed IPv6 loopback parses`() {
-        val parsed = parseHostPort("[::1]:9090")
-        assertNotNull(parsed)
-        assertEquals(9090, parsed!!.port)
-        assertTrue(parsed.address is Inet6Address)
+    fun `bracketed IPv6 loopback and unspecified parse`() {
+        val loopback = parseHostPort("[::1]:9090")
+        assertNotNull(loopback)
+        assertEquals(9090, loopback!!.port)
+        assertTrue(loopback.address is Inet6Address)
+
+        val unspecified = parseHostPort("[::]:53")
+        assertNotNull(unspecified)
+        assertEquals(53, unspecified!!.port)
+        assertEquals("0:0:0:0:0:0:0:0", unspecified.address.hostAddress)
+    }
+
+    @Test
+    fun `bracketed IPv6 with zone id or embedded IPv4 parses`() {
+        val zoned = parseHostPort("[fe80::1%wlan0]:5353")
+        assertNotNull(zoned)
+        assertEquals(5353, zoned!!.port)
+        assertTrue(zoned.address is Inet6Address)
+
+        val mapped = parseHostPort("[2001:db8::192.168.1.10]:8443")
+        assertNotNull(mapped)
+        assertEquals(8443, mapped!!.port)
+        assertTrue(mapped.address is Inet6Address)
+    }
+
+    @Test
+    fun `malformed IPv6 literals are rejected`() {
+        assertNull(parseHostPort("[2001::db8::1]:443"))
+        assertNull(parseHostPort("[2001:db8:::1]:443"))
+        assertNull(parseHostPort("[2001:db8:1:2:3:4:5:6:7]:443"))
+        assertNull(parseHostPort("[2001:db8:1:2:3:4:5]:443"))
+        assertNull(parseHostPort("[fe80::1%]:443"))
+        assertNull(parseHostPort("[%wlan0]:443"))
+        assertNull(parseHostPort("[2001:db8::1ffff]:443"))
+        assertNull(parseHostPort("[2001:db8::gggg]:443"))
     }
 
     @Test
@@ -62,7 +102,6 @@ class HostPortParserTest {
 
     @Test
     fun `bare IPv6 literal without a port is rejected instead of being mangled`() {
-        // The old parser read "2001:db8::1" as host "2001:db8:" with port 1.
         assertNull(parseHostPort("2001:db8::1"))
         assertNull(parseHostPort("::1"))
     }
@@ -101,18 +140,10 @@ class HostPortParserTest {
     }
 
     @Test
-    fun `an unresolvable host still yields a usable address`() {
-        // The core reports endpoints for hosts that may not resolve locally; the UID
-        // lookup must still receive a well-formed address instead of dropping the entry.
-        val parsed = parseHostPort("nonexistent.invalid:443")
-        assertNotNull(parsed)
-        assertEquals(443, parsed!!.port)
-    }
-
-    @Test
-    fun `parsed address is a socket address`() {
+    fun `parsed address is a socket address and resolveConnectionOwnerUid handles null manager`() {
         val parsed: InetSocketAddress? = parseHostPort("127.0.0.1:1080")
         assertNotNull(parsed)
         assertEquals(1080, parsed!!.port)
+        assertEquals(0, resolveConnectionOwnerUid(null, 6, "127.0.0.1:1080", "1.1.1.1:443"))
     }
 }

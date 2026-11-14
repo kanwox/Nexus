@@ -12,6 +12,7 @@ class DnsAndRequestRepositoryTest {
     fun setUp() {
         ThrottledPublisher.isThrottlingEnabled = false
         DnsRepository.clear()
+        RequestRepository.resetTransportForTest()
         RequestRepository.clearAll()
         LogRepository.clear()
     }
@@ -81,6 +82,14 @@ class DnsAndRequestRepositoryTest {
         assertFalse(resolvedCf.isCacheHit)
         assertEquals(15, resolvedCf.latencyMs)
         assertEquals("AAAA", resolvedCf.type)
+    }
+
+    @Test
+    fun `test DnsRepository collapses multi-whitespace bracketed IPs`() {
+        DnsRepository.parseFromLog("[DNS] multi.google --> [8.8.8.8   8.8.4.4\t1.1.1.1] from 223.5.5.5")
+        assertEquals("8.8.8.8, 8.8.4.4, 1.1.1.1", DnsRepository.findIpForDomain("multi.google"))
+        val record = DnsRepository.recordsFlow.value.first { it.domain == "multi.google" }
+        assertEquals("223.5.5.5", record.server)
     }
 
     @Test
@@ -179,5 +188,99 @@ class DnsAndRequestRepositoryTest {
         val rawJson = """{"level":"info","message":"[DNS] www.apple.com --> 17.253.144.10","time":"2026-10-26T10:00:00Z"}"""
         LogRepository.addRawLogcat(rawJson)
         assertEquals("17.253.144.10", DnsRepository.findIpForDomain("www.apple.com"))
+    }
+
+    @Test
+    fun `test RequestRepository evicts closed connections before active long-lived connections`() {
+        // Fill 500 connections: c0 is a long-lived connection, c1..c499 are short-lived.
+        val initialConns = (0 until RequestRepository.MAX_RECORDS).map { i ->
+            conn("c$i", "host$i.example.com", upload = 100L + i)
+        }
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = initialConns,
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+        assertEquals(RequestRepository.MAX_RECORDS, RequestRepository.recordsFlow.value.size)
+
+        // Next snapshot: c1..c499 have closed (disappeared), c0 is still active, and c500 arrives.
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(
+                    conn("c0", "host0.example.com", upload = 5000L),
+                    conn("c500", "new.example.com", upload = 50L)
+                ),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+
+        val records = RequestRepository.recordsFlow.value
+        assertEquals(RequestRepository.MAX_RECORDS, records.size)
+        val c0Record = records.firstOrNull { it.connectionId == "c0" }
+        val nonNullC0 = requireNotNull(c0Record) { "Active long-lived connection c0 must not be evicted" }
+        assertTrue(nonNullC0.isActive)
+        assertEquals(5000L, nonNullC0.uploadBytes)
+        assertNotNull("New connection c500 must be inserted", records.firstOrNull { it.connectionId == "c500" })
+        assertNull(
+            "Oldest closed connection c1 should be evicted first",
+            records.firstOrNull { it.connectionId == "c1" }
+        )
+    }
+
+    @Test
+    fun `test RequestRepository resolves UID outside lock and caches by UID without blocking topHostsByTraffic`() {
+        val resolverEntered = java.util.concurrent.CountDownLatch(1)
+        val allowResolverReturn = java.util.concurrent.CountDownLatch(1)
+        val resolverCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // Seed an existing record so topHostsByTraffic has data to aggregate.
+        RequestRepository.applySnapshot(
+            MihomoApi.ConnectionsSnapshot(
+                connections = listOf(conn("seed", "seed.example.com", upload = 100L, download = 200L)),
+                uploadTotal = 0L,
+                downloadTotal = 0L
+            )
+        )
+
+        RequestRepository.setUidResolverForTest { _, _, _ ->
+            if (resolverCalls.incrementAndGet() == 1) {
+                resolverEntered.countDown()
+                allowResolverReturn.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            10042
+        }
+
+        val writerThread = Thread {
+            RequestRepository.applySnapshot(
+                MihomoApi.ConnectionsSnapshot(
+                    connections = listOf(
+                        conn("c-uid-1", "app1.example.com"),
+                        conn("c-uid-2", "app2.example.com")
+                    ),
+                    uploadTotal = 0L,
+                    downloadTotal = 0L
+                )
+            )
+        }
+        writerThread.start()
+
+        assertTrue("UID resolver should be entered", resolverEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+
+        // While applySnapshot is blocked inside uidResolver, topHostsByTraffic must return lock-free!
+        val top = RequestRepository.topHostsByTraffic(5)
+        assertEquals(1, top.size)
+        assertEquals("seed.example.com", top.first().first)
+
+        allowResolverReturn.countDown()
+        writerThread.join(5000)
+
+        val records = RequestRepository.recordsFlow.value
+        val r1 = records.first { it.connectionId == "c-uid-1" }
+        val r2 = records.first { it.connectionId == "c-uid-2" }
+        assertEquals("UID 10042", r1.sourceApp)
+        assertEquals("UID 10042", r2.sourceApp)
     }
 }

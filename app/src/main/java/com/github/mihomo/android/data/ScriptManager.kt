@@ -1,3 +1,5 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.data
 
 import android.content.Context
@@ -60,7 +62,7 @@ object ScriptManager {
     internal fun sha256(content: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         return digest.digest(content.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
     }
 
     internal data class RemoteScriptDownloadTrust(
@@ -253,15 +255,26 @@ object ScriptManager {
     private fun getScriptsPrefs(context: Context) =
         context.getSharedPreferences("scripts_manager", Context.MODE_PRIVATE)
 
-    fun getScripts(context: Context): List<ScriptItem> {
+    private inline fun <T> runIoCatching(block: () -> T): Result<T> {
+        return try {
+            Result.success(block())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun getScripts(context: Context): List<ScriptItem> = synchronized(ioLock) {
         val raw = getScriptsPrefs(context).getString("script_items", "[]") ?: "[]"
-        return runCatching { json.decodeFromString<List<ScriptItem>>(raw) }.getOrDefault(emptyList())
+        runCatching { json.decodeFromString<List<ScriptItem>>(raw) }.getOrDefault(emptyList())
     }
 
     private fun saveScripts(context: Context, list: List<ScriptItem>) {
-        val raw = json.encodeToString(list)
-        getScriptsPrefs(context).edit { putString("script_items", raw) }
-        // Script content changes the parsed profile, whose cache key does not include it.
+        synchronized(ioLock) {
+            val raw = json.encodeToString(list)
+            getScriptsPrefs(context).edit { putString("script_items", raw) }
+        }
         ProfileParser.clearCache()
     }
 
@@ -270,11 +283,11 @@ object ScriptManager {
         allowPrivateHosts: Boolean = true,
         mixedPort: Int = 7890
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
+        runIoCatching {
             val cleanUrl = url.trim()
             requireSecureRemoteUrl(cleanUrl, allowPrivateHosts)
             fetchUrl(cleanUrl, mixedPort).body
-        }.onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     fun saveScript(
@@ -343,7 +356,7 @@ object ScriptManager {
         pattern: String,
         type: String
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
-        runCatching {
+        runIoCatching {
             val settings = SettingsManager(context)
             requireSecureRemoteUrl(url, settings.allowPrivateSubscriptionHosts)
             val fetched = fetchUrl(url, settings.mixedPort)
@@ -378,7 +391,7 @@ object ScriptManager {
                 Log.i(TAG, "Successfully downloaded script: ${item.name} ($fileName)")
             }
             item
-        }.onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     fun saveLocalScript(
@@ -387,7 +400,7 @@ object ScriptManager {
         pattern: String,
         type: String,
         code: String
-    ): ScriptItem {
+    ): ScriptItem = synchronized(ioLock) {
         val id = java.util.UUID.randomUUID().toString()
         val fileName = "$id.js"
         val file = SafeFileName.resolveChild(getScriptsDir(context), fileName)
@@ -406,25 +419,16 @@ object ScriptManager {
             contentHash = sha256(code)
         )
 
-        synchronized(ioLock) {
-            val current = getScripts(context).toMutableList()
-            current.add(0, item)
-            saveScripts(context, current)
-        }
-        return item
+        val current = getScripts(context).toMutableList()
+        current.add(0, item)
+        saveScripts(context, current)
+        item
     }
 
-    /**
-     * Reads the on-disk code of a script.
-     *
-     * `scriptFile` is persisted metadata (and arrives from restored backups), so it is
-     * resolved through [SafeFileName.resolveChild]: a value like `../../databases/x`
-     * would otherwise let a crafted backup read a file outside the scripts directory.
-     * An unsafe name yields an empty script, which the engine treats as "nothing to run".
-     */
-    fun readScriptCode(context: Context, script: ScriptItem): String {
-        val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile) ?: return ""
-        return if (file.exists()) runCatching { file.readText() }.getOrDefault("") else ""
+    /** Reads the on-disk code of a script inside [ioLock] so file and hash stay consistent. */
+    fun readScriptCode(context: Context, script: ScriptItem): String = synchronized(ioLock) {
+        val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile) ?: return@synchronized ""
+        if (file.exists()) runCatching { file.readText() }.getOrDefault("") else ""
     }
 
     /**
@@ -434,22 +438,24 @@ object ScriptManager {
     internal fun verifyScriptIntegrityCode(script: ScriptItem, code: String): Boolean =
         script.contentHash.isNotBlank() && code.isNotEmpty() && sha256(code) == script.contentHash
 
-    fun verifyScriptIntegrity(context: Context, script: ScriptItem): Boolean {
-        if (script.contentHash.isBlank()) return false
-        return verifyScriptIntegrityCode(script, readScriptCode(context, script))
+    fun verifyScriptIntegrity(context: Context, script: ScriptItem): Boolean = synchronized(ioLock) {
+        val latest = getScripts(context).firstOrNull { it.id == script.id } ?: script
+        if (latest.contentHash.isBlank()) return@synchronized false
+        verifyScriptIntegrityCode(latest, readScriptCode(context, latest))
     }
 
     fun updateScriptCode(context: Context, script: ScriptItem, newCode: String) {
         synchronized(ioLock) {
             val file = SafeFileName.resolveChild(getScriptsDir(context), script.scriptFile)
             if (file != null) {
+                val hash = sha256(newCode)
                 ConfigManager.writeTextAtomic(file, newCode)
                 val current = getScripts(context).toMutableList()
                 val idx = current.indexOfFirst { it.id == script.id }
                 if (idx >= 0) {
                     current[idx] = current[idx].copy(
                         updatedAt = System.currentTimeMillis(),
-                        contentHash = sha256(newCode)
+                        contentHash = hash
                     )
                     saveScripts(context, current)
                 }
@@ -457,44 +463,45 @@ object ScriptManager {
         }
     }
 
-    suspend fun updateScriptFromRemote(context: Context, script: ScriptItem): Result<ScriptItem> = withContext(Dispatchers.IO) {
-        runCatching {
-            if (script.url.isBlank()) error("无远程更新链接")
-            val settings = SettingsManager(context)
-            requireSecureRemoteUrl(script.url, settings.allowPrivateSubscriptionHosts)
-            val fetched = fetchUrl(script.url, settings.mixedPort)
-            val body = fetched.body
-            val newHash = sha256(body)
+    suspend fun updateScriptFromRemote(context: Context, script: ScriptItem): Result<ScriptItem> =
+        withContext(Dispatchers.IO) {
+            runIoCatching {
+                if (script.url.isBlank()) error("无远程更新链接")
+                val settings = SettingsManager(context)
+                requireSecureRemoteUrl(script.url, settings.allowPrivateSubscriptionHosts)
+                val fetched = fetchUrl(script.url, settings.mixedPort)
+                val body = fetched.body
+                val newHash = sha256(body)
 
-            synchronized(ioLock) {
-                val current = getScripts(context).toMutableList()
-                val idx = current.indexOfFirst { it.id == script.id }
-                val latest = if (idx >= 0) current[idx] else script
-                if (!canAcceptRemoteUpdate(latest.contentHash, newHash, fetched.fromMirror)) {
-                    Log.w(TAG, "Rejected mirror script update for ${latest.name}: hash mismatch or missing baseline")
-                    LogRepository.addLog(
-                        "warning",
-                        "已拒绝脚本「${latest.name}」的镜像更新：镜像内容与已校验指纹不一致或缺少基准指纹"
+                synchronized(ioLock) {
+                    val current = getScripts(context).toMutableList()
+                    val idx = current.indexOfFirst { it.id == script.id }
+                    val latest = if (idx >= 0) current[idx] else script
+                    if (!canAcceptRemoteUpdate(latest.contentHash, newHash, fetched.fromMirror)) {
+                        Log.w(TAG, "Rejected mirror script update for ${latest.name}: hash mismatch or missing baseline")
+                        LogRepository.addLog(
+                            "warning",
+                            "已拒绝脚本「${latest.name}」的镜像更新：镜像内容与已校验指纹不一致或缺少基准指纹"
+                        )
+                        error("第三方镜像内容与已校验指纹不一致，已拒绝覆盖（请直连或经代理从原始地址更新）")
+                    }
+
+                    val file = SafeFileName.resolveChild(getScriptsDir(context), latest.scriptFile)
+                        ?: error("无法为脚本创建安全的文件路径")
+                    ConfigManager.writeTextAtomic(file, body)
+
+                    val updated = latest.copy(
+                        updatedAt = System.currentTimeMillis(),
+                        contentHash = newHash
                     )
-                    error("第三方镜像内容与已校验指纹不一致，已拒绝覆盖（请直连或经代理从原始地址更新）")
+                    if (idx >= 0) {
+                        current[idx] = updated
+                        saveScripts(context, current)
+                    }
+                    updated
                 }
-
-                val file = SafeFileName.resolveChild(getScriptsDir(context), latest.scriptFile)
-                    ?: error("无法为脚本创建安全的文件路径")
-                ConfigManager.writeTextAtomic(file, body)
-
-                val updated = latest.copy(
-                    updatedAt = System.currentTimeMillis(),
-                    contentHash = newHash
-                )
-                if (idx >= 0) {
-                    current[idx] = updated
-                    saveScripts(context, current)
-                }
-                updated
             }
-        }.onFailure { if (it is CancellationException) throw it }
-    }
+        }
 
     fun toggleScript(context: Context, id: String, enabled: Boolean) {
         synchronized(ioLock) {
@@ -526,14 +533,16 @@ object ScriptManager {
     // -------------------------------------------------------------------------
     // Rewrite Rules
     // -------------------------------------------------------------------------
-    fun getRewrites(context: Context): List<RewriteRule> {
+    fun getRewrites(context: Context): List<RewriteRule> = synchronized(ioLock) {
         val raw = getScriptsPrefs(context).getString("rewrite_rules", "[]") ?: "[]"
-        return runCatching { json.decodeFromString<List<RewriteRule>>(raw) }.getOrDefault(emptyList())
+        runCatching { json.decodeFromString<List<RewriteRule>>(raw) }.getOrDefault(emptyList())
     }
 
     private fun saveRewrites(context: Context, list: List<RewriteRule>) {
-        val raw = json.encodeToString(list)
-        getScriptsPrefs(context).edit { putString("rewrite_rules", raw) }
+        synchronized(ioLock) {
+            val raw = json.encodeToString(list)
+            getScriptsPrefs(context).edit { putString("rewrite_rules", raw) }
+        }
         ProfileParser.clearCache()
     }
 

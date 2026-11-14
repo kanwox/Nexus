@@ -3,13 +3,12 @@
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Disable Name Obfuscation (Keep original class, method, and field names)
+# Obfuscation Disabled & Readable Stack Traces (已关闭混淆)
 # ---------------------------------------------------------------------------
+# Keep R8 shrinking and resource shrinking enabled while disabling class,
+# method, and field name obfuscation (-dontobfuscate) so runtime crashes and
+# JNI lookups retain original symbol names.
 -dontobfuscate
-
-# ---------------------------------------------------------------------------
-# General Code Quality & Attributes
-# ---------------------------------------------------------------------------
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,SourceFile,LineNumberTable
 
 # ---------------------------------------------------------------------------
@@ -19,9 +18,9 @@
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
 }
--keep class com.github.kr328.clash.core.** { *; }
--keep interface com.github.kr328.clash.core.** { *; }
--keep class com.github.mihomo.android.core.** { *; }
+-keep class com.github.kr328.clash.common.Global { *; }
+-keep class com.github.kr328.clash.core.bridge.** { *; }
+-keep interface com.github.kr328.clash.core.bridge.** { *; }
 
 # JNI callback interfaces
 -keep class * implements com.github.kr328.clash.core.bridge.TunInterface { *; }
@@ -32,19 +31,22 @@
 -keep class com.dokar.quickjs.** { *; }
 -dontwarn com.dokar.quickjs.**
 
-# The gomobile bridge (libbridge.so) looks up coroutine types BY NAME from native code
-# during JNI_OnLoad (its bind API uses CompletableDeferred, e.g. nativeLoad). R8's
-# reachability analysis cannot see name-based JNI lookups and stripped interface methods,
-# which crashed the first minified release (v1.0.4-Alpha.5) at startup with
-# NoSuchMethodError CompletableDeferred.complete. Keep the whole package.
--keep class kotlinx.coroutines.** { *; }
+# The gomobile bridge (libbridge.so) resolves kotlinx/coroutines/CompletableDeferred and
+# calls complete/completeExceptionally via JNIEnv->GetMethodID. Keep only that contract
+# instead of pinning the entire kotlinx.coroutines package.
+-keep interface kotlinx.coroutines.CompletableDeferred {
+    boolean complete(java.lang.Object);
+    boolean completeExceptionally(java.lang.Throwable);
+}
+-keepclassmembers class * implements kotlinx.coroutines.CompletableDeferred {
+    boolean complete(java.lang.Object);
+    boolean completeExceptionally(java.lang.Throwable);
+}
 
 # ---------------------------------------------------------------------------
 # Data Models & Serialization (kotlinx.serialization)
 # ---------------------------------------------------------------------------
 -dontnote kotlinx.serialization.**
--keep class com.github.kr328.clash.core.model.** { *; }
--keep class com.github.mihomo.android.data.** { *; }
 
 -keep,includedescriptorclasses class com.github.mihomo.android.**$$serializer { *; }
 -keep,includedescriptorclasses class com.github.kr328.clash.core.**$$serializer { *; }

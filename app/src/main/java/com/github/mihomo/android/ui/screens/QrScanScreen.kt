@@ -1,10 +1,14 @@
 package com.github.mihomo.android.ui.screens
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -22,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -35,27 +40,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.compose.material3.Text
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.github.mihomo.android.i18n.AppStrings
+import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.components.CupertinoButton
 import com.github.mihomo.android.ui.components.CupertinoGroupedSection
 import com.github.mihomo.android.ui.components.CupertinoNavBar
-import com.github.mihomo.android.i18n.AppStrings
-import com.github.mihomo.android.i18n.LocalAppLanguage
 import com.github.mihomo.android.ui.theme.LoonBg
+import com.github.mihomo.android.ui.theme.LoonResponsiveContent
 import com.github.mihomo.android.ui.theme.LoonTextPrimary
-import com.github.mihomo.android.ui.theme.LoonTypeScale
 import com.github.mihomo.android.ui.theme.LoonTextSecondary
+import com.github.mihomo.android.ui.theme.LoonTextStyles
+import com.github.mihomo.android.ui.theme.findActivity
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
-import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -162,30 +169,74 @@ private class QrFrameAnalyzer(
  * http/https URL is reported once through [onResult]; toast and navigation stay with the
  * caller.
  */
-@Composable
-fun QrScanScreen(
-    onBack: () -> Unit,
-    onResult: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val lang = LocalAppLanguage.current
+private data class CameraPermissionState(
+    val hasPermission: Boolean,
+    val permanentlyDenied: Boolean,
+    val requestPermission: () -> Unit,
+    val openSettings: () -> Unit
+)
 
+@Composable
+private fun rememberCameraPermissionState(): CameraPermissionState {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
         )
     }
+    var permanentlyDenied by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> hasCameraPermission = granted }
-
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
+    ) { granted ->
+        hasCameraPermission = granted
+        if (granted) {
+            permanentlyDenied = false
+        } else {
+            val activity = context.findActivity()
+            permanentlyDenied = activity != null &&
+                !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
         }
     }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                hasCameraPermission = granted
+                if (granted) permanentlyDenied = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    return CameraPermissionState(
+        hasPermission = hasCameraPermission,
+        permanentlyDenied = permanentlyDenied,
+        requestPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+        openSettings = {
+            if (!openAppDetailsSettings(context)) {
+                permissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    )
+}
+
+@Composable
+fun QrScanScreen(
+    onBack: () -> Unit,
+    onResult: (String) -> Unit
+) {
+    val lang = LocalAppLanguage.current
+    val permissionState = rememberCameraPermissionState()
 
     Column(
         modifier = Modifier
@@ -200,50 +251,83 @@ fun QrScanScreen(
             onBack = onBack
         )
 
-        if (hasCameraPermission) {
-            Text(
-                text = AppStrings.get("qr_scan_hint", lang),
-                color = LoonTextSecondary,
-                fontSize = LoonTypeScale.callout,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 10.dp)
-            )
-            QrCameraContent(
-                modifier = Modifier.weight(1f),
-                onResult = onResult
-            )
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                CupertinoGroupedSection {
-                    Column(
+        LoonResponsiveContent {
+            if (permissionState.hasPermission) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = AppStrings.get("qr_scan_hint", lang),
+                        color = LoonTextSecondary,
+                        style = LoonTextStyles.callout(),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = AppStrings.get("qr_permission_denied", lang),
-                            color = LoonTextPrimary,
-                            fontSize = LoonTypeScale.subhead,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        CupertinoButton(
-                            text = AppStrings.get("qr_grant_access", lang),
-                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }
-                        )
-                    }
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    )
+                    QrCameraContent(
+                        modifier = Modifier.weight(1f),
+                        onResult = onResult
+                    )
                 }
+            } else {
+                QrPermissionDeniedCard(
+                    lang = lang,
+                    permanentlyDenied = permissionState.permanentlyDenied,
+                    onRequestPermission = permissionState.requestPermission,
+                    onOpenSettings = permissionState.openSettings
+                )
             }
         }
     }
 }
+
+@Composable
+private fun QrPermissionDeniedCard(
+    lang: String,
+    permanentlyDenied: Boolean,
+    onRequestPermission: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        CupertinoGroupedSection {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = AppStrings.get("qr_permission_denied", lang),
+                    color = LoonTextPrimary,
+                    style = LoonTextStyles.body(),
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                CupertinoButton(
+                    text = AppStrings.get(
+                        if (permanentlyDenied) "qr_open_settings" else "qr_grant_access",
+                        lang
+                    ),
+                    onClick = if (permanentlyDenied) onOpenSettings else onRequestPermission
+                )
+            }
+        }
+    }
+}
+
+private fun openAppDetailsSettings(context: Context): Boolean = runCatching {
+    val intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.fromParts("package", context.packageName, null)
+    ).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.startActivity(intent)
+    true
+}.getOrDefault(false)
 
 @Composable
 private fun QrCameraContent(
@@ -256,11 +340,16 @@ private fun QrCameraContent(
     val latestOnResult by rememberUpdatedState(onResult)
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val disposed = remember { AtomicBoolean(false) }
     val analyzer = remember {
         QrFrameAnalyzer(qrDecodeHints) { url ->
-            // Analysis runs on its own executor: hop back to the main thread so the
-            // callback can safely touch Compose state.
-            mainHandler.post { latestOnResult(url) }
+            if (!disposed.get()) {
+                mainHandler.post {
+                    if (!disposed.get()) {
+                        latestOnResult(url)
+                    }
+                }
+            }
         }
     }
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
@@ -273,14 +362,20 @@ private fun QrCameraContent(
                 {
                     runCatching {
                         val provider = providerFuture.get()
+                        if (disposed.get()) {
+                            provider.unbindAll()
+                            return@runCatching
+                        }
                         cameraProvider = provider
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        val preview = Preview.Builder().build().also { target ->
+                            target.setSurfaceProvider(previewView.surfaceProvider)
                         }
                         val analysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
-                            .also { it.setAnalyzer(analysisExecutor, analyzer) }
+                            .also { target ->
+                                target.setAnalyzer(analysisExecutor, analyzer)
+                            }
                         provider.unbindAll()
                         provider.bindToLifecycle(
                             lifecycleOwner,
@@ -299,7 +394,10 @@ private fun QrCameraContent(
 
     DisposableEffect(Unit) {
         onDispose {
+            disposed.set(true)
+            mainHandler.removeCallbacksAndMessages(null)
             runCatching { cameraProvider?.unbindAll() }
+            cameraProvider = null
             analysisExecutor.shutdown()
         }
     }
