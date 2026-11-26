@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Monochrome (themed) variant of the Nexus Dual Wings launcher icon for Android 13+.
+    Monochrome (themed) variant of the launcher icon for Android 13+.
 
-    The launcher tints this layer with a single colour from the user's wallpaper palette,
-    so it renders the two overlapping upward-right sweeping wings as a crisp single-colour
-    silhouette centered inside the 66dp adaptive safe zone.
+    The launcher replaces every fill with a single tint colour, so this drawable
+    must be a flat silhouette: only the berry body, the two leaves and the calyx
+    are kept, and the decorative gradients, shadows and highlights are dropped.
+    All shapes use the same colour so the tinted result stays legible.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -12,13 +13,18 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Upper sweeping wing -->
+    <!-- Left Leaf (Companion Leaf) -->
     <path
-        android:pathData="M29.5,58.8 C27.2,58.1 26.8,55.8 28.8,54.0 C39.5,43.8 53.0,34.4 67.2,30.6 C69.5,30.0 71.1,32.0 69.5,33.9 C64.2,40.0 60.4,47.2 58.2,54.6 C55.6,63.2 46.8,64.2 35.8,60.8 C33.2,60.0 31.2,59.4 29.5,58.8 Z"
+        android:pathData="M52.2,43.5 C49.3,38.6 43.2,36.0 36.8,36.0 C39.0,41.3 46.2,45.1 52.2,43.5 Z"
         android:fillColor="#000000" />
 
-    <!-- Lower sweeping wing -->
+    <!-- Right Leaf (Main Sweeping Leaf) -->
     <path
-        android:pathData="M34.8,74.8 C32.6,73.4 32.8,70.2 35.4,67.8 C46.4,57.4 61.4,42.2 77.4,39.4 C80.0,39.0 81.4,41.4 79.4,43.4 C73.2,49.4 69.4,56.8 66.8,64.6 C63.8,73.4 55.6,76.8 44.2,76.8 C39.8,76.8 36.8,76.0 34.8,74.8 Z"
+        android:pathData="M54.2,43.2 C55.7,36.4 64.0,30.7 75.4,30.0 C72.4,37.2 62.6,43.6 54.2,43.2 Z"
+        android:fillColor="#000000" />
+
+    <!-- Blueberry Body -->
+    <path
+        android:pathData="M54.0,42.5 C64.0,42.0 74.5,47.0 74.5,58.0 C74.5,68.0 65.5,75.0 54.0,75.0 C42.5,75.0 33.5,68.0 33.5,58.0 C33.5,47.0 44.0,42.0 54.0,42.5 Z"
         android:fillColor="#000000" />
 </vector>
