@@ -192,7 +192,7 @@ fun Modifier.iosFocusRing(
 fun Modifier.iosPressable(
     enabled: Boolean = true,
     pressedScale: Float = LoonMotion.pressScale,
-    focusShape: Shape? = null,
+    focusShape: Shape? = RoundedCornerShape(LoonRadii.control),
     onLongClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null
 ): Modifier = composed {

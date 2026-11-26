@@ -29,7 +29,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -149,6 +152,7 @@ fun MainAppScreen(
         onPickProfileFile = { profileImportLauncher.launch("*/*") }
     )
 
+    val hasSubScreenOverlay = state.currentSubScreen != null
     CompositionLocalProvider(LocalAppLanguage provides state.appLanguage) {
         Box(modifier = Modifier.fillMaxSize().background(LoonBg)) {
             MainTabsPager(
@@ -157,10 +161,17 @@ fun MainAppScreen(
                 scrollStates = scrollStates,
                 vpnTraffic = vpnTraffic,
                 currentThemeMode = currentThemeMode,
-                onToggleVpn = onToggleVpn
+                onToggleVpn = onToggleVpn,
+                obscuredBySubScreen = hasSubScreenOverlay
             )
             MainSubScreenOverlay(env = subScreenEnv, theme = subScreenTheme)
-            MainBottomBarContainer(state.currentTab, vpnStatus, vm, state::selectTab)
+            MainBottomBarContainer(
+                currentTab = state.currentTab,
+                vpnStatus = vpnStatus,
+                vm = vm,
+                obscuredBySubScreen = hasSubScreenOverlay,
+                onSelectTab = state::selectTab
+            )
             CupertinoToastHost()
         }
         MainAppBackupDialogs(state, vm, coreActive, activity, coroutineScope)
@@ -258,14 +269,23 @@ private fun MainTabsPager(
     scrollStates: MainScrollStates,
     vpnTraffic: State<VpnState>,
     currentThemeMode: ThemeMode,
-    onToggleVpn: () -> Unit
+    onToggleVpn: () -> Unit,
+    obscuredBySubScreen: Boolean
 ) {
     val state = env.state
+    val obscuredModifier = if (obscuredBySubScreen) {
+        Modifier
+            .fillMaxSize()
+            .semantics { hideFromAccessibility() }
+            .focusProperties { canFocus = false }
+    } else {
+        Modifier.fillMaxSize()
+    }
     HorizontalPager(
         state = pagerState,
         userScrollEnabled = false,
         beyondViewportPageCount = 0,
-        modifier = Modifier.fillMaxSize()
+        modifier = obscuredModifier
     ) { page ->
         LoonResponsiveContent(maxWidth = 680.dp) {
             when (page) {
@@ -485,14 +505,22 @@ private fun BoxScope.MainBottomBarContainer(
     currentTab: Int,
     vpnStatus: VpnState.Status,
     vm: ProxiesViewModel,
+    obscuredBySubScreen: Boolean,
     onSelectTab: (Int) -> Unit
 ) {
+    val baseModifier = Modifier
+        .align(Alignment.BottomCenter)
+        .wrapContentSize(Alignment.BottomCenter)
+        .navigationBarsPadding()
+        .padding(bottom = 16.dp)
     Box(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .wrapContentSize(Alignment.BottomCenter)
-            .navigationBarsPadding()
-            .padding(bottom = 16.dp)
+        modifier = if (obscuredBySubScreen) {
+            baseModifier
+                .semantics { hideFromAccessibility() }
+                .focusProperties { canFocus = false }
+        } else {
+            baseModifier
+        }
     ) {
         LoonFloatingBottomBar(
             selectedTab = currentTab,

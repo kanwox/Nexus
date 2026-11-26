@@ -179,10 +179,15 @@ private fun isDisallowedEmbeddedIpv4(embedded: Inet4Address): Boolean =
  * obfuscated, or (when [allowPrivateHosts] is `false`) private/loopback host. Fails closed when
  * the URL cannot be parsed.
  */
-internal fun requireSecureRemoteUrl(url: String, allowPrivateHosts: Boolean = true) {
+internal fun requireSecureRemoteUrl(
+    url: String,
+    allowPrivateHosts: Boolean = false,
+    requireHttpsOnly: Boolean = false
+) {
     val trimmed = url.trim()
     val scheme = trimmed.substringBefore("://", "").lowercase(Locale.ROOT)
-    if (scheme != "https" && scheme != "http") {
+    val schemeAllowed = if (requireHttpsOnly) scheme == "https" else (scheme == "https" || scheme == "http")
+    if (!schemeAllowed) {
         blockSsrf("不支持的地址协议：${redactUrl(trimmed)}")
     }
     if (trimmed.any { it.isISOControl() }) {

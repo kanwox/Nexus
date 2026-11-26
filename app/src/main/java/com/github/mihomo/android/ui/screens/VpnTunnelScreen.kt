@@ -2,7 +2,6 @@ package com.github.mihomo.android.ui.screens
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -52,7 +51,8 @@ data class VpnTunnelUiState(
     val bootOnStartup: Boolean
 )
 
-class VpnTunnelCallbacks(
+@Immutable
+data class VpnTunnelCallbacks(
     val onTunStackChanged: (String) -> Unit,
     val onTunMtuChanged: (Int) -> Unit,
     val onMixedPortChanged: (Int) -> Unit,
@@ -72,11 +72,6 @@ fun VpnTunnelScreen(
 ) {
     val lang = LocalAppLanguage.current
     val context = LocalContext.current
-
-    // setBlocking() exists from API 29 only. On 26-28 the switch would silently do
-    // nothing, so it is disabled here and the subtitle says why — never show an "on"
-    // state the system cannot honor.
-    val killSwitchSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     var showTunDialog by remember { mutableStateOf(false) }
     var showMixedPortDialog by remember { mutableStateOf(false) }
@@ -104,7 +99,6 @@ fun VpnTunnelScreen(
                 callbacks = callbacks,
                 lang = lang,
                 context = context,
-                killSwitchSupported = killSwitchSupported,
                 onOpenTunDialog = { showTunDialog = true },
                 onOpenMtuDialog = { showTunMtuDialog = true },
                 onOpenMixedPortDialog = { showMixedPortDialog = true }
@@ -132,7 +126,6 @@ private fun VpnTunnelList(
     callbacks: VpnTunnelCallbacks,
     lang: String,
     context: Context,
-    killSwitchSupported: Boolean,
     onOpenTunDialog: () -> Unit,
     onOpenMtuDialog: () -> Unit,
     onOpenMixedPortDialog: () -> Unit
@@ -159,7 +152,7 @@ private fun VpnTunnelList(
                 state = state,
                 callbacks = callbacks,
                 lang = lang,
-                killSwitchSupported = killSwitchSupported
+                context = context
             )
         }
         item {
@@ -217,19 +210,16 @@ private fun VpnProtectionSection(
     state: VpnTunnelUiState,
     callbacks: VpnTunnelCallbacks,
     lang: String,
-    killSwitchSupported: Boolean
+    context: Context
 ) {
     CupertinoGroupedSection {
-        CupertinoSwitchCell(
+        // Real Kill Switch on Android is enforced by the OS ("Block connections without VPN").
+        // Direct users to the system VPN settings rather than toggling a non-functional TUN flag.
+        CupertinoCell(
             title = AppStrings.get("settings_kill_switch", lang),
-            subtitle = if (killSwitchSupported) {
-                AppStrings.get("settings_kill_switch_desc", lang)
-            } else {
-                AppStrings.get("settings_kill_switch_unsupported", lang)
-            },
-            checked = state.killSwitchEnabled && killSwitchSupported,
-            enabled = killSwitchSupported,
-            onCheckedChange = callbacks.onKillSwitchChanged
+            subtitle = AppStrings.get("settings_always_on_vpn_desc", lang),
+            showChevron = true,
+            onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) } }
         )
         CupertinoDivider()
         CupertinoSwitchCell(

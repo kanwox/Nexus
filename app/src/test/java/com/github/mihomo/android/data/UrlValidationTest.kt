@@ -24,10 +24,17 @@ class UrlValidationTest {
     }
 
     @Test
-    fun `loopback http URLs are allowed for local tooling`() {
-        requireSecureRemoteUrl("http://127.0.0.1:8080/sub.yaml")
-        requireSecureRemoteUrl("http://localhost:3000/profiles")
-        requireSecureRemoteUrl("http://localhost/config")
+    fun `loopback http URLs are allowed when allowPrivateHosts is enabled and blocked by default`() {
+        requireSecureRemoteUrl("http://127.0.0.1:8080/sub.yaml", allowPrivateHosts = true)
+        requireSecureRemoteUrl("http://localhost:3000/profiles", allowPrivateHosts = true)
+        requireSecureRemoteUrl("http://localhost/config", allowPrivateHosts = true)
+
+        assertThrows(SsrfBlockedException::class.java) {
+            requireSecureRemoteUrl("http://127.0.0.1:8080/sub.yaml")
+        }
+        assertThrows(SsrfBlockedException::class.java) {
+            requireSecureRemoteUrl("http://example.com/script.js", requireHttpsOnly = true)
+        }
     }
 
     @Test

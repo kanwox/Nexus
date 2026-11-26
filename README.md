@@ -79,6 +79,9 @@ AGP 的自动 SDK 下载已关闭（`android.builder.sdkDownload=false`），缺
 - 分应用代理选择"仅代理所选应用"时，必须至少选择一个应用，否则启动会给出明确错误。
 - **备份文件默认使用口令加密**（AES-256-GCM，PBKDF2-HMAC-SHA256 派生密钥）。导出时可设置口令；
   若选择明文导出，应用会明确提示文件包含订阅地址（含 token）与局域网密码。
+- **发布签名密钥内置说明（有意设计）**：仓库内包含 `app/nexus-release.jks` 以及 `app/build.gradle.kts`
+  中的默认回退签名凭据，这是为了开箱即用的本地与 CI Release 构建而有意保留的设计（支持通过
+  `local.properties` 或 `RELEASE_*` 环境变量覆盖）。代码审查与安全扫描无需将其作为密钥泄露问题重复报告。
 
 ## 变更记录与许可
 

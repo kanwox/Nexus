@@ -82,22 +82,19 @@ object ConfigManager {
 
     private fun profileLock(id: String): Mutex = profileLocks.computeIfAbsent(id) { Mutex() }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        // A server that drips one byte per read timeout would otherwise stall an auto-update
-        // channel indefinitely; cap the total call duration as well.
-        .callTimeout(60, TimeUnit.SECONDS)
-        .withSsrfProtection(
+    private val httpClient: OkHttpClient by lazy {
+        NetworkClients.directClient(
+            connectTimeoutSec = 15,
+            readTimeoutSec = 30,
+            callTimeoutSec = 60,
             allowPrivateSupplier = {
                 runCatching {
                     val app = com.github.kr328.clash.common.Global.application
                     SettingsManager(app).allowPrivateSubscriptionHosts
-                }.getOrDefault(true)
-            },
-            validateDns = true
+                }.getOrDefault(false)
+            }
         )
-        .build()
+    }
 
     /**
      * Writes via a unique temp file + atomic move so a crash or concurrent write can never
@@ -379,8 +376,10 @@ object ConfigManager {
     fun updateProfile(context: Context, item: ProfileItem) =
         ProfileStore.saveProfileMetadata(context, item)
 
-    fun deleteProfile(context: Context, id: String) =
+    fun deleteProfile(context: Context, id: String) {
         ProfileStore.deleteProfile(context, id)
+        profileLocks.remove(id)
+    }
 
     fun migrateLegacyScriptScopes(context: Context) =
         ProfileStore.migrateLegacyScriptScopes(context)
@@ -629,6 +628,10 @@ private suspend fun buildUserConfigBody(
         """.trimIndent()
     }
 
+    val maxLocalBytes = 20L * 1024 * 1024
+    if (sourceFile.length() > maxLocalBytes) {
+        error("本地配置文件过大 (${sourceFile.length() / (1024 * 1024)} MB, 上限 20 MB)")
+    }
     val originalContent = sourceFile.readText()
     val targetIds = if (settings.scriptingEnabled && activeProfile != null && activeProfile.scriptEnabled) {
         activeProfile.scriptIds

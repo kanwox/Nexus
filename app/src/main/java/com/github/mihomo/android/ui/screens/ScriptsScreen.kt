@@ -389,7 +389,8 @@ private fun resolveScriptEditorTransition(
 @Composable
 fun ScriptsScreen(
     onBack: () -> Unit,
-    onScriptsChanged: () -> Unit = {}
+    onScriptsChanged: () -> Unit = {},
+    onEditorVisibilityChanged: (Boolean) -> Unit = {}
 ) {
     val lang = LocalAppLanguage.current
     val context = LocalContext.current
@@ -398,11 +399,18 @@ fun ScriptsScreen(
     val readClipboardText = rememberClipboardReadText()
     val reduceMotion = LocalReduceMotion.current
 
-    val controller = remember(context, lang, scope, onScriptsChanged) {
-        ScriptsListController(context, lang, scope, onScriptsChanged)
+    val latestOnScriptsChanged by androidx.compose.runtime.rememberUpdatedState(onScriptsChanged)
+    val controller = remember(context, scope) {
+        ScriptsListController(context, lang, scope) { latestOnScriptsChanged() }
     }
     var editorTarget by remember { mutableStateOf<ScriptEditorTarget?>(null) }
     val dialogs = remember { ScriptListDialogsState() }
+
+    val latestOnEditorVisibilityChanged by androidx.compose.runtime.rememberUpdatedState(onEditorVisibilityChanged)
+    androidx.compose.runtime.DisposableEffect(editorTarget != null) {
+        latestOnEditorVisibilityChanged(editorTarget != null)
+        onDispose { latestOnEditorVisibilityChanged(false) }
+    }
 
     LaunchedEffect(controller) {
         controller.scripts = withContext(Dispatchers.IO) { ScriptManager.getScripts(context) }
@@ -1226,7 +1234,17 @@ private fun ScriptEditorScreen(
         onSaved = onSaved
     )
 
-    BackHandler(onBack = onBack)
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    val isDirty = loadedCode != null && document.textFieldValue.text != loadedCode
+    val requestBack: () -> Unit = {
+        if (isDirty) {
+            showDiscardDialog = true
+        } else {
+            onBack()
+        }
+    }
+
+    BackHandler(onBack = requestBack)
 
     ScriptEditorScaffold(
         scriptName = scriptName,
@@ -1235,7 +1253,7 @@ private fun ScriptEditorScreen(
         document = document,
         isDark = isDark,
         lang = lang,
-        onBack = onBack,
+        onBack = requestBack,
         onRequestSave = {
             haptic.lightTick()
             if (scriptName.isBlank()) {
@@ -1246,6 +1264,22 @@ private fun ScriptEditorScreen(
             }
         }
     )
+
+    if (showDiscardDialog) {
+        CupertinoAlertDialog(
+            title = AppStrings.get("cancel", lang),
+            message = AppStrings.get("scripts_discard_confirm", lang),
+            confirmText = AppStrings.get("confirm", lang),
+            dismissText = AppStrings.get("cancel", lang),
+            isDestructive = true,
+            onConfirm = {
+                showDiscardDialog = false
+                onBack()
+            },
+            onDismiss = { showDiscardDialog = false },
+            onDismissRequest = { showDiscardDialog = false }
+        )
+    }
 
     if (showNameDialog) {
         ScriptEditorNameDialog(

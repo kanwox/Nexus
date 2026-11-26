@@ -162,14 +162,12 @@ private fun filterRequestRecords(
         if (!appMatch) return@filter false
 
         if (query.isEmpty()) return@filter true
-        listOf(
-            record.host,
-            record.destinationIp,
-            record.sourceApp,
-            record.outbound,
-            record.rule,
-            record.rulePayload
-        ).any { field -> field.lowercase(Locale.ROOT).contains(query) }
+        record.host.contains(query, ignoreCase = true) ||
+            record.destinationIp.contains(query, ignoreCase = true) ||
+            record.sourceApp.contains(query, ignoreCase = true) ||
+            record.outbound.contains(query, ignoreCase = true) ||
+            record.rule.contains(query, ignoreCase = true) ||
+            record.rulePayload.contains(query, ignoreCase = true)
     }
 }
 

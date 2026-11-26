@@ -139,7 +139,7 @@ internal fun MainSubScreenOverlay(
     }
 
     SubScreenPredictiveBackEffect(
-        enabled = state.currentSubScreen != null,
+        enabled = state.currentSubScreen != null && !state.edgeBackBlockedByChild,
         onPredictiveBack = controller::handlePredictiveBack
     )
 
@@ -166,6 +166,7 @@ internal fun MainSubScreenOverlay(
             .onSizeChanged { size -> controller.containerWidthPx = size.width.toFloat() }
             .subScreenEdgeBackGesture(
                 currentSubScreen = state.currentSubScreen,
+                enabled = !state.edgeBackBlockedByChild,
                 isRtl = isRtl,
                 edgeZonePx = edgeZonePx,
                 controller = controller
@@ -188,11 +189,12 @@ internal fun MainSubScreenOverlay(
 
 private fun Modifier.subScreenEdgeBackGesture(
     currentSubScreen: SubScreen?,
+    enabled: Boolean,
     isRtl: Boolean,
     edgeZonePx: Float,
     controller: SubScreenEdgeBackController
-): Modifier = pointerInput(currentSubScreen, isRtl, controller.reduceMotion) {
-    if (currentSubScreen == null) return@pointerInput
+): Modifier = pointerInput(currentSubScreen, enabled, isRtl, controller.reduceMotion) {
+    if (currentSubScreen == null || !enabled) return@pointerInput
 
     detectHorizontalDragGestures(
         onDragStart = { startOffset ->
@@ -357,7 +359,8 @@ private fun ProfilesAndScriptsDestinations(
         }
         SubScreen.SCRIPTS -> ScriptsScreen(
             onBack = state::navigateBackSubScreen,
-            onScriptsChanged = { vm.onScriptsChanged(coreActive) }
+            onScriptsChanged = { vm.onScriptsChanged(coreActive) },
+            onEditorVisibilityChanged = { visible -> state.edgeBackBlockedByChild = visible }
         )
         SubScreen.QR_SCAN -> QrScanScreen(
             onBack = state::navigateBackSubScreen,
@@ -498,16 +501,21 @@ private fun NetworkShareDestination(
             val prev = state.allowLanPassword
             state.allowLanPassword = pwd
             state.lanPasswordLoaded = true
-            state.settingsManager.allowLanPassword = pwd
-            if (coreActive) {
-                coroutineScope.reloadCoreWithRollback(
-                    context = activity,
-                    appLanguage = state.appLanguage,
-                    onRollback = {
-                        state.allowLanPassword = prev
+            coroutineScope.launch(Dispatchers.IO) {
+                state.settingsManager.allowLanPassword = pwd
+                if (coreActive) {
+                    val ok = runCatching { ClashCore.reloadActiveConfig(activity) }.getOrDefault(false)
+                    if (!ok) {
                         state.settingsManager.allowLanPassword = prev
+                        withContext(Dispatchers.Main) {
+                            state.allowLanPassword = prev
+                            CupertinoToast.show(
+                                AppStrings.get("core_reload_failed", state.appLanguage),
+                                isDestructive = true
+                            )
+                        }
                     }
-                )
+                }
             }
         },
         mixedPort = state.mixedPort,

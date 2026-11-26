@@ -143,7 +143,7 @@ data class ShortcutDef(
     val onClick: () -> Unit
 )
 
-@Immutable
+@androidx.compose.runtime.Stable
 data class DashboardStatusState(
     val vpnStatus: VpnState.Status,
     val vpnError: String? = null,
@@ -154,7 +154,7 @@ data class DashboardStatusState(
     val mixedPort: Int = 7890
 )
 
-@Immutable
+@androidx.compose.runtime.Stable
 data class DashboardProxySummary(
     val mainGroupName: String,
     val mainGroupProxies: List<Proxy>,
@@ -164,21 +164,24 @@ data class DashboardProxySummary(
     val totalRules: Int
 )
 
-class DashboardShortcutsState(
+@Immutable
+data class DashboardShortcutsState(
     val visibleShortcuts: Set<String>,
     val shortcutOrder: List<String>,
     val onUpdateVisibleShortcuts: (Set<String>) -> Unit,
     val onUpdateShortcutOrder: (List<String>) -> Unit
 )
 
-class DashboardActions(
+@Immutable
+data class DashboardActions(
     val onToggleVpn: () -> Unit,
     val onModeSelected: (TunnelMode) -> Unit,
     val onSelectProxy: (group: String, proxy: Proxy) -> Unit,
     val onHealthCheck: (group: String) -> Job?
 )
 
-class DashboardNavigation(
+@Immutable
+data class DashboardNavigation(
     val onNavigateToProfiles: () -> Unit,
     val onNavigateToAppRouting: () -> Unit,
     val onNavigateToRules: () -> Unit = {},
@@ -601,6 +604,7 @@ private fun ShortcutDragGridItem(
 }
 
 private class ShortcutGridDragState {
+    var activeDraggedId by mutableStateOf<String?>(null)
     var dragOffset by mutableStateOf(Offset.Zero)
     var initialSlotIndex by mutableIntStateOf(-1)
     var hoverSlotIndex by mutableIntStateOf(-1)
@@ -608,6 +612,7 @@ private class ShortcutGridDragState {
     var startSlotY by mutableFloatStateOf(0f)
 
     fun reset() {
+        activeDraggedId = null
         dragOffset = Offset.Zero
         initialSlotIndex = -1
         hoverSlotIndex = -1
@@ -627,6 +632,7 @@ private fun Modifier.shortcutDragModifier(
     detectDragGesturesAfterLongPress(
         onDragStart = {
             val curIdx = displayedRef.value.indexOfFirst { entry -> entry.id == itemId }
+            dragState.activeDraggedId = itemId
             onDraggedIdChanged(itemId)
             dragState.initialSlotIndex = curIdx
             dragState.hoverSlotIndex = curIdx
@@ -647,7 +653,7 @@ private fun Modifier.shortcutDragModifier(
         onDragCancel = { onDraggedIdChanged(null); dragState.reset() },
         onDrag = { change, dragAmount ->
             change.consume()
-            if (dragContext.draggedId != itemId) return@detectDragGesturesAfterLongPress
+            if (dragState.activeDraggedId != itemId) return@detectDragGesturesAfterLongPress
             val nextOffset = dragState.dragOffset + dragAmount
             dragState.dragOffset = nextOffset
             val targetIdx = resolveHoverSlot(
@@ -942,15 +948,17 @@ private fun androidx.compose.foundation.layout.ColumnScope.QuickNodeListContent(
             )
         }
     } else {
+        val indexedNodes = remember(filteredNodes) { indexProxiesWithOccurrences(filteredNodes) }
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f).bounceOverscroll(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)
         ) {
             cupertinoGroupedItems(
-                items = filteredNodes,
-                key = { _, proxy -> proxy.name },
+                items = indexedNodes,
+                key = { _, item -> item.stableKey },
                 dividerStartIndent = 16.dp
-            ) { _, proxy ->
+            ) { _, item ->
+                val proxy = item.proxy
                 QuickNodeSheetRow(
                     proxy = proxy,
                     mainGroupName = proxySummary.mainGroupName,

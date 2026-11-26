@@ -2,31 +2,15 @@
 
 package com.github.mihomo.android.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
-import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.net.LinkProperties
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.service.quicksettings.TileService
 import android.util.Log
-import androidx.core.app.NotificationCompat
-import com.github.kr328.clash.core.util.trafficDownload
-import com.github.kr328.clash.core.util.trafficSpeedDownload
-import com.github.kr328.clash.core.util.trafficSpeedUpload
-import com.github.kr328.clash.core.util.trafficUpload
 import com.github.mihomo.android.MihomoApplication
 import com.github.mihomo.android.R
 import com.github.mihomo.android.core.ClashCore
@@ -39,7 +23,6 @@ import com.github.mihomo.android.data.ProfileItem
 import com.github.mihomo.android.data.RequestRepository
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.i18n.AppStrings
-import com.github.mihomo.android.ui.MainActivity
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
@@ -64,29 +47,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-private const val SERVICE_TAG = "MihomoVpnService"
-private const val NOTIFICATION_CHANNEL_ID = "mihomo_vpn_service"
-private const val NOTIFICATION_ID = 1001
-private const val TEARDOWN_WAIT_MS = 15_000L
-private const val NETWORK_NOTIFY_DEBOUNCE_MS = 150L
-private const val NOTIFICATION_THROTTLE_MS = 3_000L
-
-data class VpnState(
-    val status: Status = Status.STOPPED,
-    val upSpeed: String = "0 B/s",
-    val downSpeed: String = "0 B/s",
-    val totalUp: String = "0 B",
-    val totalDown: String = "0 B",
-    val coreVersion: String = "",
-    val error: String? = null,
-    /** Wall-clock time the tunnel reached RUNNING; 0 when it is not running. */
-    val startedAtMs: Long = 0L,
-) {
-    enum class Status {
-        STOPPED, STARTING, RUNNING, STOPPING
-    }
-}
-
 private sealed interface ServiceCommand {
     data class Start(val startId: Int, val seq: Long) : ServiceCommand
     data class Restart(val startId: Int, val seq: Long) : ServiceCommand
@@ -102,274 +62,6 @@ private sealed interface ServiceCommand {
         val appLanguage: String,
     ) : ServiceCommand
     data class StartFailed(val token: Long, val message: String) : ServiceCommand
-}
-
-private class PhysicalNetworkCallback(
-    private val connectivityProvider: () -> ConnectivityManager?,
-    private val onPhysicalNetworkEvent: () -> Unit,
-) : ConnectivityManager.NetworkCallback() {
-    @Volatile
-    private var lastDispatchedNetwork: Network? = null
-
-    @Volatile
-    private var lastDispatchedDnsSignature: String? = null
-
-    override fun onAvailable(network: Network) {
-        if (!isPhysicalNetwork(network)) return
-        ClashCore.updateTrackedPhysicalNetwork(network)
-        if (lastDispatchedNetwork != network) {
-            lastDispatchedNetwork = network
-            lastDispatchedDnsSignature = null
-            onPhysicalNetworkEvent()
-        }
-    }
-
-    override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-        if (!isPhysicalNetwork(network)) return
-        ClashCore.updateTrackedPhysicalNetwork(network)
-        val dnsSig = linkProperties.dnsServers.mapNotNull { it.hostAddress }.joinToString(",")
-        if (lastDispatchedNetwork != network || lastDispatchedDnsSignature != dnsSig) {
-            lastDispatchedNetwork = network
-            lastDispatchedDnsSignature = dnsSig
-            onPhysicalNetworkEvent()
-        }
-    }
-
-    override fun onLost(network: Network) {
-        Log.i(SERVICE_TAG, "Physical network lost: $network")
-        if (lastDispatchedNetwork == network) {
-            lastDispatchedNetwork = null
-            lastDispatchedDnsSignature = null
-            ClashCore.updateTrackedPhysicalNetwork(null)
-        }
-        onPhysicalNetworkEvent()
-    }
-
-    override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-        if (networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
-        if (!networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
-        ClashCore.updateTrackedPhysicalNetwork(network)
-        if (lastDispatchedNetwork != network) {
-            lastDispatchedNetwork = network
-            lastDispatchedDnsSignature = null
-            onPhysicalNetworkEvent()
-        }
-    }
-
-    private fun isPhysicalNetwork(network: Network): Boolean {
-        val cm = connectivityProvider() ?: return false
-        val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull()
-        return caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-    }
-}
-
-private class VpnSystemMonitors(
-    private val hostContext: Context,
-    private val connectivityProvider: () -> ConnectivityManager?,
-    private val onScreenOff: () -> Unit,
-    private val onScreenOn: () -> Unit,
-    private val onPhysicalNetworkEvent: () -> Unit,
-) {
-    private var screenStateReceiverRegistered = false
-    private var networkCallbackRegistered = false
-
-    private val screenStateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                Intent.ACTION_SCREEN_OFF -> onScreenOff()
-                Intent.ACTION_SCREEN_ON -> onScreenOn()
-            }
-        }
-    }
-
-    private val networkCallback = PhysicalNetworkCallback(
-        connectivityProvider = connectivityProvider,
-        onPhysicalNetworkEvent = onPhysicalNetworkEvent
-    )
-
-    fun registerAll() {
-        if (!screenStateReceiverRegistered) {
-            runCatching {
-                val filter = IntentFilter().apply {
-                    addAction(Intent.ACTION_SCREEN_ON)
-                    addAction(Intent.ACTION_SCREEN_OFF)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    hostContext.registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-                } else {
-                    hostContext.registerReceiver(screenStateReceiver, filter)
-                }
-                screenStateReceiverRegistered = true
-            }
-        }
-        if (!networkCallbackRegistered) {
-            runCatching {
-                val cm = connectivityProvider() ?: return
-                val request = NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                    .build()
-                cm.registerNetworkCallback(request, networkCallback)
-                networkCallbackRegistered = true
-            }
-        }
-    }
-
-    fun unregisterAll() {
-        if (screenStateReceiverRegistered) {
-            runCatching { hostContext.unregisterReceiver(screenStateReceiver) }
-            screenStateReceiverRegistered = false
-        }
-        if (networkCallbackRegistered) {
-            runCatching { connectivityProvider()?.unregisterNetworkCallback(networkCallback) }
-            networkCallbackRegistered = false
-        }
-    }
-}
-
-private class VpnNotificationController(
-    private val service: Service,
-) {
-    @Volatile
-    private var lastContent: String? = null
-
-    @Volatile
-    private var lastUpdateTimeMs: Long = 0L
-
-    private val launchPendingIntent: PendingIntent by lazy {
-        PendingIntent.getActivity(
-            service,
-            0,
-            Intent(service, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-    }
-
-    private val stopPendingIntent: PendingIntent by lazy {
-        PendingIntent.getService(
-            service,
-            1,
-            Intent(service, MihomoVpnService::class.java).apply { action = MihomoVpnService.ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-    }
-
-    fun createChannel() {
-        val channel = NotificationChannel(
-            NOTIFICATION_CHANNEL_ID,
-            service.getString(R.string.notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = service.getString(R.string.notification_channel_desc)
-            setShowBadge(false)
-        }
-        val manager = service.getSystemService(NotificationManager::class.java) ?: return
-        manager.createNotificationChannel(channel)
-    }
-
-    fun currentOrDefaultStartingText(): String {
-        val current = lastContent
-        if (current != null) return current
-        val lang = runCatching { SettingsManager(service).appLanguage }.getOrDefault("auto")
-        return AppStrings.get("notification_starting_core", lang)
-    }
-
-    fun resetState(clearContent: Boolean) {
-        if (clearContent) {
-            lastContent = null
-        }
-        lastUpdateTimeMs = 0L
-    }
-
-    fun startForegroundNotification(content: String) {
-        lastContent = content
-        val notification = buildNotification(content)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            service.startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            service.startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST)
-        } else {
-            service.startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
-    fun updateNotification(content: String, throttled: Boolean) {
-        if (content == lastContent) return
-        val nowMs = System.currentTimeMillis()
-        if (throttled && nowMs - lastUpdateTimeMs < NOTIFICATION_THROTTLE_MS) return
-        if (throttled) {
-            lastUpdateTimeMs = nowMs
-        }
-        lastContent = content
-        val manager = service.getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(NOTIFICATION_ID, buildNotification(content))
-    }
-
-    fun stopForegroundAndReset() {
-        runCatching { service.stopForeground(Service.STOP_FOREGROUND_REMOVE) }
-        resetState(clearContent = true)
-    }
-
-    private fun buildNotification(content: String): Notification =
-        NotificationCompat.Builder(service, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_vpn_key)
-            .setContentTitle(service.getString(R.string.app_name))
-            .setContentText(content)
-            .setContentIntent(launchPendingIntent)
-            .addAction(0, service.getString(R.string.action_stop), stopPendingIntent)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
-}
-
-private class VpnTrafficMonitor(
-    private val scope: CoroutineScope,
-    private val stateFlow: MutableStateFlow<VpnState>,
-    private val isInteractiveProvider: () -> Boolean,
-    private val isForegroundProvider: () -> Boolean,
-    private val notificationController: VpnNotificationController,
-) {
-    private val lock = Any()
-
-    @Volatile
-    private var monitorJob: Job? = null
-
-    fun start() {
-        synchronized(lock) {
-            monitorJob?.cancel()
-            if (!isInteractiveProvider() || stateFlow.value.status != VpnState.Status.RUNNING) {
-                monitorJob = null
-                return
-            }
-            monitorJob = scope.launch { pollLoop() }
-        }
-    }
-
-    fun stop() {
-        synchronized(lock) {
-            monitorJob?.cancel()
-            monitorJob = null
-            notificationController.resetState(clearContent = false)
-        }
-    }
-
-    private suspend fun pollLoop() {
-        while (currentCoroutineContext().isActive &&
-            isInteractiveProvider() &&
-            stateFlow.value.status == VpnState.Status.RUNNING
-        ) {
-            val foreground = isForegroundProvider()
-            delay(if (foreground) 1_000L else 3_000L)
-            if (!isInteractiveProvider() || stateFlow.value.status != VpnState.Status.RUNNING) break
-            val (nextState, notificationText) = computeUpdatedTrafficSnapshot(stateFlow.value, foreground)
-            if (nextState != null) {
-                stateFlow.value = nextState
-            }
-            notificationController.updateNotification(notificationText, throttled = true)
-        }
-    }
 }
 
 internal fun hasValidWhitelistTargets(
@@ -391,6 +83,15 @@ private fun applyCoreSuspendedSafely(suspended: Boolean) {
 
 private fun notifyNetworkChangedSafely(context: Context) {
     runCatching { ClashCore.notifyNetworkChanged(context) }
+}
+
+private fun requestTileRefreshSafely(context: Context) {
+    runCatching {
+        TileService.requestListeningState(
+            context.applicationContext,
+            ComponentName(context.applicationContext, MihomoTileService::class.java)
+        )
+    }
 }
 
 private fun selectActiveProfileForVpn(
@@ -415,7 +116,7 @@ private suspend fun validateAndPrepareVpnStart(
     settings: SettingsManager,
     appLanguage: String,
 ): Pair<String, Pair<VpnService.Builder, Boolean>> {
-    if (MihomoApplication.isDebuggable() && MihomoApplication.isEmulator()) {
+    if (MihomoApplication.shouldSkipNativeCore()) {
         error(
             "The native core cannot run on a debuggable emulator " +
                 "(ARM translation is unsupported). Install a release build on a real device."
@@ -437,9 +138,10 @@ private suspend fun validateAndPrepareVpnStart(
         profileId = activeProfile?.id
     )
     if (loadRes.isFailure) {
+        val causeMsg = loadRes.exceptionOrNull()?.message ?: "unknown"
         error(
             AppStrings.get("vpn_error_load_config", appLanguage)
-                .replace("{msg}", loadRes.exceptionOrNull()?.message ?: "unknown")
+                .replace("{msg}", causeMsg)
         )
     }
     currentCoroutineContext().ensureActive()
@@ -457,18 +159,8 @@ private fun configureVpnBuilder(
         setMtu(settings.tunMtu)
         addAddress(TunConfig.IPV4_ADDRESS, TunConfig.IPV4_PREFIX)
         addRoute("0.0.0.0", 0)
-        addRoute("198.18.0.0", 16)
         addDnsServer(TunConfig.IPV4_PORTAL)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && settings.killSwitchEnabled) {
-            runCatching { setBlocking(true) }
-                .onFailure { Log.w(SERVICE_TAG, "setBlocking (kill switch) failed", it) }
-        } else if (settings.killSwitchEnabled) {
-            LogRepository.addLog(
-                "warning",
-                "本系统版本 (API ${Build.VERSION.SDK_INT}) 不支持断网保护，该开关在本机不生效"
-            )
-        }
         if (settings.allowBypassEnabled) {
             runCatching { allowBypass() }
                 .onFailure { Log.w(SERVICE_TAG, "allowBypass failed", it) }
@@ -497,8 +189,8 @@ private fun configurePerAppRouting(
     val packages = settings.selectedPackages
     when (settings.perAppProxyMode) {
         PerAppProxyMode.WHITELIST -> {
-            runCatching { builder.addAllowedApplication(hostPackageName) }
-                .onFailure { Log.w(SERVICE_TAG, "addAllowedApplication($hostPackageName) failed", it) }
+            // Host app is intentionally excluded from the tunnel (README): only selected
+            // external apps are routed through TUN so subscription/update recovery always works.
             var appliedExternalCount = 0
             val missing = mutableListOf<String>()
             for (pkg in packages) {
@@ -522,6 +214,8 @@ private fun configurePerAppRouting(
             }
         }
         PerAppProxyMode.BLACKLIST -> {
+            runCatching { builder.addDisallowedApplication(hostPackageName) }
+                .onFailure { Log.w(SERVICE_TAG, "addDisallowedApplication($hostPackageName) failed", it) }
             val missing = mutableListOf<String>()
             for (pkg in packages) {
                 if (pkg == hostPackageName) continue
@@ -538,34 +232,11 @@ private fun configurePerAppRouting(
                 )
             }
         }
-        PerAppProxyMode.DISABLED -> Unit
-    }
-}
-
-private fun computeUpdatedTrafficSnapshot(
-    cur: VpnState,
-    isUiInForeground: Boolean,
-): Pair<VpnState?, String> {
-    val now = ClashCore.queryTrafficNow()
-    val upStr = now.trafficSpeedUpload()
-    val downStr = now.trafficSpeedDownload()
-    val speedChanged = cur.upSpeed != upStr || cur.downSpeed != downStr
-    var nextState: VpnState? = null
-    if (isUiInForeground || now != 0L || speedChanged) {
-        val total = ClashCore.queryTrafficTotal()
-        val totalUpStr = total.trafficUpload()
-        val totalDownStr = total.trafficDownload()
-        val totalChanged = cur.totalUp != totalUpStr || cur.totalDown != totalDownStr
-        if (speedChanged || totalChanged) {
-            nextState = cur.copy(
-                upSpeed = upStr,
-                downSpeed = downStr,
-                totalUp = totalUpStr,
-                totalDown = totalDownStr
-            )
+        PerAppProxyMode.DISABLED -> {
+            runCatching { builder.addDisallowedApplication(hostPackageName) }
+                .onFailure { Log.w(SERVICE_TAG, "addDisallowedApplication($hostPackageName) failed", it) }
         }
     }
-    return nextState to "\u2191 $upStr   \u2193 $downStr"
 }
 
 private fun startNativeTunOrCloseFd(
@@ -594,17 +265,22 @@ private fun startNativeTunOrCloseFd(
 
 private fun spawnVpnDestroyTeardownThread(
     jobsToJoin: List<Job?>,
+    isOwnerProvider: () -> Boolean,
     onPerformTeardown: () -> Unit,
     onFinallyComplete: () -> Unit,
 ) {
     Thread {
         try {
             runBlocking {
-                for (job in jobsToJoin) {
-                    job?.join()
-                }
+                withTimeoutOrNull(DESTROY_JOIN_TIMEOUT_MS.milliseconds) {
+                    for (job in jobsToJoin) {
+                        job?.join()
+                    }
+                } ?: Log.w(SERVICE_TAG, "Timed out joining VPN worker jobs during onDestroy")
             }
-            applyCoreSuspendedSafely(false)
+            if (isOwnerProvider()) {
+                applyCoreSuspendedSafely(false)
+            }
             onPerformTeardown()
         } finally {
             onFinallyComplete()
@@ -625,8 +301,25 @@ class MihomoVpnService : VpnService() {
         private val _vpnState = MutableStateFlow(VpnState())
         val vpnState = _vpnState.asStateFlow()
 
-        @Volatile
-        var isUiInForeground: Boolean = false
+        private val startedUiCount = AtomicInteger(0)
+
+        var isUiInForeground: Boolean
+            get() = startedUiCount.get() > 0
+            set(value) {
+                if (value) {
+                    onUiStarted()
+                } else {
+                    onUiStopped()
+                }
+            }
+
+        fun onUiStarted() {
+            startedUiCount.incrementAndGet()
+        }
+
+        fun onUiStopped() {
+            startedUiCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+        }
 
         private val nextInstanceId = AtomicLong(0L)
         private val instanceLock = Any()
@@ -703,11 +396,13 @@ class MihomoVpnService : VpnService() {
     private val latestStartId = AtomicInteger(0)
 
     private val foregroundSyncLock = Any()
+    private val tunStateLock = Any()
     private val teardownLock = Any()
 
     private var actorJob: Job? = null
     private var suspendJob: Job? = null
     private var networkNotifyJob: Job? = null
+    @Volatile private var screenOffSuspendJob: Job? = null
 
     @Volatile private var activeStartJob: Job? = null
     @Volatile private var activeStartToken: Long = 0L
@@ -745,11 +440,13 @@ class MihomoVpnService : VpnService() {
                 isScreenInteractive = false
                 LogRepository.isScreenOff = true
                 trafficMonitor.stop()
-                suspendChannel.trySend(true)
+                scheduleScreenOffSuspend()
             },
             onScreenOn = {
                 isScreenInteractive = true
                 LogRepository.isScreenOff = false
+                screenOffSuspendJob?.cancel()
+                screenOffSuspendJob = null
                 suspendChannel.trySend(false)
                 if (_vpnState.value.status == VpnState.Status.RUNNING) {
                     trafficMonitor.start()
@@ -761,6 +458,27 @@ class MihomoVpnService : VpnService() {
                 }
             }
         )
+    }
+
+    private fun scheduleScreenOffSuspend() {
+        screenOffSuspendJob?.cancel()
+        screenOffSuspendJob = serviceScope.launch {
+            delay(SCREEN_OFF_SUSPEND_DEBOUNCE_MS.milliseconds)
+            if (!isScreenInteractive && !isDestroying) {
+                suspendChannel.trySend(true)
+            }
+        }
+    }
+
+    private fun isOwnedByThisInstance(): Boolean =
+        synchronized(instanceLock) { activeInstanceId == instanceId }
+
+    private fun updateStateAndNotifyTile(state: VpnState) {
+        val statusChanged = _vpnState.value.status != state.status
+        _vpnState.value = state
+        if (statusChanged) {
+            requestTileRefreshSafely(this)
+        }
     }
 
     private fun resetTeardownGuard() {
@@ -785,7 +503,14 @@ class MihomoVpnService : VpnService() {
         actorJob = serviceScope.launch {
             for (cmd in commandChannel) {
                 if (isDestroying) break
-                processCommand(cmd)
+                try {
+                    processCommand(cmd)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Log.e(SERVICE_TAG, "Unhandled error processing command $cmd", t)
+                    recoverFromActorError(t)
+                }
             }
         }
         suspendJob = serviceScope.launch {
@@ -803,12 +528,27 @@ class MihomoVpnService : VpnService() {
         }
     }
 
+    private suspend fun recoverFromActorError(error: Throwable) {
+        trafficMonitor.stop()
+        withContext(NonCancellable) {
+            runCatching { cancelAndJoinActiveStart() }
+            runCatching { performTeardown() }
+            runCatching { awaitTeardown() }
+            if (isOwnedByThisInstance()) {
+                updateStateAndNotifyTile(
+                    VpnState(status = VpnState.Status.STOPPED, error = error.message)
+                )
+            }
+            stopServiceIfIdle(commandSeq.get())
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId.set(startId)
         return when (intent?.action) {
             ACTION_START, SERVICE_INTERFACE -> {
-                enqueueStart(startId, notificationController.currentOrDefaultStartingText())
-                START_STICKY
+                val ok = enqueueStart(startId, notificationController.currentOrDefaultStartingText())
+                if (ok) START_STICKY else START_NOT_STICKY
             }
             ACTION_RESTART -> {
                 val seq = commandSeq.incrementAndGet()
@@ -819,6 +559,15 @@ class MihomoVpnService : VpnService() {
             ACTION_STOP -> {
                 val seq = commandSeq.incrementAndGet()
                 latestStopSeq.set(seq)
+                synchronized(foregroundSyncLock) {
+                    if (!notificationController.hasActiveForeground() &&
+                        _vpnState.value.status != VpnState.Status.STOPPED
+                    ) {
+                        notificationController.startForegroundNotification(
+                            notificationController.currentOrDefaultStartingText()
+                        )
+                    }
+                }
                 commandChannel.trySend(ServiceCommand.Stop(startId, seq, clearPersistedIntent = true))
                 START_NOT_STICKY
             }
@@ -834,25 +583,19 @@ class MihomoVpnService : VpnService() {
             commandChannel.trySend(ServiceCommand.UnwantedNullStart(startId, seq))
             return START_NOT_STICKY
         }
-        val foregroundOk = enqueueStart(startId, getString(R.string.notification_restoring), safeStart = true)
+        val foregroundOk = enqueueStart(startId, getString(R.string.notification_restoring))
         return if (foregroundOk) START_STICKY else START_NOT_STICKY
     }
 
-    private fun enqueueStart(startId: Int, notificationText: String, safeStart: Boolean = false): Boolean {
+    private fun enqueueStart(startId: Int, notificationText: String): Boolean {
         val seq = commandSeq.incrementAndGet()
         synchronized(foregroundSyncLock) {
             latestStartOrRestartSeq.set(seq)
-            if (safeStart) {
-                val started = runCatching { notificationController.startForegroundNotification(notificationText) }
-                    .onFailure { Log.w(SERVICE_TAG, "Foreground promotion rejected during sticky restore", it) }
-                    .isSuccess
-                if (!started) {
-                    val stopSeq = commandSeq.incrementAndGet()
-                    commandChannel.trySend(ServiceCommand.UnwantedNullStart(startId, stopSeq))
-                    return false
-                }
-            } else {
-                notificationController.startForegroundNotification(notificationText)
+            val started = notificationController.startForegroundNotification(notificationText)
+            if (!started) {
+                val stopSeq = commandSeq.incrementAndGet()
+                commandChannel.trySend(ServiceCommand.UnwantedNullStart(startId, stopSeq))
+                return false
             }
         }
         commandChannel.trySend(ServiceCommand.Start(startId, seq))
@@ -886,7 +629,7 @@ class MihomoVpnService : VpnService() {
         if (latestStopSeq.get() > cmd.seq) return
         notificationController.resetState(clearContent = false)
         if (isStartingOrRunning()) {
-            _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING, error = null)
+            updateStateAndNotifyTile(_vpnState.value.copy(status = VpnState.Status.STOPPING, error = null))
             trafficMonitor.stop()
             withContext(NonCancellable) {
                 cancelAndJoinActiveStart()
@@ -894,7 +637,7 @@ class MihomoVpnService : VpnService() {
                 awaitTeardown()
             }
             currentCoroutineContext().ensureActive()
-            _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
+            updateStateAndNotifyTile(VpnState(status = VpnState.Status.STOPPED))
         }
         if (isDestroying || latestStopSeq.get() > cmd.seq) return
         launchStartPipeline(nextStartToken + 1L, cmd.seq)
@@ -907,14 +650,14 @@ class MihomoVpnService : VpnService() {
             stopServiceIfIdle(cmd.seq)
             return
         }
-        _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING, error = null)
+        updateStateAndNotifyTile(_vpnState.value.copy(status = VpnState.Status.STOPPING, error = null))
         trafficMonitor.stop()
         withContext(NonCancellable) {
             cancelAndJoinActiveStart()
             performTeardown()
             awaitTeardown()
             if (cmd.clearPersistedIntent) clearPersistedIntent(this@MihomoVpnService)
-            _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
+            updateStateAndNotifyTile(VpnState(status = VpnState.Status.STOPPED))
             stopServiceIfIdle(cmd.seq)
             Log.i(SERVICE_TAG, "Nexus VPN stopped.")
         }
@@ -944,11 +687,13 @@ class MihomoVpnService : VpnService() {
         }
 
         SettingsManager(this).vpnIntentActive = true
-        _vpnState.value = _vpnState.value.copy(
-            status = VpnState.Status.RUNNING,
-            coreVersion = cmd.coreVersion,
-            error = null,
-            startedAtMs = System.currentTimeMillis()
+        updateStateAndNotifyTile(
+            _vpnState.value.copy(
+                status = VpnState.Status.RUNNING,
+                coreVersion = cmd.coreVersion,
+                error = null,
+                startedAtMs = System.currentTimeMillis()
+            )
         )
 
         RequestRepository.startPolling(
@@ -963,7 +708,7 @@ class MihomoVpnService : VpnService() {
         if (interactive) {
             trafficMonitor.start()
         } else {
-            notificationController.updateNotification("\u2191 0 B/s   \u2193 0 B/s", throttled = false)
+            notificationController.updateNotification("\u2191 0 KB/s   \u2193 0 KB/s", throttled = false)
         }
         Log.i(SERVICE_TAG, "Nexus VPN successfully started! Core: ${cmd.coreVersion}")
         LogRepository.addLog(
@@ -981,7 +726,7 @@ class MihomoVpnService : VpnService() {
         withContext(NonCancellable) {
             performTeardown()
             awaitTeardown()
-            _vpnState.value = VpnState(status = VpnState.Status.STOPPED, error = cmd.message)
+            updateStateAndNotifyTile(VpnState(status = VpnState.Status.STOPPED, error = cmd.message))
             stopServiceIfIdle(failedSeq)
         }
     }
@@ -1008,16 +753,24 @@ class MihomoVpnService : VpnService() {
         nextStartToken = token
         val settings = SettingsManager(this)
         val appLanguage = settings.appLanguage
-        _vpnState.value = _vpnState.value.copy(
-            status = VpnState.Status.STARTING,
-            error = null,
-            startedAtMs = 0L
+        updateStateAndNotifyTile(
+            _vpnState.value.copy(
+                status = VpnState.Status.STARTING,
+                error = null,
+                startedAtMs = 0L
+            )
         )
-        synchronized(foregroundSyncLock) {
+        val promoted = synchronized(foregroundSyncLock) {
             notificationController.resetState(clearContent = true)
             notificationController.startForegroundNotification(
                 AppStrings.get("notification_starting_core", appLanguage)
             )
+        }
+        if (!promoted) {
+            val msg = AppStrings.get("vpn_error_unknown", appLanguage)
+            updateStateAndNotifyTile(VpnState(status = VpnState.Status.STOPPED, error = msg))
+            stopServiceIfIdle(startSeq)
+            return
         }
         resetTeardownGuard()
 
@@ -1059,17 +812,26 @@ class MihomoVpnService : VpnService() {
     ) {
         val pfd = builder.establish()
             ?: error(AppStrings.get("vpn_error_establish_tun", appLanguage))
-        vpnInterface = pfd
-        if (!currentCoroutineContext().isActive) {
-            closePfdSafely(pfd)
-            vpnInterface = null
-            currentCoroutineContext().ensureActive()
+        val active = currentCoroutineContext().isActive
+        val fd = synchronized(tunStateLock) {
+            if (!active || isDestroying) {
+                closePfdSafely(pfd)
+                null
+            } else {
+                vpnInterface = pfd
+                val detached = pfd.detachFd()
+                vpnInterface = null
+                detached
+            }
         }
-
-        val fd = pfd.detachFd()
-        vpnInterface = null
-        tunNeedsStop = true
+        if (fd == null) {
+            currentCoroutineContext().ensureActive()
+            return
+        }
         startNativeTunOrCloseFd(this@MihomoVpnService, fd, ipv6TunActive, settings)
+        synchronized(tunStateLock) {
+            tunNeedsStop = true
+        }
     }
 
     private fun queryConnectionOwnerUid(protocol: Int, source: String, target: String): Int =
@@ -1085,13 +847,23 @@ class MihomoVpnService : VpnService() {
         if (!owns) return false
         val done = teardownDone
         try {
-            RequestRepository.stopPolling()
-            if (tunNeedsStop) {
+            val isOwner = isOwnedByThisInstance()
+            if (isOwner) {
+                RequestRepository.stopPolling()
+            }
+            val shouldStopTun = synchronized(tunStateLock) {
+                val active = tunNeedsStop
                 tunNeedsStop = false
+                active
+            }
+            if (shouldStopTun && isOwner) {
                 ClashCore.stopTun()
             }
-            val pfd = vpnInterface
-            vpnInterface = null
+            val pfd = synchronized(tunStateLock) {
+                val current = vpnInterface
+                vpnInterface = null
+                current
+            }
             closePfdSafely(pfd)
         } catch (e: Throwable) {
             Log.w(SERVICE_TAG, "Error closing VPN", e)
@@ -1111,6 +883,8 @@ class MihomoVpnService : VpnService() {
     override fun onDestroy() {
         super.onDestroy()
         isDestroying = true
+        screenOffSuspendJob?.cancel()
+        screenOffSuspendJob = null
         systemMonitors.unregisterAll()
         LogRepository.isScreenOff = false
         trafficMonitor.stop()
@@ -1128,9 +902,9 @@ class MihomoVpnService : VpnService() {
         suspendChannel.close()
         networkChangeChannel.close()
 
-        val ownedByThisInstance = synchronized(instanceLock) { activeInstanceId == instanceId }
+        val ownedByThisInstance = isOwnedByThisInstance()
         if (ownedByThisInstance && _vpnState.value.status != VpnState.Status.STOPPED) {
-            _vpnState.value = _vpnState.value.copy(status = VpnState.Status.STOPPING, error = null)
+            updateStateAndNotifyTile(_vpnState.value.copy(status = VpnState.Status.STOPPING, error = null))
         }
 
         val destroyDone = CompletableDeferred<Unit>()
@@ -1138,15 +912,15 @@ class MihomoVpnService : VpnService() {
 
         spawnVpnDestroyTeardownThread(
             jobsToJoin = jobsToJoin,
+            isOwnerProvider = ::isOwnedByThisInstance,
             onPerformTeardown = ::performTeardown,
             onFinallyComplete = {
                 destroyDone.complete(Unit)
                 synchronized(destroyLock) {
                     if (inFlightDestroyTeardown === destroyDone) inFlightDestroyTeardown = null
                 }
-                val isStillOwner = synchronized(instanceLock) { activeInstanceId == instanceId }
-                if (isStillOwner && _vpnState.value.status != VpnState.Status.STOPPED) {
-                    _vpnState.value = VpnState(status = VpnState.Status.STOPPED)
+                if (isOwnedByThisInstance() && _vpnState.value.status != VpnState.Status.STOPPED) {
+                    updateStateAndNotifyTile(VpnState(status = VpnState.Status.STOPPED))
                 }
             }
         )

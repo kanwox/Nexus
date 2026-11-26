@@ -15,6 +15,7 @@ import java.io.File
 @Suppress("unused")
 object Bridge {
     private const val TAG = "Bridge"
+    @Volatile
     private var isInitialized = false
 
     // Completed once the geo database assets have been extracted to the clash home directory.
@@ -55,7 +56,9 @@ object Bridge {
 
     @Synchronized
     fun init(context: Context) {
-        val app = context.applicationContext as android.app.Application
+        val app = (context.applicationContext as? android.app.Application)
+            ?: (context as? android.app.Application)
+            ?: error("Bridge.init requires an Application context")
         appContext = app
         Global.init(app)
         startAssetsExtractionIfNeeded(app)
@@ -229,8 +232,18 @@ object Bridge {
                 }
             }
             check(tmpFile.length() > 0L) { "extracted file is empty" }
-            if (destFile.exists()) destFile.delete()
-            check(tmpFile.renameTo(destFile)) { "rename to $fileName failed" }
+            val moved = runCatching {
+                java.nio.file.Files.move(
+                    tmpFile.toPath(),
+                    destFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+                true
+            }.getOrElse {
+                tmpFile.renameTo(destFile)
+            }
+            check(moved) { "rename to $fileName failed" }
             Log.i(TAG, "Extracted asset: $fileName (${destFile.length()} bytes)")
             true
         }.getOrElse { e ->

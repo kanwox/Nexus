@@ -41,11 +41,12 @@ internal object ConfigValidation {
     private val PROTECTED_TOP_LEVEL_KEYS = setOf(
         "mode", "log-level", "ipv6", "mixed-port", "port", "socks-port",
         "redir-port", "tproxy-port", "allow-lan", "bind-address",
-        "external-controller", "external-controller-cors", "secret",
+        "external-controller", "external-controller-tls", "external-controller-cors", "secret",
         "external-controller-unix", "external-controller-pipe", "external-doh",
         "authentication", "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
         "external-ui", "external-ui-name", "external-ui-url",
-        "tun", "dns", "interface-name", "routing-mark",
+        "tun", "dns", "tls", "profile", "experimental", "ebpf",
+        "interface-name", "routing-mark",
         "geodata-mode", "geo-auto-update", "geox-url",
         "listeners", "sub-rules", "tunnels"
     )
@@ -341,7 +342,9 @@ internal object ConfigValidation {
                 }
             }
             is ParsedDocResult.ParseError -> {
-                sanitizeTextFallback(raw, blockThirdPartyDns)
+                Log.w(TAG, "Structural YAML sanitization failed; rejecting malformed config (Fail-Closed)")
+                LogRepository.addLog("error", "配置 YAML 结构解析失败，已拒绝加载以防受保护配置被注入")
+                throw IllegalArgumentException("配置 YAML 结构解析失败，已拒绝加载")
             }
         }
     }
@@ -412,24 +415,6 @@ internal object ConfigValidation {
             }
         }
         target["hosts"] = hosts
-    }
-
-    private fun sanitizeTextFallback(raw: String, blockThirdPartyDns: Boolean): String {
-        val textFiltered = sanitizeUserConfigByText(raw)
-        val withDnsRule = if (blockThirdPartyDns) {
-            injectDnsRejectRuleTextually(textFiltered)
-        } else {
-            textFiltered
-        }
-        LogRepository.addLog(
-            "warning",
-            if (blockThirdPartyDns) {
-                "配置 YAML 结构解析失败，已回退到文本清洗；本次不会应用前置规则与 Hosts 覆写，第三方 DNS 拦截规则已尽力注入"
-            } else {
-                "配置 YAML 结构解析失败，已回退到文本清洗；本次不会应用前置规则、Hosts 覆写与第三方 DNS 拦截"
-            }
-        )
-        return withDnsRule
     }
 
     /**

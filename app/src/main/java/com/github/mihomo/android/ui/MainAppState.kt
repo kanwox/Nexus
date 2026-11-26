@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,10 +53,16 @@ enum class SubScreen {
     ABOUT
 }
 
-/** Persists the current sub-screen across configuration changes without throwing on unknown names. */
-private val subScreenSaver: Saver<SubScreen?, String> = Saver(
-    save = { screen -> screen?.name },
-    restore = { name -> SubScreen.entries.firstOrNull { entry -> entry.name == name } }
+/** Persists the sub-screen back stack across configuration changes without throwing on unknown names. */
+private val subScreenStackSaver: Saver<List<SubScreen>, String> = Saver(
+    save = { stack -> stack.joinToString(",") { it.name } },
+    restore = { raw ->
+        if (raw.isBlank()) {
+            emptyList()
+        } else {
+            raw.split(",").mapNotNull { name -> SubScreen.entries.firstOrNull { it.name == name } }
+        }
+    }
 )
 
 @Stable
@@ -73,20 +80,21 @@ internal class BackupDialogState {
 internal class MainAppState(
     val settingsManager: SettingsManager,
     initialTab: Int,
-    initialSubScreen: SubScreen?,
-    initialParentSubScreen: SubScreen?,
+    initialSubScreenStack: List<SubScreen>,
     initialOverrideProfileId: String?,
-    private val onPersistSubScreenState: (SubScreen?, SubScreen?, String?) -> Unit,
+    private val onPersistSubScreenState: (List<SubScreen>, String?) -> Unit,
     private val onPersistTab: (Int) -> Unit,
     private val onThemeModeChanged: (ThemeMode) -> Unit,
     private val onAppFontChanged: (AppFont) -> Unit
 ) {
     var currentTab by mutableIntStateOf(initialTab)
         private set
-    var currentSubScreen by mutableStateOf(initialSubScreen)
-        private set
-    var parentSubScreen by mutableStateOf(initialParentSubScreen)
-        private set
+    val subScreenStack = mutableStateListOf<SubScreen>().apply { addAll(initialSubScreenStack) }
+    val currentSubScreen: SubScreen?
+        get() = subScreenStack.lastOrNull()
+    val parentSubScreen: SubScreen?
+        get() = if (subScreenStack.size >= 2) subScreenStack[subScreenStack.size - 2] else null
+    var edgeBackBlockedByChild by mutableStateOf(false)
     var overrideTargetProfileId by mutableStateOf(initialOverrideProfileId)
 
     var tunnelMode by mutableStateOf(TunnelMode.fromString(settingsManager.tunnelMode))
@@ -130,9 +138,24 @@ internal class MainAppState(
     }
 
     fun openSubScreen(target: SubScreen, parent: SubScreen? = null) {
-        parentSubScreen = parent
-        currentSubScreen = target
-        onPersistSubScreenState(target, parent, overrideTargetProfileId)
+        edgeBackBlockedByChild = false
+        if (parent == null) {
+            subScreenStack.clear()
+            subScreenStack.add(target)
+        } else {
+            val parentIdx = subScreenStack.lastIndexOf(parent)
+            if (parentIdx >= 0) {
+                while (subScreenStack.size > parentIdx + 1) {
+                    subScreenStack.removeAt(subScreenStack.lastIndex)
+                }
+            } else {
+                subScreenStack.add(parent)
+            }
+            if (subScreenStack.lastOrNull() != target) {
+                subScreenStack.add(target)
+            }
+        }
+        onPersistSubScreenState(subScreenStack.toList(), overrideTargetProfileId)
     }
 
     fun openProfileOverride(profileId: String) {
@@ -141,16 +164,11 @@ internal class MainAppState(
     }
 
     fun navigateBackSubScreen() {
-        val parent = parentSubScreen
-        if (parent != null) {
-            val nextParent = if (parent == SubScreen.PROFILE_OVERRIDE) SubScreen.PROFILES else null
-            parentSubScreen = nextParent
-            currentSubScreen = parent
-            onPersistSubScreenState(parent, nextParent, overrideTargetProfileId)
-        } else {
-            currentSubScreen = null
-            onPersistSubScreenState(null, null, overrideTargetProfileId)
+        edgeBackBlockedByChild = false
+        if (subScreenStack.isNotEmpty()) {
+            subScreenStack.removeAt(subScreenStack.lastIndex)
         }
+        onPersistSubScreenState(subScreenStack.toList(), overrideTargetProfileId)
     }
 
     suspend fun loadEncryptedPreferences() {
@@ -199,20 +217,19 @@ internal fun rememberMainAppState(
     onAppFontChanged: (AppFont) -> Unit
 ): MainAppState {
     var savedTab by rememberSaveable { mutableIntStateOf(0) }
-    var savedSubScreen by rememberSaveable(stateSaver = subScreenSaver) { mutableStateOf<SubScreen?>(null) }
-    var savedParentSubScreen by rememberSaveable(stateSaver = subScreenSaver) { mutableStateOf<SubScreen?>(null) }
+    var savedStack by rememberSaveable(stateSaver = subScreenStackSaver) {
+        mutableStateOf<List<SubScreen>>(emptyList())
+    }
     var savedOverrideId by rememberSaveable { mutableStateOf<String?>(null) }
 
     return remember(settingsManager) {
         MainAppState(
             settingsManager = settingsManager,
             initialTab = savedTab,
-            initialSubScreen = savedSubScreen,
-            initialParentSubScreen = savedParentSubScreen,
+            initialSubScreenStack = savedStack,
             initialOverrideProfileId = savedOverrideId,
-            onPersistSubScreenState = { current, parent, overrideId ->
-                savedSubScreen = current
-                savedParentSubScreen = parent
+            onPersistSubScreenState = { stack, overrideId ->
+                savedStack = stack
                 savedOverrideId = overrideId
             },
             onPersistTab = { tab -> savedTab = tab },

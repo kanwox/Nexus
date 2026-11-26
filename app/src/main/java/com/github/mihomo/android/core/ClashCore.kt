@@ -136,8 +136,12 @@ private fun resolveLinkPropertiesForNetwork(cm: ConnectivityManager, physical: N
     }
 }
 
-private fun wrapClashFailure(message: String, error: Throwable): ClashException =
-    error as? ClashException ?: ClashException(message, error)
+private fun wrapClashFailure(message: String, error: Throwable): ClashException {
+    if (error is ClashException) return error
+    val detail = error.message?.takeIf { it.isNotBlank() }
+    val fullMessage = if (detail != null) "$message: $detail" else message
+    return ClashException(fullMessage, error)
+}
 
 private fun completeDeferredSafely(deferred: CompletableDeferred<Unit>, error: Throwable? = null) {
     try {
@@ -245,6 +249,7 @@ private fun buildGroupHealthResult(
 object ClashCore {
     private val loadLock = Mutex()
     private val configPipelineLock = Mutex()
+    private val resetLock = Any()
 
     @Volatile
     private var inFlightLoad: InFlightLoad? = null
@@ -296,7 +301,7 @@ object ClashCore {
     }
 
     fun notifyNetworkChanged(context: Context, force: Boolean = false) {
-        if (!ensureInitializedIfPossible(context)) return
+        if (!initialized) return
         runCatching {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             if (cm == null) {
@@ -314,7 +319,7 @@ object ClashCore {
             }
             val tz = TimeZone.getDefault()
             val tzId = tz.id
-            val tzOffsetSec = tz.rawOffset / 1000
+            val tzOffsetSec = tz.getOffset(System.currentTimeMillis()) / 1000
             if (force || tzId != lastNotifiedTzId || tzOffsetSec != lastNotifiedTzOffsetSec) {
                 Bridge.nativeNotifyTimeZoneChanged(tzId, tzOffsetSec)
                 lastNotifiedTzId = tzId
@@ -346,7 +351,7 @@ object ClashCore {
 
     private fun ensureInitializedIfPossible(context: Context? = null): Boolean {
         if (initialized) return true
-        if (MihomoApplication.isDebuggable() && MihomoApplication.isEmulator()) {
+        if (MihomoApplication.shouldSkipNativeCore()) {
             return false
         }
         val targetContext = context?.applicationContext
@@ -426,7 +431,7 @@ object ClashCore {
     }
 
     fun getCoreVersion(): String {
-        if (!ensureInitializedIfPossible()) return "Unknown (uninitialized)"
+        if (!initialized) return "Unknown (uninitialized)"
         return try {
             Bridge.nativeCoreVersion()
         } catch (e: Throwable) {
@@ -475,7 +480,9 @@ object ClashCore {
     suspend fun load(configFile: File, profileId: String? = null): Result<Unit> = loadLock.withLock {
         withContext(Dispatchers.IO) {
             try {
-                ensureInitializedIfPossible()
+                if (!ensureInitializedIfPossible()) {
+                    throw ClashException("Native core is not initialized")
+                }
                 awaitAssetsExtractionReady()
                 awaitInFlightNativeLoad()
 
@@ -489,9 +496,7 @@ object ClashCore {
                 awaitNativeLoadCompletion(configDir, deferred)
                 activeGroupChecks.clear()
                 isCoreLoaded = true
-                if (profileId != null) {
-                    loadedProfileId = profileId
-                }
+                loadedProfileId = profileId
                 Result.success(Unit)
             } catch (e: CancellationException) {
                 throw e
@@ -544,7 +549,7 @@ object ClashCore {
 
     @Suppress("unused")
     fun queryTunnelState(): TunnelState {
-        if (!ensureInitializedIfPossible()) return TunnelState("rule")
+        if (!initialized) return TunnelState("rule")
         return runCatching {
             val res = Bridge.nativeQueryTunnelState()
             json.decodeFromString<TunnelState>(res)
@@ -552,7 +557,7 @@ object ClashCore {
     }
 
     fun queryGroupNames(excludeNotSelectable: Boolean = false): List<String> {
-        if (!ensureInitializedIfPossible()) return emptyList()
+        if (!initialized) return emptyList()
         return runCatching {
             val raw = Bridge.nativeQueryGroupNames(excludeNotSelectable)
             val array = json.decodeFromString<JsonArray>(raw)
@@ -561,7 +566,7 @@ object ClashCore {
     }
 
     fun queryGroup(name: String, sort: ProxySort = ProxySort.Default): ProxyGroup? {
-        if (!ensureInitializedIfPossible()) return null
+        if (!initialized) return null
         return runCatching {
             val raw = Bridge.nativeQueryGroup(name, sort.name)
             if (!raw.isNullOrEmpty()) {
@@ -573,7 +578,7 @@ object ClashCore {
     }
 
     fun patchSelector(selector: String, name: String): Boolean {
-        if (!ensureInitializedIfPossible()) return false
+        if (!initialized) return false
         return runCatching { Bridge.nativePatchSelector(selector, name) }.getOrDefault(false)
     }
 
@@ -596,6 +601,7 @@ object ClashCore {
         val nowMs = System.currentTimeMillis()
         evictStaleHealthChecks(nowMs)
         var resolvedEntry: ActiveHealthCheck? = null
+        var createdEntry: ActiveHealthCheck? = null
         activeGroupChecks.compute(groupName) { _, existing ->
             val nextEntry = if (
                 existing != null &&
@@ -603,29 +609,26 @@ object ClashCore {
             ) {
                 existing
             } else {
-                createAndStartHealthCheck(groupName, nowMs)
+                ActiveHealthCheck(CompletableDeferred(), nowMs).also { createdEntry = it }
             }
             resolvedEntry = nextEntry
             nextEntry
         }
+        val toStart = createdEntry
+        if (toStart != null) {
+            toStart.deferred.invokeOnCompletion {
+                activeGroupChecks.remove(groupName, toStart)
+            }
+            runCatching {
+                Bridge.nativeHealthCheck(toStart.deferred, groupName)
+            }.onFailure { error ->
+                completeDeferredSafely(
+                    toStart.deferred,
+                    ClashException("Failed to start the health check for group '$groupName'", error)
+                )
+            }
+        }
         return checkNotNull(resolvedEntry).deferred
-    }
-
-    private fun createAndStartHealthCheck(groupName: String, startedAtMs: Long): ActiveHealthCheck {
-        val deferred = CompletableDeferred<Unit>()
-        val entry = ActiveHealthCheck(deferred, startedAtMs)
-        deferred.invokeOnCompletion {
-            activeGroupChecks.remove(groupName, entry)
-        }
-        runCatching {
-            Bridge.nativeHealthCheck(deferred, groupName)
-        }.onFailure { error ->
-            completeDeferredSafely(
-                deferred,
-                ClashException("Failed to start the health check for group '$groupName'", error)
-            )
-        }
-        return entry
     }
 
     suspend fun healthCheckGroupNative(
@@ -764,18 +767,20 @@ object ClashCore {
 
     @Suppress("unused")
     fun healthCheckAll() {
-        if (!ensureInitializedIfPossible()) return
+        if (!initialized) return
         runCatching { Bridge.nativeHealthCheckAll() }
     }
 
     fun reset() {
-        isCoreLoaded = false
-        loadedProfileId = null
-        lastNotifiedDns = null
-        lastNotifiedTzId = null
-        lastNotifiedTzOffsetSec = null
-        activeGroupChecks.clear()
-        if (!initialized) return
-        runCatching { Bridge.nativeReset() }
+        synchronized(resetLock) {
+            isCoreLoaded = false
+            loadedProfileId = null
+            lastNotifiedDns = null
+            lastNotifiedTzId = null
+            lastNotifiedTzOffsetSec = null
+            activeGroupChecks.clear()
+            if (!initialized) return
+            runCatching { Bridge.nativeReset() }
+        }
     }
 }

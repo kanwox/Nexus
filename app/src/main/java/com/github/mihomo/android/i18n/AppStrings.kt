@@ -1938,6 +1938,7 @@ object AppStrings {
         "backup_import_partial_body" to "已成功恢复 {restored} 项，以下 {failed} 项恢复失败：",
         "settings_auto_check_update" to "自动检查更新",
         "settings_update_available_short" to "发现新版本 {v}",
+        "scripts_discard_confirm" to "当前脚本有未保存的更改，确定放弃并退出吗？",
     )
 
     private val enFixes = mapOf(
@@ -2025,6 +2026,7 @@ object AppStrings {
         "backup_import_partial_body" to "Restored {restored} items; {failed} items failed:",
         "settings_auto_check_update" to "Automatically Check for Updates",
         "settings_update_available_short" to "Update {v}",
+        "scripts_discard_confirm" to "You have unsaved script changes. Discard them and exit?",
     )
 
     private val ruFixes = mapOf(
@@ -2112,6 +2114,7 @@ object AppStrings {
         "backup_import_partial_body" to "Восстановлено элементов: {restored}; не удалось восстановить ({failed}):",
         "settings_auto_check_update" to "Автопроверка обновлений",
         "settings_update_available_short" to "Доступна {v}",
+        "scripts_discard_confirm" to "В скрипте есть несохранённые изменения. Отменить их и выйти?",
     )
 
     internal val zhAll = zh + zhExtra + zhNew + zhFixes
@@ -2138,6 +2141,11 @@ object AppStrings {
 
     @Composable
     fun current(key: String): String {
-        return get(key, LocalAppLanguage.current)
+        val lang = LocalAppLanguage.current
+        if (lang == "SYSTEM") {
+            // Observe system configuration changes so SYSTEM language tracks OS locale updates.
+            androidx.compose.ui.platform.LocalConfiguration.current
+        }
+        return get(key, lang)
     }
 }

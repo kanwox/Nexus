@@ -171,32 +171,47 @@ internal object ConfigScriptSupport {
         }
     }
 
+    private const val MAX_CONSOLE_DEPTH = 8
+    private const val MAX_CONSOLE_ENTRY_LENGTH = 4096
+
     internal fun parseResultMap(resultJson: String?): Map<String, Any?>? {
         if (resultJson.isNullOrBlank() || resultJson == "undefined" || resultJson == "null") return null
         val element = runCatching { scriptJson.parseToJsonElement(resultJson) }.getOrNull() ?: return null
         if (element !is JsonObject) return null
-        val map = LinkedHashMap<String, Any?>()
-        for ((k, v) in element) map[k] = jsonElementToPlainValue(v)
-        return map
+        val budget = TraversalBudget(MAX_YAML_TRAVERSAL_DEPTH, MAX_YAML_TRAVERSAL_NODES)
+        return runCatching {
+            val map = LinkedHashMap<String, Any?>()
+            for ((k, v) in element) map[k] = jsonElementToPlainValue(v, 1, budget)
+            map
+        }.getOrNull()
     }
 
-    private fun jsonElementToPlainValue(element: JsonElement): Any? = when (element) {
-        is JsonNull -> null
-        is JsonPrimitive -> if (element.isString) {
-            element.content
-        } else {
-            element.content.toLongOrNull()
-                ?: element.content.toDoubleOrNull()
-                ?: element.content.toBooleanStrictOrNull()
-                ?: element.content
+    private fun jsonElementToPlainValue(element: JsonElement, depth: Int, budget: TraversalBudget): Any? =
+        when (element) {
+            is JsonNull -> {
+                budget.countScalar()
+                null
+            }
+            is JsonPrimitive -> {
+                budget.countScalar()
+                if (element.isString) {
+                    element.content
+                } else {
+                    element.content.toLongOrNull()
+                        ?: element.content.toDoubleOrNull()
+                        ?: element.content.toBooleanStrictOrNull()
+                        ?: element.content
+                }
+            }
+            is JsonArray -> withEnteredNode(element, depth, budget) {
+                element.map { jsonElementToPlainValue(it, depth + 1, budget) }
+            }
+            is JsonObject -> withEnteredNode(element, depth, budget) {
+                val map = LinkedHashMap<String, Any?>()
+                for ((k, v) in element) map[k] = jsonElementToPlainValue(v, depth + 1, budget)
+                map
+            }
         }
-        is JsonArray -> element.map { jsonElementToPlainValue(it) }
-        is JsonObject -> {
-            val map = LinkedHashMap<String, Any?>()
-            for ((k, v) in element) map[k] = jsonElementToPlainValue(v)
-            map
-        }
-    }
 
     internal fun normalizeYamlData(
         data: Any?,
@@ -413,16 +428,40 @@ internal object ConfigScriptSupport {
         return sb.toString()
     }
 
-    private fun consoleArgToString(a: Any?): String = when (a) {
-        null -> "null"
-        is String -> a
-        is Map<*, *> -> a.entries.joinToString(", ", "{", "}") { "\"${it.key}\":${consoleArgToString(it.value)}" }
-        is List<*> -> a.joinToString(", ", "[", "]") { consoleArgToString(it) }
-        else -> a.toString()
+    private fun consoleArgToString(
+        a: Any?,
+        depth: Int = 0,
+        seen: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap())
+    ): String {
+        if (a == null) return "null"
+        if (a is String) return a.take(MAX_CONSOLE_ENTRY_LENGTH)
+        if (depth >= MAX_CONSOLE_DEPTH) return "[MaxDepth]"
+        return when (a) {
+            is Map<*, *> -> {
+                if (!seen.add(a)) return "[Circular]"
+                try {
+                    a.entries.take(64).joinToString(", ", "{", "}") {
+                        "\"${it.key}\":${consoleArgToString(it.value, depth + 1, seen)}"
+                    }
+                } finally {
+                    seen.remove(a)
+                }
+            }
+            is List<*> -> {
+                if (!seen.add(a)) return "[Circular]"
+                try {
+                    a.take(64).joinToString(", ", "[", "]") { consoleArgToString(it, depth + 1, seen) }
+                } finally {
+                    seen.remove(a)
+                }
+            }
+            else -> a.toString().take(MAX_CONSOLE_ENTRY_LENGTH)
+        }
     }
 
     private fun pushConsoleLog(sink: MutableList<String>, level: String, args: Array<Any?>) {
         if (sink.size >= 100) return
-        sink.add("[$level] ${args.joinToString(" ") { consoleArgToString(it) }}")
+        val formatted = args.joinToString(" ") { consoleArgToString(it) }.take(MAX_CONSOLE_ENTRY_LENGTH)
+        sink.add("[$level] $formatted")
     }
 }

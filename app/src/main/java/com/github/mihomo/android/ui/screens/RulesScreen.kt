@@ -1,3 +1,5 @@
+@file:Suppress("InjectDispatcher")
+
 package com.github.mihomo.android.ui.screens
 
 import androidx.compose.foundation.background
@@ -149,16 +151,22 @@ fun RulesScreen(
     val copyToClipboard = rememberClipboardCopy()
     val haptic = rememberIosHaptic()
 
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(RuleFilter.ALL) }
     var showFilterActionSheet by remember { mutableStateOf(false) }
     var activeDetailRule by remember { mutableStateOf<IndexedRule?>(null) }
     var showRuleTester by remember { mutableStateOf(false) }
-    var testerInput by remember { mutableStateOf("") }
+    var testerInput by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
 
     val indexedRules = remember(rules) { rules.mapIndexed { idx, rule -> IndexedRule(idx, rule) } }
-    val filteredRules = remember(indexedRules, searchQuery, selectedFilter) {
-        filterIndexedRules(indexedRules, searchQuery, selectedFilter)
+    var filteredRules by remember(indexedRules) { mutableStateOf(indexedRules) }
+    androidx.compose.runtime.LaunchedEffect(indexedRules, searchQuery, selectedFilter) {
+        if (searchQuery.isNotBlank()) {
+            kotlinx.coroutines.delay(120L)
+        }
+        filteredRules = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            filterIndexedRules(indexedRules, searchQuery, selectedFilter)
+        }
     }
 
     Column(

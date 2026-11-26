@@ -1,9 +1,12 @@
 package com.github.mihomo.android.service
 
+import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import com.github.mihomo.android.data.ConfigManager
+import com.github.mihomo.android.ui.MainActivity
 
 /**
  * Transparent trampoline Activity launched from the Quick Settings tile.
@@ -32,6 +35,19 @@ class TileVpnLaunchActivity : ComponentActivity() {
         waitingForPermission =
             savedInstanceState?.getBoolean(KEY_WAITING_FOR_PERMISSION, false) ?: false
         if (waitingForPermission) return
+
+        val hasProfiles = runCatching { ConfigManager.getProfiles(this).isNotEmpty() }.getOrDefault(true)
+        if (!hasProfiles) {
+            runCatching {
+                startActivity(
+                    Intent(this, MainActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                )
+            }
+            finish()
+            return
+        }
 
         val prepareIntent = VpnService.prepare(this)
         if (prepareIntent == null) {

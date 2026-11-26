@@ -33,9 +33,9 @@ class UpdateCheckerTest {
               "body": "$longNotes",
               "html_url": "https://github.com/kanwox/Nexus/releases/tag/v1.2.0",
               "assets": [
-                {"name": "Nexus-x86_64-release.apk", "browser_download_url": "https://example.com/x86_64.apk"},
-                {"name": "Nexus-arm64-v8a-release.apk", "browser_download_url": "https://example.com/arm64.apk"},
-                {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.com/SHA256SUMS.txt"}
+                {"name": "Nexus-x86_64-release.apk", "browser_download_url": "https://github.com/kanwox/Nexus/releases/download/v1.2.0/x86_64.apk"},
+                {"name": "Nexus-arm64-v8a-release.apk", "browser_download_url": "https://github.com/kanwox/Nexus/releases/download/v1.2.0/arm64.apk"},
+                {"name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/kanwox/Nexus/releases/download/v1.2.0/SHA256SUMS.txt"}
               ]
             }
         """.trimIndent()
@@ -51,8 +51,32 @@ class UpdateCheckerTest {
         assertEquals("Nexus 1.2.0", info.releaseName)
         assertEquals(2000, info.releaseNotes.length)
         assertEquals("Nexus-arm64-v8a-release.apk", info.apkName)
-        assertEquals("https://example.com/arm64.apk", info.apkAsset?.browserDownloadUrl)
+        assertEquals(
+            "https://github.com/kanwox/Nexus/releases/download/v1.2.0/arm64.apk",
+            info.apkAsset?.browserDownloadUrl
+        )
         assertEquals("SHA256SUMS.txt", info.sumsAsset?.name)
+    }
+
+    @Test
+    fun `parseUpdateInfo rejects untrusted or non-https asset URLs`() {
+        val json = """
+            {
+              "tag_name": "v2.0.0",
+              "name": "Nexus 2.0.0",
+              "body": "notes",
+              "html_url": "http://evil.example.com/release",
+              "assets": [
+                {"name": "Nexus-arm64-v8a-release.apk", "browser_download_url": "https://evil.example.com/arm64.apk"},
+                {"name": "SHA256SUMS", "browser_download_url": "http://github.com/kanwox/Nexus/SHA256SUMS"}
+              ]
+            }
+        """.trimIndent()
+
+        val info = UpdateChecker.parseUpdateInfo(body = json, currentVersion = "1.0.0")
+        assertEquals("", info.htmlUrl)
+        assertEquals(null, info.apkAsset)
+        assertEquals(null, info.sumsAsset)
     }
 
     @Test

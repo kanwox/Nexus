@@ -18,8 +18,15 @@ enum class AppFont {
 
 class SettingsManager internal constructor(
     private val prefs: SharedPreferences,
-    private val lanPasswordCipher: LanPasswordCipher = LanPasswordCipher.defaultFor(prefs)
+    lanPasswordCipherProvider: () -> LanPasswordCipher = { LanPasswordCipher.defaultFor(prefs) }
 ) {
+    private val lanPasswordCipher: LanPasswordCipher by lazy(lanPasswordCipherProvider)
+
+    internal constructor(
+        prefs: SharedPreferences,
+        lanPasswordCipher: LanPasswordCipher
+    ) : this(prefs, { lanPasswordCipher })
+
     constructor(context: Context) : this(
         context.getSharedPreferences("mihomo_settings", Context.MODE_PRIVATE)
     )
@@ -130,11 +137,9 @@ class SettingsManager internal constructor(
             }
             return
         }
-        val encrypted = runCatching { lanPasswordCipher.encrypt(clean) }.getOrNull()
+        val encrypted = runCatching { lanPasswordCipher.encrypt(clean) }.getOrNull() ?: return
         prefs.edit {
-            if (encrypted != null) {
-                putString(KEY_ALLOW_LAN_PASSWORD_ENC, encrypted)
-            }
+            putString(KEY_ALLOW_LAN_PASSWORD_ENC, encrypted)
             remove(KEY_ALLOW_LAN_PASSWORD_LEGACY)
         }
     }
@@ -188,7 +193,7 @@ class SettingsManager internal constructor(
      * Self-hosted subscription converters need this left on.
      */
     var allowPrivateSubscriptionHosts: Boolean
-        get() = prefs.getBoolean("allow_private_subscription_hosts", true)
+        get() = prefs.getBoolean("allow_private_subscription_hosts", false)
         set(value) = prefs.edit { putBoolean("allow_private_subscription_hosts", value) }
 
     /**

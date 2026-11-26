@@ -93,7 +93,8 @@ class ConfigManagerYamlSafetyTest {
             YamlSupport.create().load<Any?>(bomb)
         }
         assertNotNull(ConfigManager.validateConfigStructure(bomb))
-        val sanitized = ConfigManager.sanitizeUserConfig(bomb)
-        assertTrue(sanitized.contains("proxies:"))
+        assertThrows(IllegalArgumentException::class.java) {
+            ConfigManager.sanitizeUserConfig(bomb)
+        }
     }
 }

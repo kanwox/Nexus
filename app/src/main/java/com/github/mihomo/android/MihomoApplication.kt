@@ -39,12 +39,16 @@ class MihomoApplication : Application() {
          * debuggable build on an emulator must never load the native libraries.
          */
         fun isEmulator(): Boolean =
-            Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-                Build.MODEL.contains("Emulator", ignoreCase = true) ||
+            Build.MODEL.contains("Emulator", ignoreCase = true) ||
                 Build.MODEL.contains("sdk_gphone", ignoreCase = true) ||
                 Build.PRODUCT.contains("sdk_gphone", ignoreCase = true) ||
                 Build.HARDWARE.contains("ranchu", ignoreCase = true) ||
-                Build.HARDWARE.contains("goldfish", ignoreCase = true)
+                Build.HARDWARE.contains("goldfish", ignoreCase = true) ||
+                (Build.FINGERPRINT.startsWith("generic") &&
+                    Build.SUPPORTED_ABIS.none { it.equals("arm64-v8a", ignoreCase = true) })
+
+        /** True when the current runtime should skip loading the arm64-only native core. */
+        fun shouldSkipNativeCore(): Boolean = isDebuggable() && isEmulator()
 
         /** True when the installed build is marked debuggable. */
         fun isDebuggable(): Boolean {
@@ -119,9 +123,12 @@ class MihomoApplication : Application() {
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching {
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-                val rawText = "time: $stamp\nthread: ${thread.name}\n\n" + Log.getStackTraceString(throwable)
-                val redactedText = redactCrashReport(rawText)
-                runCatching { File(filesDir, CRASH_FILE_NAME).writeText(redactedText) }
+                val stackTrace = runCatching { Log.getStackTraceString(throwable) }
+                    .getOrElse { "${throwable::class.java.name}: ${throwable.message}" }
+                val rawText = "time: $stamp\nthread: ${thread.name}\n\n$stackTrace"
+                val safeText = runCatching { redactCrashReport(rawText) }
+                    .getOrElse { rawText.take(4096) }
+                runCatching { File(filesDir, CRASH_FILE_NAME).writeText(safeText) }
                 Log.e(TAG, "Uncaught exception", throwable)
             }
             if (previous != null) {

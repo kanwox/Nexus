@@ -53,10 +53,13 @@ class MihomoTileService : TileService() {
         super.onClick()
         when (MihomoVpnService.vpnState.value.status) {
             VpnState.Status.RUNNING, VpnState.Status.STARTING -> {
-                // RUNNING || STARTING means "stop", exactly like MainActivity.handleToggleVpn.
-                // Treating STARTING as a no-op made the tile look broken: the user tapped and
-                // nothing happened at all.
-                MihomoVpnService.stop(this)
+                // Require unlock for stopping too so the lock screen cannot bypass VPN protection.
+                unlockAndRun {
+                    val status = MihomoVpnService.vpnState.value.status
+                    if (status == VpnState.Status.RUNNING || status == VpnState.Status.STARTING) {
+                        MihomoVpnService.stop(this)
+                    }
+                }
             }
             VpnState.Status.STOPPED -> {
                 // MihomoVpnService runs in the same process, so STOPPED is authoritative:
@@ -107,29 +110,30 @@ class MihomoTileService : TileService() {
 
     private fun updateTileState(status: VpnState.Status) {
         val tile = qsTile ?: return
+        val lang = runCatching { SettingsManager(this).appLanguage }.getOrDefault("auto")
         tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_tile)
         when (status) {
             VpnState.Status.RUNNING -> {
                 tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, AppStrings.get("tile_connected"))
+                setSubtitle(tile, AppStrings.get("tile_connected", lang))
             }
             VpnState.Status.STARTING -> {
                 // The tunnel is on its way up: show it as active so the tile matches what a
                 // tap would do (stop), and say so in the subtitle.
                 tile.state = Tile.STATE_ACTIVE
-                setSubtitle(tile, AppStrings.get("tile_connecting"))
+                setSubtitle(tile, AppStrings.get("tile_connecting", lang))
             }
             VpnState.Status.STOPPING -> {
                 // The tunnel is on its way down: a tap is ignored, but the subtitle must
                 // say that instead of leaving the previous state on screen.
                 tile.state = Tile.STATE_INACTIVE
-                setSubtitle(tile, AppStrings.get("tile_disconnecting"))
+                setSubtitle(tile, AppStrings.get("tile_disconnecting", lang))
             }
             VpnState.Status.STOPPED -> {
                 // In-memory STOPPED is authoritative within this process; never display ACTIVE
                 // or resurrect the foreground service from background tile callbacks.
                 tile.state = Tile.STATE_INACTIVE
-                setSubtitle(tile, AppStrings.get("tile_disconnected"))
+                setSubtitle(tile, AppStrings.get("tile_disconnected", lang))
             }
         }
         tile.updateTile()

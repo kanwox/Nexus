@@ -70,34 +70,38 @@ internal object ProfileStore {
         profileHistoryFiles(context, id).firstOrNull { it.exists() && it.length() > 0 }
 
     fun archiveKnownGoodVersion(context: Context, id: String) {
-        val backup = profileBackupFile(context, id)
-            ?.takeIf { it.exists() && it.length() > 0 }
-            ?: return
-        val content = runCatching { backup.readText() }.getOrDefault("")
-        if (!ConfigValidation.isValidSubscriptionPayload(content)) return
-        val ring = profileHistoryFiles(context, id)
-        ring.lastOrNull()?.delete()
-        for (i in ring.size - 1 downTo 1) {
-            runCatching {
-                java.nio.file.Files.move(
-                    ring[i - 1].toPath(),
-                    ring[i].toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
-                )
+        synchronized(storeLock) {
+            val backup = profileBackupFile(context, id)
+                ?.takeIf { it.exists() && it.length() > 0 }
+                ?: return
+            val content = runCatching { backup.readText() }.getOrDefault("")
+            if (!ConfigValidation.isValidSubscriptionPayload(content)) return
+            val ring = profileHistoryFiles(context, id)
+            ring.lastOrNull()?.delete()
+            for (i in ring.size - 1 downTo 1) {
+                runCatching {
+                    java.nio.file.Files.move(
+                        ring[i - 1].toPath(),
+                        ring[i].toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
+                }
             }
+            ring.firstOrNull()?.let { target ->
+                runCatching { ConfigManager.writeTextAtomic(target, content) }
+            }
+            Log.i(TAG, "Archived known-good version of profile $id into the history ring")
         }
-        runCatching { backup.copyTo(ring.first(), overwrite = true) }
-        Log.i(TAG, "Archived known-good version of profile $id into the history ring")
     }
 
     fun restoreProfileFromHistory(context: Context, id: String, source: File): Result<Unit> {
         return runCatching {
-            val target = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
-            if (!source.exists() || source.length() == 0L) error("历史版本文件为空或不存在")
-            val content = source.readText()
-            val resolved = ConfigValidation.resolveSubscriptionYaml(content) ?: error("历史版本内容无效")
-            ConfigManager.writeTextAtomic(target, resolved)
             synchronized(storeLock) {
+                val target = profileFile(context, id) ?: error("无法为订阅创建安全的文件路径")
+                if (!source.exists() || source.length() == 0L) error("历史版本文件为空或不存在")
+                val content = source.readText()
+                val resolved = ConfigValidation.resolveSubscriptionYaml(content) ?: error("历史版本内容无效")
+                ConfigManager.writeTextAtomic(target, resolved)
                 touchProfileTimestamp(context, id)
             }
             invalidateProfilesCache()
@@ -152,8 +156,26 @@ internal object ProfileStore {
             Log.w(TAG, "Recovered profiles metadata from backup")
             return backup.getOrThrow()
         }
-        Log.w(TAG, "Profiles metadata unrecoverable; starting an empty store")
-        return ProfilesStoreData()
+        Log.w(TAG, "Profiles metadata unrecoverable; quarantining corrupt files and rebuilding from profiles directory")
+        val stamp = System.currentTimeMillis()
+        runCatching {
+            if (file.exists()) file.renameTo(context.filesDir.resolve("profiles_meta.json.corrupt.$stamp"))
+            val bakFile = storeBackupFile(context)
+            if (bakFile.exists()) bakFile.renameTo(context.filesDir.resolve("profiles_meta.json.bak.corrupt.$stamp"))
+        }
+        val rebuilt = rebuildStoreFromProfileFiles(context)
+        return rebuilt
+    }
+
+    private fun rebuildStoreFromProfileFiles(context: Context): ProfilesStoreData {
+        val files = getProfilesDir(context).listFiles { f -> f.extension == "yaml" } ?: emptyArray()
+        if (files.isEmpty()) return ProfilesStoreData()
+        val metas = LinkedHashMap<String, ProfileMeta>()
+        for (yamlFile in files.sortedByDescending { it.lastModified() }) {
+            val id = yamlFile.nameWithoutExtension
+            metas[id] = ProfileMeta(name = id, updated = yamlFile.lastModified())
+        }
+        return ProfilesStoreData(profiles = metas, order = metas.keys.toList())
     }
 
     private fun migrateLegacyPrefsStore(context: Context): ProfilesStoreData {
@@ -192,14 +214,15 @@ internal object ProfileStore {
     }
 
     internal fun persistStoreLocked(context: Context, store: ProfilesStoreData) {
-        storeCache = store
-        cachedProfiles = null
-        runCatching {
-            val json = storeJson.encodeToString(store)
+        val json = storeJson.encodeToString(store)
+        try {
             ConfigManager.writeTextAtomic(storeFile(context), json)
-            ConfigManager.writeTextAtomic(storeBackupFile(context), json)
-        }.onFailure { err ->
+            runCatching { ConfigManager.writeTextAtomic(storeBackupFile(context), json) }
+            storeCache = store
+            cachedProfiles = null
+        } catch (err: Throwable) {
             Log.w(TAG, "Failed to persist profiles metadata", err)
+            throw err
         }
     }
 

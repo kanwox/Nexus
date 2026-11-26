@@ -268,7 +268,7 @@ object LogRepository {
             val text = file.readText(Charsets.UTF_8)
             val newlineIdx = text.indexOf('\n', text.length / 2)
             val keepFrom = if (newlineIdx == -1) 0 else newlineIdx + 1
-            file.writeText(text.substring(keepFrom), Charsets.UTF_8)
+            ConfigManager.writeTextAtomic(file, text.substring(keepFrom))
         } catch (_: Exception) {
             closeDiagnosticWriterQuietly()
         }

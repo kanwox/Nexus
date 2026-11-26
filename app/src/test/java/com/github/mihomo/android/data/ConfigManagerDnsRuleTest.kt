@@ -93,35 +93,33 @@ class ConfigManagerDnsRuleTest {
     }
 
     @Test
-    fun `the textual fallback still injects the reject rule`() {
-        // A structurally broken config falls back to the text filter. The DNS reject
-        // rule is a security control, so it must NOT be silently dropped there.
+    fun `textual DNS helper still injects the reject rule at top`() {
         val broken = "external-controller: x\n  : : :\nproxies: []\nrules:\n  - MATCH,DIRECT"
-        val out = ConfigManager.sanitizeUserConfig(broken, blockThirdPartyDns = true)
+        val filtered = ConfigValidation.sanitizeUserConfigByText(broken)
+        val out = ConfigValidation.injectDnsRejectRuleTextually(filtered)
 
-        assertTrue("the DNS reject rule was dropped by the text fallback", out.contains("DST-PORT,53"))
+        assertTrue("the DNS reject rule was dropped by the text helper", out.contains("DST-PORT,53"))
         assertTrue(out.contains("NETWORK,UDP"))
         assertTrue(out.contains("NETWORK,TCP"))
-        // It must be the FIRST rule, so it keeps priority over the subscription's own.
         val ruleIndex = out.indexOf("DST-PORT,53")
         val matchIndex = out.indexOf("MATCH,DIRECT")
         assertTrue("the reject rule must come first", ruleIndex in 0 until matchIndex)
     }
 
     @Test
-    fun `the textual fallback creates a rules section when there is none`() {
+    fun `textual DNS helper creates a rules section when there is none`() {
         val broken = "external-controller: x\n  : : :\nproxies: []"
-        val out = ConfigManager.sanitizeUserConfig(broken, blockThirdPartyDns = true)
+        val out = ConfigValidation.injectDnsRejectRuleTextually(ConfigValidation.sanitizeUserConfigByText(broken))
 
         assertTrue(out.contains("rules:"))
         assertTrue(out.contains("DST-PORT,53"))
     }
 
     @Test
-    fun `without the switch the text fallback adds no DNS rule`() {
+    fun `broken yaml fails closed instead of silently falling back to regex`() {
         val broken = "external-controller: x\n  : : :\nproxies: []\nrules:\n  - MATCH,DIRECT"
-        val out = ConfigManager.sanitizeUserConfig(broken, blockThirdPartyDns = false)
-
-        assertFalse(out.contains("DST-PORT,53"))
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            ConfigManager.sanitizeUserConfig(broken, blockThirdPartyDns = true)
+        }
     }
 }

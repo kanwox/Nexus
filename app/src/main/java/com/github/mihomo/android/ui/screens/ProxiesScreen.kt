@@ -134,7 +134,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-@Immutable
+@Stable
 data class ProxiesState(
     val groups: List<String>,
     val groupMap: Map<String, ProxyGroup>,
@@ -153,7 +153,8 @@ data class ProxiesDisplayConfig(
     val nodeSortMode: String = "DEFAULT"
 )
 
-class ProxiesCallbacks(
+@Immutable
+data class ProxiesCallbacks(
     val onViewModeChanged: (String) -> Unit,
     val onShowGroupIconsChanged: (Boolean) -> Unit,
     val onNodeColumnsChanged: (Int) -> Unit = {},
@@ -580,7 +581,7 @@ private fun GroupPillHealthCheckButton(
             .semantics {
                 contentDescription = AppStrings.get("proxies_test", lang)
                 role = Role.Button
-                if (isTesting) stateDescription = AppStrings.get("logs_pause", lang)
+                if (isTesting) stateDescription = AppStrings.get("node_detail_testing", lang)
             },
         contentAlignment = Alignment.Center
     ) {
@@ -654,9 +655,20 @@ private fun ProxiesTabGroupPage(
 ) {
     val targetGroup = if (targetGroupName == state.selectedGroupName) state.currentGroup else state.groupMap[targetGroupName]
     val rawProxies = targetGroup?.proxies.orEmpty()
-    val delaySnapshot = if (display.nodeSortMode == "DELAY") state.delayCache.toMap() else emptyMap()
-    val proxies = remember(rawProxies, display.nodeSortMode, targetGroupName, delaySnapshot) {
-        sortIndexedProxies(rawProxies, display.nodeSortMode, delaySnapshot, targetGroupName)
+    val proxies by remember(rawProxies, display.nodeSortMode, targetGroupName, state.delayCache) {
+        androidx.compose.runtime.derivedStateOf {
+            if (display.nodeSortMode == "DELAY") {
+                val scopedDelays = HashMap<String, SpeedTestState>(rawProxies.size * 2)
+                for (proxy in rawProxies) {
+                    val scopedKey = "$targetGroupName:${proxy.name}"
+                    state.delayCache[scopedKey]?.let { scopedDelays[scopedKey] = it }
+                    state.delayCache[proxy.name]?.let { scopedDelays[proxy.name] = it }
+                }
+                sortIndexedProxies(rawProxies, display.nodeSortMode, scopedDelays, targetGroupName)
+            } else {
+                sortIndexedProxies(rawProxies, display.nodeSortMode, emptyMap(), targetGroupName)
+            }
+        }
     }
     val groupState = if (targetGroupName.isNotBlank()) {
         scrollState.perGroupTabStates.getOrPut(targetGroupName) { LazyListState() }

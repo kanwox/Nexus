@@ -106,7 +106,7 @@ object ScriptManager {
     private fun allowPrivateHosts(): Boolean =
         runCatching {
             SettingsManager(com.github.kr328.clash.common.Global.application).allowPrivateSubscriptionHosts
-        }.getOrDefault(true)
+        }.getOrDefault(false)
 
     // GitHub mirror prefixes to try when raw.githubusercontent.com is unreachable
     private val GITHUB_MIRRORS = listOf(
@@ -115,59 +115,35 @@ object ScriptManager {
         "https://gh.con.sh/https://raw.githubusercontent.com/"
     )
 
-    // Direct client (no proxy) - for subscriptions that go through VPN already
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
-        .withSsrfProtection(allowPrivateSupplier = ::allowPrivateHosts, validateDns = true)
-        .build()
+    // Direct client (no proxy) - shares the process-wide NetworkClients pool
+    private val httpClient: OkHttpClient by lazy {
+        NetworkClients.directClient(
+            connectTimeoutSec = 15,
+            readTimeoutSec = 30,
+            callTimeoutSec = 60,
+            allowPrivateSupplier = ::allowPrivateHosts
+        )
+    }
 
-    // Client that routes through the local mixed-port proxy (port is user-configurable).
-    // Used when app traffic bypasses VPN (the app is always excluded from its own tunnel).
-    //
-    // Only the client for the CURRENT port is kept: every port change used to add another
-    // entry, and each OkHttpClient owns its own connection pool + dispatcher, so the map
-    // grew without bound (a leak that survives until the process dies).
+    // Client that routes through the local mixed-port proxy (derived from shared NetworkClients).
     private val proxyClients = java.util.concurrent.ConcurrentHashMap<Int, OkHttpClient>()
 
     private fun localProxyClient(port: Int): OkHttpClient {
         proxyClients[port]?.let { return it }
         synchronized(proxyClients) {
             proxyClients[port]?.let { return it }
-            // Keep validateDns = false on the proxy client so connecting to 127.0.0.1:mixedPort
-            // is unaffected, while followRedirects(false) + redirect check still validates hop targets.
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .callTimeout(60, TimeUnit.SECONDS)
-                .proxy(
-                    java.net.Proxy(
-                        java.net.Proxy.Type.HTTP,
-                        java.net.InetSocketAddress("127.0.0.1", port)
-                    )
-                )
-                .withSsrfProtection(allowPrivateSupplier = ::allowPrivateHosts, validateDns = false)
-                .build()
-            // Evict the clients of the previous ports and release their resources.
+            val client = NetworkClients.localProxyClient(
+                port = port,
+                connectTimeoutSec = 15,
+                readTimeoutSec = 30,
+                callTimeoutSec = 60,
+                allowPrivateSupplier = ::allowPrivateHosts
+            )
             val stale = proxyClients.keys.filter { it != port }
-            stale.forEach { old ->
-                proxyClients.remove(old)?.let { releaseClient(it) }
-            }
+            stale.forEach { old -> proxyClients.remove(old) }
             proxyClients[port] = client
             return client
         }
-    }
-
-    /** Releases the threads and connection pool a discarded OkHttpClient holds. */
-    private fun releaseClient(client: OkHttpClient) {
-        runCatching {
-            client.dispatcher.executorService.shutdown()
-            client.connectionPool.evictAll()
-            if (client.cache != null) {
-                client.cache?.close()
-            }
-        }.onFailure { Log.d(TAG, "Failed to release a stale proxy client: ${it.message}") }
     }
 
     private fun executeRequestOrNull(client: OkHttpClient, url: String): String? {
@@ -229,10 +205,12 @@ object ScriptManager {
      */
     private fun fetchUrl(url: String, mixedPort: Int): ScriptFetch {
         val rawPath = extractGithubRawPath(url)
-        val githubFetch = rawPath?.let { fetchGithubRawOrNull(url, it, mixedPort) }
-        if (githubFetch != null) return githubFetch
+        if (rawPath != null) {
+            return fetchGithubRawOrNull(url, rawPath, mixedPort)
+                ?: error("无法下载 GitHub 脚本：代理、直连与镜像均失败")
+        }
 
-        // Strategy 4 (or primary for non-GitHub URLs): Direct download
+        // Primary for non-GitHub URLs: Direct download
         val req = Request.Builder().url(url)
             .header("User-Agent", BROWSER_USER_AGENT)
             .build()
@@ -280,12 +258,12 @@ object ScriptManager {
 
     suspend fun fetchRemoteScriptContent(
         url: String,
-        allowPrivateHosts: Boolean = true,
+        allowPrivateHosts: Boolean = false,
         mixedPort: Int = 7890
     ): Result<String> = withContext(Dispatchers.IO) {
         runIoCatching {
             val cleanUrl = url.trim()
-            requireSecureRemoteUrl(cleanUrl, allowPrivateHosts)
+            requireSecureRemoteUrl(cleanUrl, allowPrivateHosts, requireHttpsOnly = true)
             fetchUrl(cleanUrl, mixedPort).body
         }
     }
@@ -358,7 +336,7 @@ object ScriptManager {
     ): Result<ScriptItem> = withContext(Dispatchers.IO) {
         runIoCatching {
             val settings = SettingsManager(context)
-            requireSecureRemoteUrl(url, settings.allowPrivateSubscriptionHosts)
+            requireSecureRemoteUrl(url, settings.allowPrivateSubscriptionHosts, requireHttpsOnly = true)
             val fetched = fetchUrl(url, settings.mixedPort)
             val body = fetched.body
             val trust = resolveRemoteScriptDownloadTrust(body, fetched.fromMirror)
@@ -438,10 +416,18 @@ object ScriptManager {
     internal fun verifyScriptIntegrityCode(script: ScriptItem, code: String): Boolean =
         script.contentHash.isNotBlank() && code.isNotEmpty() && sha256(code) == script.contentHash
 
-    fun verifyScriptIntegrity(context: Context, script: ScriptItem): Boolean = synchronized(ioLock) {
+    fun verifyScriptIntegrity(context: Context, script: ScriptItem): Boolean =
+        readVerifiedScriptCode(context, script) != null
+
+    /**
+     * Atomically reads and verifies a script's on-disk code inside [ioLock] so there is no
+     * TOCTOU window between integrity check and execution read. Returns null on mismatch.
+     */
+    fun readVerifiedScriptCode(context: Context, script: ScriptItem): String? = synchronized(ioLock) {
         val latest = getScripts(context).firstOrNull { it.id == script.id } ?: script
-        if (latest.contentHash.isBlank()) return@synchronized false
-        verifyScriptIntegrityCode(latest, readScriptCode(context, latest))
+        if (latest.contentHash.isBlank()) return@synchronized null
+        val code = readScriptCode(context, latest)
+        if (verifyScriptIntegrityCode(latest, code)) code else null
     }
 
     fun updateScriptCode(context: Context, script: ScriptItem, newCode: String) {
@@ -468,7 +454,7 @@ object ScriptManager {
             runIoCatching {
                 if (script.url.isBlank()) error("无远程更新链接")
                 val settings = SettingsManager(context)
-                requireSecureRemoteUrl(script.url, settings.allowPrivateSubscriptionHosts)
+                requireSecureRemoteUrl(script.url, settings.allowPrivateSubscriptionHosts, requireHttpsOnly = true)
                 val fetched = fetchUrl(script.url, settings.mixedPort)
                 val body = fetched.body
                 val newHash = sha256(body)

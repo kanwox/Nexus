@@ -342,13 +342,13 @@ object DiagnosticsExporter {
             val dir = File(appContext.cacheDir, "diagnostics").apply { mkdirs() }
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val target = File(dir, "diag-$stamp.json")
-            val staged = File(dir, "diag-$stamp.json.tmp")
-            staged.writeText(buildDiagnosticsJson(appContext), Charsets.UTF_8)
-            if (target.exists() && !target.delete()) {
-                staged.delete()
-                error("could not replace an existing diagnostics export with the same timestamp")
+            val staged = File.createTempFile("diag-$stamp.", ".tmp", dir)
+            try {
+                staged.writeText(buildDiagnosticsJson(appContext), Charsets.UTF_8)
+                ProfileStore.moveReplacingFile(staged, target)
+            } finally {
+                if (staged.exists()) staged.delete()
             }
-            check(staged.renameTo(target)) { "rename of the staged diagnostics file failed" }
             pruneOldExports(dir)
             DiagnosticsExportResult.Success(target, target.length())
         } catch (e: CancellationException) {

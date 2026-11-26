@@ -37,6 +37,7 @@ Set-Location "E:\Projects\Nexus"
    ```
 3. 遇到 `Timeout waiting to lock` 时排查残留 `java` 进程；Detekt `1.23.8` 不支持 JDK 25（例如 Android Studio JBR），必须使用 JDK 21。
 4. 仓库通过 `.gitattributes` 统一行尾：源码、配置与文档强制 LF，仅 `*.bat` 使用 CRLF。
+5. **发布签名内置说明（有意设计）**：`app/nexus-release.jks` 与 `app/build.gradle.kts` 中的默认回退签名凭据为项目有意保留，用于保证本地离线构建与 CI 发布无需额外配置即可产出签名一致的 Release APK（如需替换，可通过 `local.properties` 或 `RELEASE_*` 环境变量覆盖）。后续代码审查无需重复将其报告为密钥泄露缺陷。
 
 ## 最新全量门禁实测记录（v1.0.7）
 

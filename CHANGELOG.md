@@ -9,6 +9,33 @@ The release workflow reads the section whose heading matches the `versionName` i
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-26
+
+### Added
+
+- **Google-Style Dual Wings App Icon**: Replaced the legacy flat `N` launcher icon with the new Google 2026 soft multi-hue gradient **Dual Wings** icon across `ic_launcher-web.png`, all `mipmap-*` densities (legacy, round, and adaptive foreground), and a matching Android 13+ monochrome themed silhouette (`ic_launcher_monochrome.xml`).
+- **Unified Shared Network Client Pool (`NetworkClients`)**: Consolidated 9 independent `OkHttpClient` instances across `ConfigManager`, `ScriptManager`, `UpdateChecker`, `GeoDataManager`, and `MihomoApi` onto a single shared `Dispatcher` and `ConnectionPool`.
+- **Script Editor Unsaved-Changes Guard**: Added dirty-state tracking and a trilingual confirmation dialog (`scripts_discard_confirm`) when exiting the script editor with unsaved edits, and blocked outer sub-screen edge-swipe back gestures while the editor is open.
+
+### Changed
+
+- **Honest System Kill Switch & Unified Per-App Self-Exclusion**: Removed the non-functional `VpnService.Builder.setBlocking(true)` toggle from `MihomoVpnService` and converted the Kill Switch row in `VpnTunnelScreen` into a direct shortcut to Android's native system VPN settings (`Settings.ACTION_VPN_SETTINGS`); unified per-app proxy routing (`WHITELIST`, `BLACKLIST`, `DISABLED`) to consistently exclude Nexus itself from the TUN interface.
+- **Fail-Closed Security Hardening**:
+  - `ConfigValidation`: Expanded `PROTECTED_TOP_LEVEL_KEYS` (`external-controller-tls`, `tls`, `profile`, `experimental`, `ebpf`) and switched malformed YAML sanitization to fail-closed instead of silently falling back to text regex filtering; tightened `YamlSupport` code point limit to `25 MB`.
+  - `LanPasswordCipher` & `SettingsManager`: Cached the Android Keystore key process-wide with lazy initialization (eliminating per-instantiation Keystore Binder IPC), removed plaintext software-key writes on production paths while preserving transparent `sw1:`-to-`ks1:` migration, and defaulted `allowPrivateSubscriptionHosts` / `requireSecureRemoteUrl` to fail-closed (`false`).
+  - `ScriptManager` & `UpdateChecker` & `GeoDataManager`: Enforced HTTPS-only remote script downloads, enforced HTTPS + official GitHub release host allowlist on in-app update URLs, and added official `.sha256sum` verification with local-proxy-first fallback on Geo database updates.
+- **Multi-Level Sub-Screen Stack & Compose Stability**: Upgraded `MainAppState` from a 2-slot parent pointer to a true saveable `SnapshotStateList<SubScreen>` stack, extracted `VpnServiceSupport.kt` from `MihomoVpnService.kt`, moved `allowLanPassword` writes off the main thread, added background debounced filtering for `RulesScreen`, reduced per-record allocations in `RequestLogsScreen`, and aligned `@Stable`/`@Immutable` annotations and scoped `DELAY` sorting in `ProxiesScreen` / `DashboardScreen`.
+- **Documentation**: Documented the intentional embedded release keystore/fallback signing configuration in `README.md`, `BUILD_ENV.md`, and `app/build.gradle.kts`.
+
+### Fixed
+
+- **VPN Service & Core Concurrency / ANR**:
+  - Wrapped `MihomoVpnService` `actorJob` command processing in exception recovery and guarded all `startForegroundNotification()` calls against `ForegroundServiceStartNotAllowedException`; fixed TUN fd ownership, instance-scoped teardown isolation, bounded `onDestroy` worker join timeout, `isUiInForeground` reference counting, 5s screen-off suspend debounce, notification-permission checks, and multi-network `PhysicalNetworkCallback` fallback.
+  - Fixed `ClashCore` main-thread `init()` blocking on read-only queries, `reset()` locking, `ConcurrentHashMap.compute` recursive update risk during health checks, DST-aware timezone offset (`TimeZone.getOffset`), `loadedProfileId` clearing on default config load, and preserved underlying native error messages in `wrapClashFailure`.
+  - Fixed `Bridge` safe `Application` casting and atomic asset moves, `BootReceiver` broadcast watchdog timeout, `MihomoTileService` lock-screen unlock parity on VPN stop and app-language subtitle sync, `TileVpnLaunchActivity` empty-profile redirect, and `MihomoApplication` crash-redaction OOM fallback.
+- **Data Integrity, Script Sandbox & Transport Efficiency**: Fixed `ConfigScriptEngine` integrity TOCTOU via atomic `ScriptManager.readVerifiedScriptCode`, added recursion/length bounds to script JSON and console formatting, fixed `ProfileStore` write-before-cache ordering and corrupt-store quarantine/rebuild, fixed `ApiController` port/secret atomic snapshots, replaced `RequestRepository` 200ms WebSocket polling with `CompletableDeferred` zero-poll suspension and a bounded LRU UID cache, and made `LogRepository` trims and `DiagnosticsExporter` temp files atomic/race-free.
+- **UI Bugs, Accessibility & Localization**: Fixed `DashboardScreen` shortcut drag-reorder stale closure and duplicate-node `LazyColumn` key crash in the quick node selector, hid background tabs and bottom bar from accessibility/keyboard focus (`hideFromAccessibility()` / `canFocus = false`) when a sub-screen overlay is active, fixed the speed-test button's `stateDescription`, enabled default keyboard focus rings on `iosPressable`, and made `AppStrings.current()` observe `LocalConfiguration` for live system-locale updates.
+
 ## [1.0.7] - 2026-11-14
 
 ### Added

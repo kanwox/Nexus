@@ -79,8 +79,26 @@ class ConfigManagerSanitizeTest {
     }
 
     @Test
-    fun `invalid yaml falls back to text filter without exception`() {
-        val out = sanitized("external-controller: x\n  : : :\nproxies: []")
-        assertFalse(out.contains("external-controller"))
+    fun `invalid yaml fails closed with IllegalArgumentException`() {
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            sanitized("external-controller: x\n  : : :\nproxies: []")
+        }
+    }
+
+    @Test
+    fun `removes newly hardened protected keys like external-controller-tls and ebpf`() {
+        val out = sanitized(
+            """
+            external-controller-tls: 0.0.0.0:9443
+            tls:
+              certificate: /tmp/cert
+            ebpf:
+              redirect-to-tun: [eth0]
+            proxies: []
+            """.trimIndent()
+        )
+        assertFalse(out.contains("external-controller-tls"))
+        assertFalse(out.contains("ebpf"))
+        assertTrue(out.contains("proxies"))
     }
 }

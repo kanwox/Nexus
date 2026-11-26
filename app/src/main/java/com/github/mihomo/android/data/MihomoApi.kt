@@ -46,16 +46,21 @@ object ApiController {
     private const val MIN_PORT = 1
     private const val MAX_PORT = 65535
 
-    @Volatile
-    var port: Int = -1
-        private set
+    internal data class ControllerState(val port: Int, val secret: String)
 
     @Volatile
-    var secret: String = ""
-        private set
+    private var state: ControllerState? = null
+
+    val port: Int
+        get() = state?.port ?: -1
+
+    val secret: String
+        get() = state?.secret ?: ""
 
     val isReady: Boolean
-        get() = port > 0 && secret.isNotEmpty()
+        get() = state != null
+
+    internal fun snapshot(): ControllerState? = state
 
     @Volatile
     internal var portProbeOverride: ((Int) -> Boolean)? = null
@@ -67,11 +72,11 @@ object ApiController {
     internal var ephemeralPortOverride: (() -> Int?)? = null
 
     private val probeClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            .readTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            .callTimeout(PROBE_TIMEOUT_MS * 2, TimeUnit.MILLISECONDS)
-            .build()
+        NetworkClients.loopbackClient(
+            connectTimeoutMs = PROBE_TIMEOUT_MS,
+            readTimeoutMs = PROBE_TIMEOUT_MS,
+            callTimeoutMs = PROBE_TIMEOUT_MS * 2
+        )
     }
 
     /**
@@ -80,10 +85,11 @@ object ApiController {
      */
     @Synchronized
     fun acquire(): Boolean {
-        if (isReady) {
-            val stillAvailable = isPortFree(port) || isOwnControllerListening(port, secret)
+        val current = state
+        if (current != null) {
+            val stillAvailable = isPortFree(current.port) || isOwnControllerListening(current.port, current.secret)
             if (stillAvailable) return true
-            Log.w(TAG, "Controller port $port is occupied by another listener; acquiring a replacement")
+            Log.w(TAG, "Controller port ${current.port} is occupied by another listener; acquiring a replacement")
             invalidateLocked()
         }
         return acquireFreshPort(excludedPort = -1)
@@ -92,7 +98,7 @@ object ApiController {
     /** Forces probing a fresh loopback port (e.g., when core startup failed to bind [port]). */
     @Synchronized
     fun reacquire(): Boolean {
-        val previousPort = port
+        val previousPort = state?.port ?: -1
         invalidateLocked()
         return acquireFreshPort(excludedPort = previousPort)
     }
@@ -106,20 +112,17 @@ object ApiController {
             ownControllerVerifierOverride = null
             ephemeralPortOverride = null
         } else {
-            port = testPort
-            secret = testSecret
+            state = if (testSecret.isNotEmpty()) ControllerState(testPort, testSecret) else null
         }
     }
 
     private fun invalidateLocked() {
-        port = -1
-        secret = ""
+        state = null
     }
 
     private fun acquireFreshPort(excludedPort: Int): Boolean {
         val candidate = findAvailablePort(excludedPort) ?: return false
-        port = candidate
-        secret = UUID.randomUUID().toString().replace("-", "")
+        state = ControllerState(candidate, UUID.randomUUID().toString().replace("-", ""))
         return true
     }
 
@@ -174,7 +177,8 @@ object ApiController {
         return try {
             probeClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use false
-                val element = Json.parseToJsonElement(response.body.string()) as? JsonObject
+                val text = ConfigManager.readBodyCapped(response, 64L * 1024L, "Empty version response")
+                val element = Json.parseToJsonElement(text) as? JsonObject
                 element?.containsKey("version") == true
             }
         } catch (_: Exception) {
@@ -192,13 +196,17 @@ object MihomoApi {
     private const val MIN_PORT = 1
     private const val MAX_PORT = 65535
 
+    private const val MAX_API_RESPONSE_BYTES = 16L * 1024L * 1024L
+
     private val json = Json { ignoreUnknownKeys = true }
 
-    internal val client = OkHttpClient.Builder()
-        .connectTimeout(1, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .callTimeout(5, TimeUnit.SECONDS)
-        .build()
+    internal val client: OkHttpClient by lazy {
+        NetworkClients.loopbackClient(
+            connectTimeoutMs = 1_000L,
+            readTimeoutMs = 3_000L,
+            callTimeoutMs = 5_000L
+        )
+    }
 
     /**
      * Dedicated client for provider updates (`PUT /providers/...`), sharing [client]'s dispatcher
@@ -217,11 +225,7 @@ object MihomoApi {
      * A SECOND client dedicated to WebSocket connections. The REST client above keeps
      * fast timeouts, while a WebSocket is a long-lived read (`readTimeout(0)` + `pingInterval(20)`).
      */
-    private val wsClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
-        .build()
+    private val wsClient: OkHttpClient by lazy { NetworkClients.webSocketClient() }
 
     private val jsonBody = "application/json; charset=utf-8".toMediaType()
 
@@ -230,19 +234,25 @@ object MihomoApi {
      * guaranteeing spaces become `%20` (never `+`) and embedded `/` or `?`/`#` stay inside one segment.
      */
     internal fun buildEndpointUrl(vararg segments: String): HttpUrl {
-        if (!ApiController.isReady) error("external-controller is not configured")
+        val snap = ApiController.snapshot() ?: error("external-controller is not configured")
+        return buildEndpointUrlForPort(snap.port, *segments)
+    }
+
+    private fun buildEndpointUrlForPort(port: Int, vararg segments: String): HttpUrl {
         val urlBuilder = HttpUrl.Builder()
             .scheme("http")
             .host("127.0.0.1")
-            .port(ApiController.port)
+            .port(port)
         segments.forEach { urlBuilder.addPathSegment(it) }
         return urlBuilder.build()
     }
 
-    private fun requestBuilder(vararg segments: String): Request.Builder =
-        Request.Builder()
-            .url(buildEndpointUrl(*segments))
-            .header("Authorization", "Bearer ${ApiController.secret}")
+    private fun requestBuilder(vararg segments: String): Request.Builder {
+        val snap = ApiController.snapshot() ?: error("external-controller is not configured")
+        return Request.Builder()
+            .url(buildEndpointUrlForPort(snap.port, *segments))
+            .header("Authorization", "Bearer ${snap.secret}")
+    }
 
     /**
      * Safe GET: returns null whenever the controller is not configured (VPN never started)
@@ -253,7 +263,7 @@ object MihomoApi {
         return try {
             client.newCall(requestBuilder(*segments).build()).execute().use { response ->
                 if (!response.isSuccessful) return@use null
-                val text = response.body.string()
+                val text = ConfigManager.readBodyCapped(response, MAX_API_RESPONSE_BYTES, "Empty API response")
                 json.parseToJsonElement(text) as? JsonObject
             }
         } catch (ce: CancellationException) {

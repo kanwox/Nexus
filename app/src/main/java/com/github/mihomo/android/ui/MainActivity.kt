@@ -105,7 +105,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        MihomoVpnService.isUiInForeground = true
+        MihomoVpnService.onUiStarted()
         // The screen-state receiver lives in the VPN service; if the service was destroyed
         // while the screen was off, LogRepository (and the native core) could stay gated off.
         // Refresh both from the authoritative PowerManager state off the main thread.
@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        MihomoVpnService.isUiInForeground = false
+        MihomoVpnService.onUiStopped()
         super.onStop()
     }
 

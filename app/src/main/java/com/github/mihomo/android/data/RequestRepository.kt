@@ -4,6 +4,7 @@ package com.github.mihomo.android.data
 
 import android.content.Context
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +43,6 @@ object RequestRepository {
     private const val PUBLISH_INTERVAL_MS = 400L
     private const val POLL_INTERVAL_MS = 1000L
     private const val BACKGROUND_POLL_INTERVAL_MS = 5000L
-    private const val SOCKET_WAIT_STEP_MS = 200L
 
     /** Transport identifiers published through [transportModeFlow]. */
     const val TRANSPORT_WEBSOCKET = "websocket"
@@ -106,6 +106,9 @@ object RequestRepository {
     @Volatile
     private var activeSocket: okhttp3.WebSocket? = null
 
+    @Volatile
+    private var activeListener: ConnectionsSocketListener? = null
+
     /**
      * True from [stopPolling] until the next [startPolling]. This is the ONLY signal
      * that distinguishes "the user stopped the VPN" from "the socket died".
@@ -126,8 +129,12 @@ object RequestRepository {
     @Volatile
     private var uidResolver: ((Int, String, String) -> Int)? = null
 
-    // Lock-free cache: uid -> (display label, package name); accessed outside [recordsLock].
-    private val uidLabelCache = ConcurrentHashMap<Int, Pair<String, String?>>()
+    // Bounded LRU cache: uid -> (display label, package name); guarded by [uidCacheLock] outside [recordsLock].
+    private val uidCacheLock = Any()
+    private val uidLabelCache = object : LinkedHashMap<Int, Pair<String, String?>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Pair<String, String?>>?): Boolean =
+            size > MAX_UID_CACHE_ENTRIES
+    }
 
     internal var webSocketFactory: (okhttp3.WebSocketListener) -> okhttp3.WebSocket? = { listener ->
         MihomoApi.newConnectionsWebSocket(listener)
@@ -172,6 +179,7 @@ object RequestRepository {
         val streamToCancel: Job?
         val pollToCancel: Job?
         val socketToCancel: okhttp3.WebSocket?
+        val listenerToClose: ConnectionsSocketListener?
         synchronized(transportLock) {
             streamStopped = true
             streamGeneration++
@@ -179,11 +187,14 @@ object RequestRepository {
             streamJob = null
             socketToCancel = activeSocket
             activeSocket = null
+            listenerToClose = activeListener
+            activeListener = null
             pollToCancel = pollJob
             pollJob = null
             _transportModeFlow.value = TRANSPORT_POLLING
             wsFailureCounter.set(0)
         }
+        listenerToClose?.closedSignal?.complete(Unit)
         streamToCancel?.cancel()
         cancelSocketQuietly(socketToCancel)
         pollToCancel?.cancel()
@@ -252,6 +263,8 @@ object RequestRepository {
         @Volatile
         var terminated: Boolean = false
 
+        val closedSignal: CompletableDeferred<Unit> = CompletableDeferred()
+
         override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
             if (!isCurrentSocket(webSocket)) {
                 cancelSocketQuietly(webSocket)
@@ -293,7 +306,11 @@ object RequestRepository {
                 if (current != null && (current === webSocket || current === attachedSocket)) {
                     activeSocket = null
                 }
+                if (activeListener === this) {
+                    activeListener = null
+                }
             }
+            closedSignal.complete(Unit)
         }
     }
 
@@ -321,10 +338,15 @@ object RequestRepository {
                 false
             } else {
                 val previous = activeSocket
+                val previousListener = activeListener
                 if (previous != null && previous !== socket) {
                     socketToCancel = previous
                 }
+                if (previousListener != null && previousListener !== listener) {
+                    previousListener.closedSignal.complete(Unit)
+                }
                 activeSocket = socket
+                activeListener = listener
                 _transportModeFlow.value = TRANSPORT_WEBSOCKET
                 true
             }
@@ -344,13 +366,15 @@ object RequestRepository {
 
     /** Suspends until the active socket is gone (failed/closed/cancelled) or streaming is stopped. */
     private suspend fun waitWhileSocketActive(generation: Long) {
-        while (currentCoroutineContext().isActive && canKeepWaitingOnSocket(generation)) {
-            delay(SOCKET_WAIT_STEP_MS)
-        }
+        val signal = synchronized(transportLock) {
+            if (activeSocket != null && isGenerationActive(generation)) {
+                activeListener?.closedSignal
+            } else {
+                null
+            }
+        } ?: return
+        signal.await()
     }
-
-    private fun canKeepWaitingOnSocket(generation: Long): Boolean =
-        activeSocket != null && isGenerationActive(generation)
 
     internal fun currentGenerationForTest(): Long = streamGeneration
 
@@ -361,6 +385,7 @@ object RequestRepository {
     /** Permanently switches to the REST poll loop (foreground/background/screen-off logic unchanged). */
     private fun degradeToPolling(scope: CoroutineScope, reason: String, generation: Long) {
         var oldSocket: okhttp3.WebSocket? = null
+        var oldListener: ConnectionsSocketListener? = null
         var shouldLogDegrade = false
         synchronized(transportLock) {
             if (!isGenerationActive(generation)) return
@@ -368,8 +393,11 @@ object RequestRepository {
             _transportModeFlow.value = TRANSPORT_POLLING
             oldSocket = activeSocket
             activeSocket = null
+            oldListener = activeListener
+            activeListener = null
             startPollLoopLocked(scope, generation)
         }
+        oldListener?.closedSignal?.complete(Unit)
         cancelSocketQuietly(oldSocket)
         if (shouldLogDegrade) {
             LogRepository.addLog("info", "连接流降级为轮询模式: $reason")
@@ -484,7 +512,7 @@ object RequestRepository {
         if (unknownConns.isEmpty()) return emptyMap()
         val resolved = HashMap<String, Pair<String, String?>>(unknownConns.size)
         for (conn in unknownConns) {
-            resolved[conn.id] = resolveAppLabel(conn, uidResolver, appContext, uidLabelCache)
+            resolved[conn.id] = resolveAppLabel(conn, uidResolver, appContext, uidCacheLock, uidLabelCache)
         }
         return resolved
     }
@@ -553,7 +581,7 @@ object RequestRepository {
 
     internal fun setUidResolverForTest(resolver: ((Int, String, String) -> Int)?) {
         uidResolver = resolver
-        uidLabelCache.clear()
+        synchronized(uidCacheLock) { uidLabelCache.clear() }
     }
 
     internal fun resetTransportForTest() {
@@ -566,7 +594,7 @@ object RequestRepository {
         reconnectDelayMsOverride = null
         pollIntervalOverrideMs = null
         uidResolver = null
-        uidLabelCache.clear()
+        synchronized(uidCacheLock) { uidLabelCache.clear() }
     }
 }
 
@@ -633,7 +661,8 @@ private fun resolveAppLabel(
     conn: MihomoApi.ApiConnection,
     uidResolver: ((Int, String, String) -> Int)?,
     appContext: Context?,
-    uidLabelCache: ConcurrentHashMap<Int, Pair<String, String?>>
+    uidCacheLock: Any,
+    uidLabelCache: LinkedHashMap<Int, Pair<String, String?>>
 ): Pair<String, String?> {
     val resolver = uidResolver ?: return "" to null
     val proto = resolveProtocol(conn.network)
@@ -649,12 +678,13 @@ private fun resolveAppLabel(
         0
     }
     if (uid <= 0) return "" to null
-    uidLabelCache[uid]?.let { return it }
-    val pair = queryPackageLabelForUid(appContext, uid)
-    if (uidLabelCache.size >= MAX_UID_CACHE_ENTRIES) {
-        uidLabelCache.clear()
+    synchronized(uidCacheLock) {
+        uidLabelCache[uid]?.let { return it }
     }
-    uidLabelCache[uid] = pair
+    val pair = queryPackageLabelForUid(appContext, uid)
+    synchronized(uidCacheLock) {
+        uidLabelCache[uid] = pair
+    }
     return pair
 }
 

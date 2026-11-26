@@ -16,10 +16,11 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Encrypts and decrypts the LAN proxy password at rest using AES-256-GCM.
  *
- * On Android devices, the AES key is hardware/TEE-backed inside `AndroidKeyStore`.
- * In pure JVM unit tests (or devices where `AndroidKeyStore` fails to initialize), it falls
- * back to a per-preferences random 256-bit AES-GCM key so encryption, authentication tags,
- * and legacy plaintext migration remain testable without an emulator.
+ * Production builds exclusively encrypt using a hardware/TEE-backed key inside
+ * `AndroidKeyStore` (cached process-wide so normal settings reads never incur
+ * repeated keystore Binder IPC). Legacy `sw1:` ciphertexts written by older
+ * builds can still be decrypted once for transparent migration to `ks1:`, after
+ * which the legacy software key preference is erased.
  */
 internal interface LanPasswordCipher {
     fun encrypt(plaintext: String): String
@@ -32,20 +33,21 @@ internal interface LanPasswordCipher {
         private const val GCM_TAG_BITS = 128
         private const val GCM_IV_BYTES = 12
         private const val AES_KEY_BYTES = 32
-        private const val FALLBACK_KEY_PREF = "allow_lan_password_k"
-        private const val PREFIX_KEYSTORE = "ks1"
-        private const val PREFIX_SOFTWARE = "sw1"
+        internal const val FALLBACK_KEY_PREF = "allow_lan_password_k"
+        internal const val PREFIX_KEYSTORE = "ks1"
+        internal const val PREFIX_SOFTWARE = "sw1"
 
-        fun defaultFor(prefs: SharedPreferences): LanPasswordCipher {
-            val keystoreKey = obtainKeystoreKeyOrNull()
-            return if (keystoreKey != null) {
-                AesGcmCipher(PREFIX_KEYSTORE, keystoreKey, generateIvManually = false)
-            } else {
-                AesGcmCipher(PREFIX_SOFTWARE, obtainOrCreateFallbackKey(prefs), generateIvManually = true)
-            }
-        }
+        private val keystoreLock = Any()
 
-        internal fun softwareForTest(secretKeyBytes: ByteArray = ByteArray(AES_KEY_BYTES) { (it + 1).toByte() }): LanPasswordCipher {
+        @Volatile
+        private var cachedKeystoreKey: SecretKey? = null
+
+        fun defaultFor(prefs: SharedPreferences): LanPasswordCipher =
+            KeystoreFirstCipher(prefs)
+
+        internal fun softwareForTest(
+            secretKeyBytes: ByteArray = ByteArray(AES_KEY_BYTES) { (it + 1).toByte() }
+        ): LanPasswordCipher {
             return AesGcmCipher(
                 prefix = PREFIX_SOFTWARE,
                 secretKey = SecretKeySpec(secretKeyBytes.copyOf(AES_KEY_BYTES), "AES"),
@@ -54,49 +56,90 @@ internal interface LanPasswordCipher {
         }
 
         private fun obtainKeystoreKeyOrNull(): SecretKey? {
-            return try {
-                val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
-                val existing = (keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
-                if (existing != null) return existing
-                val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
-                val spec = KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(AES_KEY_BYTES * 8)
-                    .build()
-                keyGenerator.init(spec)
-                keyGenerator.generateKey()
-            } catch (_: Exception) {
-                null
-            } catch (_: LinkageError) {
-                null
+            cachedKeystoreKey?.let { return it }
+            return synchronized(keystoreLock) {
+                cachedKeystoreKey?.let { return@synchronized it }
+                val key = try {
+                    val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+                    val existing = (keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
+                    if (existing != null) {
+                        existing
+                    } else {
+                        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
+                        val spec = KeyGenParameterSpec.Builder(
+                            KEY_ALIAS,
+                            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                        )
+                            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                            .setKeySize(AES_KEY_BYTES * 8)
+                            .build()
+                        keyGenerator.init(spec)
+                        keyGenerator.generateKey()
+                    }
+                } catch (_: Exception) {
+                    null
+                } catch (_: LinkageError) {
+                    null
+                }
+                if (key != null) {
+                    cachedKeystoreKey = key
+                }
+                key
             }
         }
 
-        private fun obtainOrCreateFallbackKey(prefs: SharedPreferences): SecretKey {
-            val encoder = Base64.getEncoder()
-            val decoder = Base64.getDecoder()
-            val existingB64 = prefs.getString(FALLBACK_KEY_PREF, null)
-            val existingBytes = existingB64?.let {
-                try {
-                    decoder.decode(it)
-                } catch (_: IllegalArgumentException) {
-                    null
+        private fun readLegacyFallbackKeyOrNull(prefs: SharedPreferences): SecretKey? {
+            val existingB64 = prefs.getString(FALLBACK_KEY_PREF, null) ?: return null
+            val existingBytes = try {
+                Base64.getDecoder().decode(existingB64)
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            return if (existingBytes != null && existingBytes.size == AES_KEY_BYTES) {
+                SecretKeySpec(existingBytes, "AES")
+            } else {
+                null
+            }
+        }
+    }
+
+    private class KeystoreFirstCipher(
+        private val prefs: SharedPreferences
+    ) : LanPasswordCipher {
+        override fun encrypt(plaintext: String): String {
+            val keystoreKey = obtainKeystoreKeyOrNull()
+                ?: error("AndroidKeyStore is unavailable; refusing to store plaintext key")
+            return AesGcmCipher(PREFIX_KEYSTORE, keystoreKey, generateIvManually = false).encrypt(plaintext)
+        }
+
+        override fun decrypt(encoded: String): String? {
+            val prefix = encoded.substringBefore(':', "")
+            return when (prefix) {
+                PREFIX_KEYSTORE -> {
+                    val key = obtainKeystoreKeyOrNull() ?: return null
+                    AesGcmCipher(PREFIX_KEYSTORE, key, generateIvManually = false).decrypt(encoded)
                 }
+                PREFIX_SOFTWARE -> {
+                    val legacyKey = readLegacyFallbackKeyOrNull(prefs) ?: return null
+                    val decrypted = AesGcmCipher(PREFIX_SOFTWARE, legacyKey, generateIvManually = true)
+                        .decrypt(encoded) ?: return null
+                    // Transparently migrate legacy sw1 ciphertext to ks1 when keystore is available.
+                    val ksKey = obtainKeystoreKeyOrNull()
+                    if (ksKey != null) {
+                        runCatching {
+                            val reEncrypted = AesGcmCipher(PREFIX_KEYSTORE, ksKey, generateIvManually = false)
+                                .encrypt(decrypted)
+                            prefs.edit {
+                                putString(SettingsManager.KEY_ALLOW_LAN_PASSWORD_ENC, reEncrypted)
+                                remove(FALLBACK_KEY_PREF)
+                            }
+                        }
+                    }
+                    decrypted
+                }
+                else -> null
             }
-            if (existingBytes != null && existingBytes.size == AES_KEY_BYTES) {
-                return SecretKeySpec(existingBytes, "AES")
-            }
-            val generated = ByteArray(AES_KEY_BYTES).also { SecureRandom().nextBytes(it) }
-            try {
-                prefs.edit { putString(FALLBACK_KEY_PREF, encoder.encodeToString(generated)) }
-            } catch (_: Exception) {
-                // Read-only preferences in sandboxed tests still work in-memory for the call.
-            }
-            return SecretKeySpec(generated, "AES")
         }
     }
 

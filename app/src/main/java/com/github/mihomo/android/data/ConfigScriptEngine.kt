@@ -285,7 +285,8 @@ object ConfigScriptEngine {
         val yamlParser = YamlSupport.create()
 
         for (script in scripts) {
-            if (!ScriptManager.verifyScriptIntegrity(context, script)) {
+            val code = ScriptManager.readVerifiedScriptCode(context, script)
+            if (code == null) {
                 Log.e(TAG, "Script ${script.name} content does not match its pinned fingerprint; skipping")
                 if (logToRepo) {
                     LogRepository.addLog("warning", "脚本 [${script.name}] 内容与指纹不符，已跳过执行")
@@ -293,7 +294,6 @@ object ConfigScriptEngine {
                 failed += script.name
                 continue
             }
-            val code = ScriptManager.readScriptCode(context, script)
             if (code.isBlank()) continue
 
             val stepOutcome = executeSingleScriptStep(script, code, currentYaml, yamlParser, logToRepo)

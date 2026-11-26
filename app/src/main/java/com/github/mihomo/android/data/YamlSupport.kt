@@ -24,7 +24,7 @@ import org.yaml.snakeyaml.resolver.Resolver
  * between threads: SnakeYAML's parser carries per-load state, so create one per operation.
  */
 internal object YamlSupport {
-    private const val CODE_POINT_LIMIT = 100 * 1024 * 1024
+    private const val CODE_POINT_LIMIT = 25 * 1024 * 1024
     private const val MAX_ALIASES_FOR_COLLECTIONS = 64
 
     /** Block style + two-space indent; wide lines so long rules/URLs are never folded. */

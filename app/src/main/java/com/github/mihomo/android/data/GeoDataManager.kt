@@ -34,11 +34,15 @@ sealed class GeoFile(val fileName: String, val displayName: String) {
 
     val downloadUrl: String get() = "$RELEASE_BASE$fileName"
 
+    /** Official GitHub release SHA-256 checksum URL for verifying CDN payloads. */
+    val checksumUrl: String get() = "$CHECKSUM_BASE$fileName.sha256sum"
+
     /** Where the core expects the file to live. */
     fun fileIn(context: Context): File = GeoDataManager.clashHome(context).resolve(fileName)
 
     companion object {
         const val RELEASE_BASE = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/"
+        const val CHECKSUM_BASE = "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/"
 
         // Lazy initialization avoids the JVM sealed-class/object <clinit> cycle where
         // accessing GeoIpMetadb first used to capture a null INSTANCE inside Companion.all.
@@ -99,12 +103,12 @@ object GeoDataManager {
     private val updateLock = Mutex()
 
     internal val directClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .callTimeout(180, TimeUnit.SECONDS)
-            .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = true)
-            .build()
+        NetworkClients.directClient(
+            connectTimeoutSec = 15,
+            readTimeoutSec = 60,
+            callTimeoutSec = 180,
+            allowPrivateSupplier = { false }
+        )
     }
 
     /**
@@ -156,19 +160,65 @@ object GeoDataManager {
         staging.parentFile?.mkdirs()
         try {
             val mixedPort = runCatching { SettingsManager(appContext).mixedPort }.getOrDefault(0)
-            val downloaded = tryDownloadAndValidate(directClient, which, staging)
-                ?: (if (mixedPort in 1..65535) {
-                    tryDownloadAndValidate(proxyClient(mixedPort), which, staging)
-                } else {
-                    null
-                })
-                ?: error("download failed via direct connection and local proxy")
+            val vpnRunning = runCatching {
+                com.github.mihomo.android.service.MihomoVpnService.vpnState.value.status ==
+                    com.github.mihomo.android.service.VpnState.Status.RUNNING
+            }.getOrDefault(false)
+            val clients = if (vpnRunning && mixedPort in 1..65535) {
+                listOf(proxyClient(mixedPort), directClient)
+            } else if (mixedPort in 1..65535) {
+                listOf(directClient, proxyClient(mixedPort))
+            } else {
+                listOf(directClient)
+            }
+            val expectedSha256 = fetchExpectedSha256(clients, which)
+                ?: error("failed to fetch official SHA-256 checksum for ${which.fileName}")
+            val downloaded = clients.firstNotNullOfOrNull { client ->
+                tryDownloadAndValidate(client, which, staging, expectedSha256)
+            } ?: error("download or SHA-256 verification failed via direct connection and local proxy")
 
             atomicReplace(downloaded, target)
             return target.length()
         } finally {
             staging.delete()
         }
+    }
+
+    private fun fetchExpectedSha256(clients: List<OkHttpClient>, which: GeoFile): String? {
+        for (client in clients) {
+            val request = Request.Builder()
+                .url(which.checksumUrl)
+                .header("User-Agent", "Nexus-Android-GeoUpdate")
+                .build()
+            val hash = runCatching {
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val text = ConfigManager.readBodyCapped(response, 4096L, "Empty checksum")
+                    parseSha256Sum(text)
+                }
+            }.getOrNull()
+            if (hash != null) return hash
+        }
+        return null
+    }
+
+    internal fun parseSha256Sum(raw: String): String? {
+        val token = raw.trim().substringBefore(' ').substringBefore('\t').trim()
+        return token.takeIf { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' || ch in 'A'..'F' } }
+            ?.lowercase(java.util.Locale.ROOT)
+    }
+
+    private fun computeFileSha256(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
     }
 
     /** The core home directory shared with [GeoFile.fileIn]. */
@@ -181,11 +231,18 @@ object GeoDataManager {
     private fun tryDownloadAndValidate(
         client: OkHttpClient,
         which: GeoFile,
-        staging: File
+        staging: File,
+        expectedSha256: String? = null
     ): File? {
         val downloaded = tryDownload(client, which.downloadUrl, staging) ?: return null
         return runCatching {
             validateDownload(downloaded, which)
+            if (expectedSha256 != null) {
+                val actual = computeFileSha256(downloaded)
+                check(actual.equals(expectedSha256, ignoreCase = true)) {
+                    "SHA-256 mismatch for ${which.fileName}"
+                }
+            }
             downloaded
         }.onFailure {
             staging.delete()

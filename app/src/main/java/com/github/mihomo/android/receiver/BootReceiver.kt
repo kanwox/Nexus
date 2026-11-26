@@ -8,12 +8,13 @@ import android.util.Log
 import com.github.mihomo.android.data.ConfigManager
 import com.github.mihomo.android.data.SettingsManager
 import com.github.mihomo.android.service.MihomoVpnService
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -31,17 +32,28 @@ class BootReceiver : BroadcastReceiver() {
         Log.i(TAG, "Received broadcast action: $action")
         val appContext = context.applicationContext
         val pendingResult = goAsync()
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        val finished = AtomicBoolean(false)
+        fun finishOnce() {
+            if (finished.compareAndSet(false, true)) {
+                runCatching { pendingResult.finish() }
+            }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val watchdog = scope.launch {
+            delay(BROADCAST_TIMEOUT_MS.milliseconds)
+            if (finished.compareAndSet(false, true)) {
+                Log.w(TAG, "Timed out handling broadcast action: $action")
+                runCatching { pendingResult.finish() }
+            }
+        }
+        scope.launch {
             try {
-                val completed = withTimeoutOrNull(BROADCAST_TIMEOUT_MS.milliseconds) {
-                    handleBroadcast(appContext, action)
-                    true
-                }
-                if (completed == null) {
-                    Log.w(TAG, "Timed out handling broadcast action: $action")
-                }
+                handleBroadcast(appContext, action)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Error handling broadcast action: $action", t)
             } finally {
-                pendingResult.finish()
+                watchdog.cancel()
+                finishOnce()
             }
         }
     }

@@ -20,12 +20,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.net.InetSocketAddress
-import java.net.Proxy
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
  * Checks GitHub Releases for a newer version of the app.
@@ -56,52 +55,56 @@ object UpdateChecker {
     val availableUpdate: StateFlow<UpdateInfo?> = _availableUpdate.asStateFlow()
 
     internal val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .callTimeout(30, TimeUnit.SECONDS)
-            .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = true)
-            .build()
+        NetworkClients.directClient(
+            connectTimeoutSec = 10,
+            readTimeoutSec = 10,
+            callTimeoutSec = 30,
+            allowPrivateSupplier = { false }
+        )
     }
 
     private val proxyClients = ConcurrentHashMap<Int, OkHttpClient>()
 
     /**
      * Client that routes through the local mixed port when direct physical connections to GitHub
-     * fail. Keeps only the client for the active [port] and shuts down stale clients when the
-     * configured port changes so their connection pools and executors do not leak.
+     * fail. Derived from [NetworkClients.baseClient] so dispatcher/pool are shared process-wide;
+     * only the active port entry is retained in [proxyClients].
      */
     fun localProxyClient(port: Int): OkHttpClient {
         require(port in 1..65535) { "Invalid local proxy port: $port" }
         proxyClients[port]?.let { return it }
         synchronized(proxyClients) {
             proxyClients[port]?.let { return it }
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .callTimeout(180, TimeUnit.SECONDS)
-                .proxy(Proxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", port)))
-                .withSsrfProtection(allowPrivateSupplier = { false }, validateDns = false)
-                .build()
+            val client = NetworkClients.localProxyClient(
+                port = port,
+                connectTimeoutSec = 15,
+                readTimeoutSec = 60,
+                callTimeoutSec = 180,
+                allowPrivateSupplier = { false }
+            )
             val stalePorts = proxyClients.keys.filter { it != port }
-            stalePorts.forEach { oldPort ->
-                proxyClients.remove(oldPort)?.let(::releaseClient)
-            }
+            stalePorts.forEach { oldPort -> proxyClients.remove(oldPort) }
             proxyClients[port] = client
             return client
         }
     }
 
-    internal fun releaseClient(client: OkHttpClient) {
-        try {
-            client.dispatcher.executorService.shutdown()
-            client.connectionPool.evictAll()
-            client.cache?.close()
-        } catch (_: Exception) {
-        }
-    }
-
     internal fun activeProxyClientPortsForTest(): Set<Int> = proxyClients.keys.toSet()
+
+    /**
+     * Enforces HTTPS and an official GitHub release host allowlist on all URLs returned from the
+     * GitHub Releases API so a compromised/MITM JSON payload cannot redirect downloads to HTTP
+     * or arbitrary third-party hosts.
+     */
+    internal fun isTrustedReleaseUrl(url: String): Boolean {
+        val parsed = url.trim().toHttpUrlOrNull() ?: return false
+        if (parsed.scheme != "https") return false
+        val host = parsed.host.lowercase(Locale.ROOT)
+        return host == "github.com" ||
+            host == "objects.githubusercontent.com" ||
+            host == "release-assets.githubusercontent.com" ||
+            host.endsWith(".githubusercontent.com")
+    }
 
     /**
      * Ordered list of HTTP clients to try for GitHub API / asset requests.
@@ -258,12 +261,13 @@ object UpdateChecker {
         val tagName = obj["tag_name"]?.jsonPrimitive?.content ?: ""
         val releaseName = obj["name"]?.jsonPrimitive?.content ?: tagName
         val releaseNotes = (obj["body"]?.jsonPrimitive?.content ?: "").take(MAX_RELEASE_NOTES_CHARS)
-        val htmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
+        val rawHtmlUrl = obj["html_url"]?.jsonPrimitive?.content ?: ""
+        val htmlUrl = rawHtmlUrl.takeIf(::isTrustedReleaseUrl) ?: ""
         val assetsList: List<ReleaseAsset> = obj["assets"]?.let { assetsElement ->
             runCatching {
                 json.decodeFromJsonElement<List<ReleaseAsset>>(assetsElement)
             }.getOrDefault(emptyList())
-        } ?: emptyList()
+        }?.filter { isTrustedReleaseUrl(it.browserDownloadUrl) } ?: emptyList()
         val apkAsset = UpdateVerifier.selectApkAsset(
             assetsList.map { it.name to it.browserDownloadUrl },
             supportedAbis
